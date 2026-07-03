@@ -25,11 +25,6 @@ export default defineConfig({
   projects: [
     {
       name: 'prober',
-      // docker.spec.ts is excluded from local runs (npm run test:probers)
-      // because it requires a running Docker container. The CI workflow
-      // explicitly passes docker.spec.ts as an argument, which overrides
-      // testIgnore.
-      testIgnore: 'docker.spec.ts',
       use: {
         ...devices['Desktop Chrome'],
       },

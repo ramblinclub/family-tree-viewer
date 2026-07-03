@@ -103,7 +103,7 @@
     "test:visual": "playwright test --project=visual",
     "test:visual:update": "playwright test --project=visual --update-snapshots",
     "test:visual:ui": "playwright test --project=visual --ui",
-    "test:probers": "playwright test --config=playwright.prober.config.ts",
+    "test:probers": "playwright test --config=playwright.prober.config.ts gh-pages-gedcom.spec.ts wikitree.spec.ts wikitree-cors-gedcom.spec.ts",
     "check:all": "prettier --check \"{src,tests}/**/*.{ts,tsx,json}\" && npm run lint && npm run build && npm test && tsc -p tests/tsconfig.json --noEmit && npm run test:e2e && npm run test:visual"
   },
   "homepage": ".",
