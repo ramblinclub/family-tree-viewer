@@ -28,3 +28,15 @@ jobs:
     secrets: inherit
     with:
       wait_for_propagation: true
+
+  prober-wikitree-cors:
+    needs: deploy-wikitree-apps
+    uses: ./.github/workflows/prober-wikitree-cors.yml
+    secrets: inherit
+    with:
+      wait_for_propagation: true
+
+  prober-docker:
+    needs: deploy-docker
+    uses: ./.github/workflows/prober-docker.yml
+    secrets: inherit

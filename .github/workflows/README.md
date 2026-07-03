@@ -12,3 +12,5 @@ This directory contains GitHub Actions workflow files that automate various task
 - [node.js.yml](node.js.yml): The main Continuous Integration (CI) workflow. It installs dependencies, checks formatting, lints, builds, and runs tests across multiple Node.js versions.
 - [prober-gh-pages.yml](prober-gh-pages.yml): Reusable prober that smoke-tests the GitHub Pages deployment with GEDCOM-from-URL through the CORS proxy. Runs daily and after deploy.
 - [prober-wikitree.yml](prober-wikitree.yml): Reusable prober that smoke-tests the WikiTree direct API path on the live WikiTree deployment. Runs daily and after deploy.
+- [prober-wikitree-cors.yml](prober-wikitree-cors.yml): Reusable prober that smoke-tests the CORS proxy from the WikiTree deployment with GEDCOM-from-URL. Runs daily and after deploy.
+- [prober-docker.yml](prober-docker.yml): Reusable prober that smoke-tests the published Docker image from GHCR (Dockerfile, Caddy config, app startup) by pulling and running it locally. Runs daily and after deploy.
