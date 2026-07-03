@@ -11,3 +11,4 @@ This directory contains GitHub Actions workflow files that automate various task
 - [deploy-wikitree-apps.yml](deploy-wikitree-apps.yml): Manages the deployment of the application to WikiTree Apps using SFTP.
 - [node.js.yml](node.js.yml): The main Continuous Integration (CI) workflow. It installs dependencies, checks formatting, lints, builds, and runs tests across multiple Node.js versions.
 - [prober-gh-pages.yml](prober-gh-pages.yml): Reusable prober that smoke-tests the GitHub Pages deployment with GEDCOM-from-URL through the CORS proxy. Runs daily and after deploy.
+- [prober-wikitree.yml](prober-wikitree.yml): Reusable prober that smoke-tests the WikiTree direct API path on the live WikiTree deployment. Runs daily and after deploy.

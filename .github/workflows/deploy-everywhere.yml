@@ -21,3 +21,10 @@ jobs:
     secrets: inherit
     with:
       wait_for_propagation: true
+
+  prober-wikitree:
+    needs: deploy-wikitree-apps
+    uses: ./.github/workflows/prober-wikitree.yml
+    secrets: inherit
+    with:
+      wait_for_propagation: true
