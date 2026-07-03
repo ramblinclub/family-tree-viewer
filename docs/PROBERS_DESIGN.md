@@ -351,7 +351,7 @@ targets a different URL and asserts a different expected name.
    subsequent `#chart` text assertion relies on Playwright's auto-wait
    to bridge this gap.
 3. Assert expected name appears in #chart (chart SVG text).
-4. Assert expected name appears in .details (side panel).
+4. Assert expected name appears in div.details (side panel).
 5. Assert .ui.error.message is not visible (no fatal error).
 6. Assert .ui.errorPopup.message is not visible (no popup error).
 ```
@@ -366,7 +366,7 @@ Selectors are derived from the source code:
 * `#content` — main container, visible when chart state is `SHOWING_CHART`
   (see `src/pages/view_page.tsx:202`).
 * `#chart` — SVG group inside the chart (see `src/chart.tsx:599`).
-* `.details` — side panel Details tab content (see `src/sidepanel/details/details.tsx:357`).
+* `div.details` — side panel Details tab content (see `src/sidepanel/details/details.tsx:357`).
 * `.ui.error.message` — fatal error replacing the chart (see
   `src/components/error_display.tsx`, rendered when state is `ERROR`). The `ui` and
   `message` classes are added by Semantic UI React's `<Message>`
@@ -385,7 +385,7 @@ Selectors are derived from the source code:
 
 The side panel is expanded by default on desktop viewports (the prober project
 uses `devices['Desktop Chrome']`). The `getShowSidePanel` function in
-`src/util/url_args.ts:177` returns `true` on non-mobile screens, so the `.details`
+`src/util/url_args.ts:177` returns `true` on non-mobile screens, so the `div.details`
 container is visible without any URL parameters.
 
 ### Step 3: Prober GitHub Actions workflows

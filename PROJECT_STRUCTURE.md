@@ -30,6 +30,7 @@ Here is an enumeration of the files in this directory, categorized by their role
 
 ### Testing
 *   **[playwright.config.ts](playwright.config.ts)**: Configuration file for Playwright end-to-end testing framework.
+*   **[playwright.prober.config.ts](playwright.prober.config.ts)**: Separate Playwright config for prober (live smoke) tests against deployed URLs.
 *   **[jest.config.ts](jest.config.ts)**: Configuration file for the Jest testing framework used for unit tests.
 
 ### Documentation & Assets
@@ -52,3 +53,4 @@ Based on the documentation in the subdirectories, here is a high-level overview 
     *   **[util](src/util)**: Common utilities for dates, analytics, and data processing.
 *   **[public](public)**: Contains static assets (like the favicon) served directly at the root path.
 *   **[tests](tests)**: Contains end-to-end tests.
+    *   **[tests/probers](tests/probers)**: Live smoke tests (probers) that run against deployed URLs and external services.

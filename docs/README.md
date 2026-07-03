@@ -13,3 +13,4 @@ While new features *may* follow this methodology to ensure robust design validat
 * **[PLAYWRIGHT_DESIGN.md](PLAYWRIGHT_DESIGN.md)**: Playwright E2E testing architecture, Vite development/preview server lifecycle integration, tracking blocker interceptors, and embedded iframe communication.
 * **[SCREENSHOT_TESTS_DESIGN.md](SCREENSHOT_TESTS_DESIGN.md)**: Pixel-perfect visual regression testing infrastructure, animation stabilization, sandbox environment/DOM sanitization, and isolated Playwright projects.
 * **[WEBMCP_DESIGN.md](WEBMCP_DESIGN.md)**: Model Context Protocol (MCP) bridge and TS tool registration for AI agent interaction.
+* **[PROBERS_DESIGN.md](PROBERS_DESIGN.md)**: Live prober smoke tests against deployed GitHub Pages, WikiTree URLs, and local Docker container, covering WikiTree API, CORS proxy, GEDCOM-from-URL, and Docker build paths.

@@ -24,7 +24,7 @@ export default defineConfig({
   projects: [
     {
       name: 'e2e',
-      testIgnore: '*_visual.spec.ts',
+      testIgnore: ['*_visual.spec.ts', 'probers/**'],
       use: {
         ...devices['Desktop Chrome'],
       },
