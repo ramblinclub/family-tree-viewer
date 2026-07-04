@@ -4,7 +4,7 @@ import {Message, Portal} from 'semantic-ui-react';
 /** Shows an error message in the middle of the screen. */
 export function ErrorMessage(props: {message?: string}) {
   return (
-    <Message negative className="error">
+    <Message negative className="error" data-testid="error-message">
       <Message.Header>
         <FormattedMessage
           id="error.failed_to_load_file"
@@ -28,7 +28,7 @@ export interface ErrorPopupProps {
 export function ErrorPopup(props: ErrorPopupProps) {
   return (
     <Portal open={props.open} onClose={props.onDismiss}>
-      <Message negative className="errorPopup" onDismiss={props.onDismiss}>
+      <Message negative className="errorPopup" onDismiss={props.onDismiss} data-testid="error-popup">
         <Message.Header>
           <FormattedMessage id="error.error" defaultMessage={'Error'} />
         </Message.Header>

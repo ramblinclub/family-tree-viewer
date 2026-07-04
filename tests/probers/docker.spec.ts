@@ -1,4 +1,6 @@
-import {expect, test} from '@playwright/test';
+import {test} from '@playwright/test';
+
+import {runProber} from './helpers';
 
 /**
  * Prober: Docker container
@@ -11,26 +13,36 @@ import {expect, test} from '@playwright/test';
  *
  * The workflow starts the container externally (via `docker run`) before
  * this test runs, so Playwright connects to localhost:8080 directly.
+ *
+ * If the Docker container is not running (e.g., when running probers locally
+ * without Docker), this test is skipped with a clear message rather than
+ * failing with a confusing connection error.
  */
 test('Docker container prober', async ({page}) => {
-  await page.goto('http://localhost:8080/');
+  // Guard: verify the Docker container is reachable before running the
+  // prober. When running locally without Docker, this produces a clear
+  // skip message instead of a confusing ECONNREFUSED failure.
+  // page.request.get throws on connection refused (rather than returning a
+  // non-OK response), so we catch the error and skip.
+  let containerReachable = false;
+  try {
+    const response = await page.request.get('http://localhost:8080/', {
+      timeout: 5_000,
+    });
+    containerReachable = response.ok();
+  } catch {
+    containerReachable = false;
+  }
+  test.skip(
+    !containerReachable,
+    'Docker container is not reachable on localhost:8080 — start it with: ' +
+      'docker run -d -p 8080:8080 -e STATIC_URL=test.ged ' +
+      '-v $(pwd)/src/datasource/testdata/test.ged:/app/public/test.ged ' +
+      'ghcr.io/pewu/topola-viewer:latest',
+  );
 
-  // Wait for the app to reach SHOWING_CHART state.
-  await expect(page.locator('#content')).toBeVisible();
-
-  // Assert the expected person's name appears in the chart SVG.
-  await expect(page.locator('#chart')).toContainText('Bonifacy');
-
-  // Assert the expected person's name appears in the side panel.
-  // Scoped to div.details to avoid matching <text class="details sex"> SVG
-  // elements in the chart that also carry the "details" class.
-  await expect(page.locator('div.details')).toContainText('Bonifacy');
-
-  // Assert no fatal error is displayed (replaces chart when state is ERROR).
-  await expect(page.locator('.ui.error.message')).not.toBeVisible();
-
-  // Assert no popup error is displayed.
-  // ErrorPopup uses Semantic UI React's <Portal>, which renders at
-  // document.body level, not inside #content.
-  await expect(page.locator('.ui.errorPopup.message')).not.toBeVisible();
+  await runProber(page, {
+    url: 'http://localhost:8080/',
+    expectedName: 'Bonifacy',
+  });
 });

@@ -199,7 +199,7 @@ export function ViewPage() {
         }
         const selection = updatedSelection;
         return (
-          <div id="content">
+          <div id="content" data-testid="content">
             <ErrorPopup
               open={showErrorPopup}
               message={error}

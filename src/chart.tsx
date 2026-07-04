@@ -596,7 +596,7 @@ export function Chart(props: ChartProps) {
         </button>
       </Media>
       <svg id="chartSvg">
-        <g id="chart" />
+        <g id="chart" data-testid="chart" />
       </svg>
     </div>
   );

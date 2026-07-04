@@ -26,20 +26,18 @@ jobs:
       - name: Pull Docker image
         run: docker pull ghcr.io/pewu/topola-viewer:latest
 
+      - name: Record image digest
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/pewu/topola-viewer:latest)
+          echo "Testing Docker image: $DIGEST"
+          echo "::notice title=Docker Prober::Testing image $DIGEST"
+
       - name: Run container
         run: |
           docker run -d -p 8080:8080 -e STATIC_URL=test.ged \
             -v $(pwd)/src/datasource/testdata/test.ged:/app/public/test.ged \
             --name topola-prober-${{ github.run_id }} \
             ghcr.io/pewu/topola-viewer:latest
-
-      - name: Wait for container to be ready
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf -o /dev/null http://localhost:8080/; then break; fi
-            sleep 1
-          done
-          curl -sf -o /dev/null http://localhost:8080/
 
       - name: Use Node.js
         uses: actions/setup-node@v4
@@ -66,6 +64,14 @@ jobs:
       - name: Install Playwright Browsers (If Not Cached)
         if: steps.cache-playwright.outputs.cache-hit != 'true'
         run: npx playwright install chromium
+
+      - name: Wait for container to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:8080/; then break; fi
+            sleep 1
+          done
+          curl -sf -o /dev/null http://localhost:8080/
 
       - name: Run prober
         env:

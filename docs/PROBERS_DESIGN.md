@@ -258,7 +258,8 @@ Rationale for key configuration decisions:
   need for separate e2e/visual projects. All prober specs are smoke tests.
   The project must explicitly use `devices['Desktop Chrome']` to ensure a
   desktop viewport, because the side panel visibility depends on
-  `window.matchMedia('(max-width: 767px)')` (see `src/util/url_args.ts:177`).
+  `window.matchMedia('(max-width: 767px)')` (see the `getShowSidePanel` function in
+  `src/util/url_args.ts`).
   Without an explicit device, Playwright's default viewport may be too
   narrow, causing the side panel to be hidden and the `.details` assertion
   to fail.
@@ -290,7 +291,7 @@ targets a different URL and asserts a different expected name.
   deployment.
 * **Note:** Does not use `standalone=true` in the URL. The app defaults to
   standalone mode when not embedded and no static URL is set (see
-  `src/util/url_args.ts:198`).
+  `src/util/url_args.ts`).
 
 **Create:** `tests/probers/gh-pages-gedcom.spec.ts`
 
@@ -310,12 +311,12 @@ targets a different URL and asserts a different expected name.
 * **Expected name:** `Bonifacy` (same as above).
 * **What it exercises:** WikiTree deployment, CORS proxy from the WikiTree
   domain. Even on `apps.wikitree.com`, GEDCOM-from-URL uses the CORS proxy
-  by default (the `handleCors` hostname check in `src/datasource/wikitree_api.ts:273`
+  by default (the `handleCors` hostname check in `src/datasource/wikitree_api.ts`
   only affects WikiTree API calls, not GEDCOM URL fetches in
-  `src/datasource/load_data.ts:174`). Note: probers do not block Google Analytics scripts,
-  so live-URL prober runs generate real analytics events on each run. This
-  is intentional — the prober tests the unmodified deployed app, and
-  blocking analytics would not reflect the real user experience.
+  `src/datasource/load_data.ts`). Note: probers do not block Google Analytics
+  scripts, so live-URL prober runs generate real analytics events on each
+  run. This is intentional — the prober tests the unmodified deployed app,
+  and blocking analytics would not reflect the real user experience.
 
 **Create:** `tests/probers/docker.spec.ts`
 
@@ -339,34 +340,39 @@ targets a different URL and asserts a different expected name.
   Note: the Docker prober tests the image published to GHCR by
   `deploy-docker.yml`, ensuring the published artifact is functional.
 
-**Shared test structure** (in each spec):
+**Shared test structure** (in `tests/probers/helpers.ts`, called by each spec):
 
 ```
-1. Navigate to the target URL.
-2. Wait for #content to be visible. This indicates the app has reached
-   `SHOWING_CHART` state and the React tree has rendered the chart
+1. Register browser diagnostics listeners (console errors/warnings, page
+   errors, failed network requests) that print to stdout for debugging
+   live-URL failures.
+2. Navigate to the target URL with waitUntil: 'domcontentloaded' to avoid
+   waiting for analytics scripts.
+3. Wait for data-testid="content" to be visible. This indicates the app has
+   reached `SHOWING_CHART` state and the React tree has rendered the chart
    container. Note: `#content` becomes visible *before* the D3 chart SVG
    is populated — the actual chart text is rendered by a `useEffect` in
    the `Chart` component that fires after `#content` appears. The
    subsequent `#chart` text assertion relies on Playwright's auto-wait
    to bridge this gap.
-3. Assert expected name appears in #chart (chart SVG text).
-4. Assert expected name appears in div.details (side panel).
-5. Assert .ui.error.message is not visible (no fatal error).
-6. Assert .ui.errorPopup.message is not visible (no popup error).
+4. Assert expected name appears in data-testid="chart" (chart SVG text).
+5. Assert expected name appears in data-testid="details" (side panel).
+6. Assert data-testid="error-message" is not visible (no fatal error).
+7. Assert data-testid="error-popup" is not visible (no popup error).
 ```
 
-The `.ui.errorPopup.message` selector must be scoped at the document level
-(e.g., `page.locator('.ui.errorPopup.message')`), not scoped to `#content`,
-because `ErrorPopup` uses Semantic UI React's `<Portal>` which renders at
+The `data-testid="error-popup"` selector works at the document level because
+Playwright's `getByTestId` searches the entire document, so it matches the
+`ErrorPopup` content rendered by Semantic UI React's `<Portal>` at
 `document.body` level.
 
 Selectors are derived from the source code:
 
 * `#content` — main container, visible when chart state is `SHOWING_CHART`
-  (see `src/pages/view_page.tsx:202`).
-* `#chart` — SVG group inside the chart (see `src/chart.tsx:599`).
-* `div.details` — side panel Details tab content (see `src/sidepanel/details/details.tsx:357`).
+  (see the `renderMainArea` function in `src/pages/view_page.tsx`).
+* `#chart` — SVG group inside the chart (see `src/chart.tsx`).
+* `div.details` — side panel Details tab content (see the `Details` component in
+  `src/sidepanel/details/details.tsx`).
 * `.ui.error.message` — fatal error replacing the chart (see
   `src/components/error_display.tsx`, rendered when state is `ERROR`). The `ui` and
   `message` classes are added by Semantic UI React's `<Message>`
@@ -385,8 +391,17 @@ Selectors are derived from the source code:
 
 The side panel is expanded by default on desktop viewports (the prober project
 uses `devices['Desktop Chrome']`). The `getShowSidePanel` function in
-`src/util/url_args.ts:177` returns `true` on non-mobile screens, so the `div.details`
+`src/util/url_args.ts` returns `true` on non-mobile screens, so the `div.details`
 container is visible without any URL parameters.
+
+All prober selectors use `data-testid` attributes (e.g., `data-testid="content"`,
+`data-testid="chart"`, `data-testid="details"`, `data-testid="error-message"`,
+`data-testid="error-popup"`) rather than CSS classes or element IDs. This makes
+selectors resilient to CSS class refactors and Semantic UI React internal
+changes. The `data-testid` attributes are added to the source components
+alongside existing IDs and classes. A shared helper (`tests/probers/helpers.ts`)
+encapsulates the prober flow and selector logic, eliminating duplication across
+spec files.
 
 ### Step 3: Prober GitHub Actions workflows
 
@@ -488,13 +503,22 @@ before testing).
    (Pull the image published by deploy-docker.yml. This tests the actual
    published artifact, not a local build. The GHCR package is public, so
    no `docker login` authentication step is required.)
-3. Run container: docker run -d -p 8080:8080 -e STATIC_URL=test.ged
+3. Record image digest: docker inspect --format='{{index .RepoDigests 0}}'
+   ghcr.io/pewu/topola-viewer:latest. Prints the full digest (e.g.,
+   ghcr.io/pewu/topola-viewer@sha256:abc123...) to the workflow log and
+   as a GitHub Actions notice. This provides traceability — if the prober
+   fails, you can verify which exact image was tested.
+4. Run container: docker run -d -p 8080:8080 -e STATIC_URL=test.ged
    -v $(pwd)/src/datasource/testdata/test.ged:/app/public/test.ged
    --name topola-prober-${{ github.run_id }}
    ghcr.io/pewu/topola-viewer:latest
    (Use a unique container name with github.run_id to prevent name
    conflicts if a previous run didn't clean up or if runs overlap.)
-4. Wait for container to be ready: use a bash retry loop with `curl` to
+5. Setup Node.js 24.x with npm cache.
+6. Run npm ci.
+7. Get Playwright version (same pattern as node.js.yml).
+8. Cache and install Playwright (same as live-URL probers).
+9. Wait for container to be ready: use a bash retry loop with `curl` to
    poll `http://localhost:8080/` until it responds with HTTP 200
    (timeout 30s, 1s interval):
    ```bash
@@ -506,17 +530,20 @@ before testing).
    ```
    The final `curl` ensures the workflow fails with a clear error if
    the container never became ready. This prevents a race condition
-   where the test runs before Caddy is ready to serve requests.
-5. Setup Node.js 24.x with npm cache.
-6. Run npm ci.
-7. Get Playwright version (same pattern as node.js.yml).
-8. Cache and install Playwright (same as live-URL probers).
-9. Run: npx playwright test --config=playwright.prober.config.ts docker.spec.ts
-10. Upload Playwright HTML report as artifact (if: always()). Set
+   where the test runs before Caddy is ready to serve requests. This
+   step runs after Node/Playwright setup so the container doesn't sit
+   idle during dependency installation.
+   The Docker spec also includes a guard that checks if localhost:8080
+   is reachable before running the prober. If the container is not
+   running (e.g., when running probers locally without Docker), the
+   test is skipped with a helpful message instead of failing with a
+   confusing ECONNREFUSED error.
+10. Run: npx playwright test --config=playwright.prober.config.ts docker.spec.ts
+11. Upload Playwright HTML report as artifact (if: always()). Set
     `retention-days: 30` (same as live-URL probers).
-11. Stop and remove container (if: always()): docker stop
-    topola-prober-${{ github.run_id }} 2>/dev/null; docker rm
-    topola-prober-${{ github.run_id }} 2>/dev/null; true
+12. Stop and remove container (if: always()): docker stop
+    topola-prober-${{ github.run_id }} 2>/dev/null || true; docker rm
+    topola-prober-${{ github.run_id }} 2>/dev/null || true
     (The if: always() ensures cleanup runs even on failure. The
     2>/dev/null and trailing true prevent errors if the container was
     never started, e.g., pull failed at step 2.)
@@ -700,10 +727,15 @@ Add an entry for this design document to the registry:
 | `playwright.prober.config.ts` | Create | Separate Playwright config for probers (no local server, live URLs) |
 | `playwright.config.ts` | Modify | Add `testIgnore` for `probers/**` to e2e project |
 | `package.json` | Modify | Add `test:probers` script |
+| `tests/probers/helpers.ts` | Create | Shared prober flow, diagnostics capture, and selector logic |
 | `tests/probers/wikitree.spec.ts` | Create | WikiTree direct API smoke test |
 | `tests/probers/gh-pages-gedcom.spec.ts` | Create | GitHub Pages + CORS proxy smoke test |
 | `tests/probers/wikitree-cors-gedcom.spec.ts` | Create | WikiTree + CORS proxy smoke test |
-| `tests/probers/docker.spec.ts` | Create | Docker container smoke test |
+| `tests/probers/docker.spec.ts` | Create | Docker container smoke test (with reachability guard) |
+| `src/pages/view_page.tsx` | Modify | Add `data-testid="content"` |
+| `src/chart.tsx` | Modify | Add `data-testid="chart"` |
+| `src/sidepanel/details/details.tsx` | Modify | Add `data-testid="details"` |
+| `src/components/error_display.tsx` | Modify | Add `data-testid` for error message and popup |
 | `.github/workflows/prober-wikitree.yml` | Create | Reusable workflow: WikiTree prober |
 | `.github/workflows/prober-gh-pages.yml` | Create | Reusable workflow: GH Pages prober |
 | `.github/workflows/prober-wikitree-cors.yml` | Create | Reusable workflow: WikiTree CORS prober |

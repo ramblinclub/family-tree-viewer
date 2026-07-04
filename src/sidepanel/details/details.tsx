@@ -354,7 +354,7 @@ export function Details(props: Props) {
   const entries = props.gedcom.indis[props.indi].tree;
 
   return (
-    <div className="details">
+    <div className="details" data-testid="details">
       <Item.Group divided>
         {getSectionForEachMatchingEntry(
           entries,
