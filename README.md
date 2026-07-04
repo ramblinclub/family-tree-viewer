@@ -42,6 +42,25 @@ Here is an example from the Web:
 
 If you have data in a genealogy database, you can export your data in GEDCOM format and load it using the "Load from file" menu.
 
+## Supported file formats
+
+Topola Genealogy Viewer supports the following file formats:
+
+* **`.ged`** – Standard GEDCOM file containing genealogical data.
+* **`.gdz`** / **`.gedzip`** / **`.zip`** – A ZIP archive that bundles a GEDCOM file together with associated media (photos, documents). This is useful when your family tree references image files and you want them to display in the chart.
+
+### GEDZIP archives
+
+A `.gdz` file is a standard ZIP archive. When you load one, Topola Viewer automatically unzips it in the browser (your data never leaves your computer), finds the first `.ged` file inside and uses it as the genealogy data, and treats all other files as images. Image file paths are normalized (backslashes converted to forward slashes, case lowered) so they match the references in the GEDCOM.
+
+To create a `.gdz` archive, place your `.ged` file and image files (e.g. in a `photos/` folder) into a directory and zip them together:
+
+```bash
+zip -r family.gdz family.ged photos/
+```
+
+The resulting `family.gdz` file can be loaded via "Load from file", loaded from a URL, or mounted into a Docker container (see [Docker Container Deployment](#docker-container-deployment)).
+
 ## Integrations
 
 Topola Genealogy Viewer is being integrated into more and more Web and desktop applications.
