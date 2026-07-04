@@ -1,5 +1,5 @@
 # Stage 1: Compile the React/TypeScript bundle
-FROM node:20-alpine AS react-builder
+FROM node:24-alpine AS react-builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
