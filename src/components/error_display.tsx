@@ -28,7 +28,12 @@ export interface ErrorPopupProps {
 export function ErrorPopup(props: ErrorPopupProps) {
   return (
     <Portal open={props.open} onClose={props.onDismiss}>
-      <Message negative className="errorPopup" onDismiss={props.onDismiss} data-testid="error-popup">
+      <Message
+        negative
+        className="errorPopup"
+        onDismiss={props.onDismiss}
+        data-testid="error-popup"
+      >
         <Message.Header>
           <FormattedMessage id="error.error" defaultMessage={'Error'} />
         </Message.Header>
