@@ -6,6 +6,7 @@ import {Card, Grid, Image} from 'semantic-ui-react';
 import {getChangelog, updateSeenVersion} from './changelog';
 import logo from './topola.jpg';
 import {Media} from './util/media';
+import {isOnWikitreeDomain, WIKITREE_TOPOLA_URL} from './util/wikitree_util';
 
 /** Link that loads a view. */
 function ViewLink(props: {params: {[key: string]: string}; text: string}) {
@@ -82,13 +83,23 @@ function Contents() {
           )
         </li>
         <li>
-          <ViewLink
-            params={{
-              indi: 'Skłodowska-2',
-              source: 'wikitree',
-            }}
-            text="Maria Skłodowska-Curie"
-          />{' '}
+          {isOnWikitreeDomain() ? (
+            <ViewLink
+              params={{
+                indi: 'Skłodowska-2',
+                source: 'wikitree',
+              }}
+              text="Maria Skłodowska-Curie"
+            />
+          ) : (
+            <a
+              href={`${WIKITREE_TOPOLA_URL}/#/view?source=wikitree&indi=Sk%C5%82odowska-2`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Maria Skłodowska-Curie ↗
+            </a>
+          )}{' '}
           (<FormattedMessage id="intro.from" defaultMessage="from" />{' '}
           <a href="https://www.wikitree.com/wiki/Sk%C5%82odowska-2">
             wikitree.com

@@ -6,6 +6,7 @@ import {
   Person,
 } from 'wikitree-js';
 import {TopolaError} from '../util/error';
+import {isOnWikitreeDomain} from '../util/wikitree_util';
 
 const WIKITREE_APP_ID = 'topola-viewer';
 /** Prefix for IDs of private individuals. */
@@ -270,7 +271,7 @@ export async function loadData(
   authcode?: string,
 ): Promise<Person[]> {
   // Work around CORS if not in apps.wikitree.com domain.
-  const handleCors = window.location.hostname !== 'apps.wikitree.com';
+  const handleCors = !isOnWikitreeDomain();
 
   await logInIfNeeded(authcode, handleCors);
 

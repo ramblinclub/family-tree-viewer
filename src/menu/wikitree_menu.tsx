@@ -5,6 +5,7 @@ import {useLocation, useNavigate} from 'react-router';
 import {Button, Form, Header, Input, Modal} from 'semantic-ui-react';
 import {getLoggedInUserName, navigateToLoginPage} from 'wikitree-js';
 import {analyticsEvent} from '../util/analytics';
+import {WIKITREE_TOPOLA_URL} from '../util/wikitree_util';
 import {MenuItem, MenuType} from './menu_item';
 import wikitreeLogo from './wikitree.png';
 
@@ -157,10 +158,8 @@ export function WikiTreeLoginMenu(props: Props) {
    * Topola Viewer hosted on apps.wikitree.com.
    */
   function login() {
-    const wikiTreeTopolaUrl =
-      'https://apps.wikitree.com/apps/wiech13/topola-viewer';
     // TODO: remove authcode if it is in the current URL.
-    const returnUrl = `${wikiTreeTopolaUrl}${window.location.hash}`;
+    const returnUrl = `${WIKITREE_TOPOLA_URL}${window.location.hash}`;
     navigateToLoginPage(returnUrl);
   }
 

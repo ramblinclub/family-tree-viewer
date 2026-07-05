@@ -5,6 +5,7 @@ import {Dropdown, Icon, Menu} from 'semantic-ui-react';
 import {IndiInfo, JsonGedcomData} from 'topola';
 import {isGoogleDriveConfigured} from '../datasource/google_drive_service';
 import {Media} from '../util/media';
+import {isOnWikitreeDomain} from '../util/wikitree_util';
 import {GoogleDriveMenu} from './google_drive_menu';
 import {MenuItem, MenuType} from './menu_item';
 import {SearchBar} from './search';
@@ -49,6 +50,11 @@ interface Props {
 export function TopBar(props: Props) {
   const navigate = useNavigate();
   const location = useLocation();
+
+  // WikiTree menus only work when hosted on apps.wikitree.com because
+  // WikiTree's API requires same-origin access. The CORS proxy workaround is
+  // no longer functional.
+  const showWikiTree = props.showWikiTreeMenus && isOnWikitreeDomain();
 
   const {searchResults, searchString, setSearchString, handleResultSelect} =
     useSearch({
@@ -246,7 +252,7 @@ export function TopBar(props: Props) {
       <>
         <UploadMenu menuType={menuType} {...props} />
         <UrlMenu menuType={menuType} {...props} />
-        <WikiTreeMenu menuType={menuType} {...props} />
+        {showWikiTree && <WikiTreeMenu menuType={menuType} {...props} />}
         <GoogleDriveMenu
           menuType={menuType}
           onTokenAcquired={props.onGoogleTokenAcquired}
@@ -257,7 +263,7 @@ export function TopBar(props: Props) {
 
   function fileMenus(screenSize: ScreenSize) {
     // In standalone WikiTree mode, show only the "Select WikiTree ID" menu.
-    if (!props.standalone && props.showWikiTreeMenus) {
+    if (!props.standalone && showWikiTree) {
       switch (screenSize) {
         case ScreenSize.LARGE:
           return <WikiTreeMenu menuType={MenuType.Menu} {...props} />;
@@ -307,7 +313,7 @@ export function TopBar(props: Props) {
   }
 
   function wikiTreeLoginMenu(screenSize: ScreenSize) {
-    if (!props.showWikiTreeMenus) {
+    if (!showWikiTree) {
       return null;
     }
     return (
