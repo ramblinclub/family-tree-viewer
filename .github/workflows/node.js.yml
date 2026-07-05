@@ -1,4 +1,4 @@
-# This workflow will do a clean install of node dependencies, cache/restore them, build the source code and run tests across different versions of node
+# This workflow will do a clean install of node dependencies, cache/restore them, build the source code and run tests
 # For more information see: https://help.github.com/actions/language-and-framework-guides/using-nodejs-with-github-actions
 
 name: Node.js CI
@@ -14,21 +14,21 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [18.x, 24.x]
-        # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
-
     steps:
-    - uses: actions/checkout@v2
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Use Node.js
+      uses: actions/setup-node@v6
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: 24.x
         cache: 'npm'
+
     - run: npm ci
+
     - name: Prettier Format Check
-      run: npx prettier --check "{src,tests}/**/*.{ts,tsx,json}"
+      run: npx prettier --check "{src,tests,docs}/**/*.{ts,tsx,json,md}" "*.md"
+
     - run: npm run lint
     - run: npm run build
     - run: npm test
@@ -42,7 +42,7 @@ jobs:
 
     - name: Cache Playwright Browsers
       id: cache-playwright
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cache/ms-playwright
         key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
@@ -66,8 +66,8 @@ jobs:
 
     - name: Upload Playwright report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
-        name: playwright-report-${{ matrix.node-version }}
+        name: playwright-report
         path: playwright-report/
         retention-days: 30
