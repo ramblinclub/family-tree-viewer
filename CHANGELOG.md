@@ -10,15 +10,18 @@
 
 ## 2026-04-20
 
-- Shift-click to show a person's details without rearranging the tree (by FrankBuchholz)
+- Shift-click to show a person's details without rearranging the tree (by
+  FrankBuchholz)
 
 ## 2026-02-21
 
-- Improved saving PDF files. Decreased file size and increased chart size that can be saved as PDF.
+- Improved saving PDF files. Decreased file size and increased chart size that
+  can be saved as PDF.
 
 ## 2026-02-13
 
-- Show header information of the gedcom file on the side panel (by FrankBuchholz)
+- Show header information of the gedcom file on the side panel (by
+  FrankBuchholz)
 
 ## 2026-01-19
 
@@ -30,7 +33,8 @@
 
 ## 2025-01-21
 
-- Added new chart type based on [github.com/donatso/family-chart](https://github.com/donatso/family-chart)
+- Added new chart type based on
+  [github.com/donatso/family-chart](https://github.com/donatso/family-chart)
 
 ## 2023-08-25
 

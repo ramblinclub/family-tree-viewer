@@ -91,7 +91,7 @@
     "start": "vite",
     "build": "tsc && vite build",
     "test": "jest",
-    "prettier": "prettier --write \"{src,tests}/**/*.{ts,tsx,json}\"",
+    "prettier": "prettier --write \"{src,tests,docs}/**/*.{ts,tsx,json,md}\" \"*.md\"",
     "lint": "eslint src tests --ext .ts,.tsx",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
