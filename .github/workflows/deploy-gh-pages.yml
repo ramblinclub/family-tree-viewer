@@ -19,8 +19,7 @@ jobs:
     - run: npm ci
     - run: npm run build
       env:
-        VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-        VITE_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        VITE_STATIC_URL: ${{ secrets.FAMILY_TREE_URL }}
 
     - name: Deploy
       run: |
@@ -28,5 +27,3 @@ jobs:
         npm run deploy -- -u "github-actions-bot <support+actions@github.com>"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-        VITE_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}

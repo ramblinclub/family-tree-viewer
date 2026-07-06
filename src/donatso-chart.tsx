@@ -67,6 +67,7 @@ class ChartWrapper {
     this.store = createStore({
       data,
       main_id: props.selection.id,
+      transition_time: 0,
     });
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const svg = createSvg(document.querySelector('#dotatsoSvgContainer')!);
@@ -95,16 +96,19 @@ class ChartWrapper {
     });
     this.store.setOnUpdate((props: unknown) => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      view(this.store.getTree()!, svg, card, props || {});
+      view(this.store.getTree()!, svg, card, {
+        transition_time: 0,
+        ...(props || {}),
+      });
     });
-    this.store.updateTree({initial: true});
+    this.store.updateTree({initial: true, transition_time: 0});
   }
 
   updateChart(props: DonatsoChartProps, intl: IntlShape) {
     const data = convertData(props.data, intl);
     this.store.updateData(data);
     this.store.updateMainId(props.selection.id);
-    this.store.updateTree();
+    this.store.updateTree({transition_time: 0});
   }
 }
 

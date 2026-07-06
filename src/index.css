@@ -2,6 +2,10 @@ body, html {
   height: 100%;
 }
 
+body {
+  background: #f7f8fa;
+}
+
 .node {
   cursor: pointer;
 }
@@ -258,6 +262,23 @@ div.zoom {
   overflow: auto;
 }
 
+.family-site-title {
+  gap: 10px;
+}
+
+.family-site-title span {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.missing-static-data {
+  max-width: 680px;
+  margin: auto;
+  padding: 32px;
+  line-height: 1.5;
+}
+
 #dotatsoSvgContainer svg.main_svg {
   width: 100%;
   height: 100%;
@@ -320,12 +341,8 @@ div.zoom {
   height: 100%;
 }
 
-#sideTabs {
+#sideDetails {
   height: 100%;
-}
-
-#sideTabs > .ui.tabular.menu{
-  padding-left: 60px;
 }
 
 #sideToggle {

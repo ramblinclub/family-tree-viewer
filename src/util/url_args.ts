@@ -1,20 +1,13 @@
 import * as H from 'history';
 import type {ParsedQuery} from 'query-string';
 import {IndiInfo} from 'topola';
+import {STATIC_CHART_CONFIG} from '../app_config';
 import {ChartType} from '../chart';
 import {DataSourceEnum} from '../datasource/data_source';
-import {EmbeddedSourceSpec} from '../datasource/embedded';
-import {GoogleDriveSourceSpec} from '../datasource/google_drive';
-import {UploadSourceSpec, UrlSourceSpec} from '../datasource/load_data';
-import {WikiTreeSourceSpec} from '../datasource/wikitree';
-import {argsToConfig, Config} from '../sidepanel/config/config';
+import {UrlSourceSpec} from '../datasource/load_data';
+import {Config} from '../sidepanel/config/config';
 
-export type DataSourceSpec =
-  | UrlSourceSpec
-  | UploadSourceSpec
-  | WikiTreeSourceSpec
-  | EmbeddedSourceSpec
-  | GoogleDriveSourceSpec;
+export type DataSourceSpec = UrlSourceSpec;
 
 /**
  * Arguments passed to the application, primarily through URL parameters.
@@ -26,7 +19,6 @@ export interface Arguments {
   detail?: string;
   chartType: ChartType;
   standalone: boolean;
-  showWikiTreeMenus: boolean;
   freezeAnimation: boolean;
   showSidePanel: boolean;
   config: Config;
@@ -110,16 +102,13 @@ export function getArguments(location: H.Location): Arguments {
   const search = parseQuery(location.search);
   const getParam = (name: string) => getParamFromSearch(name, search);
 
-  const view = getParam('view');
   const chartTypes = new Map<string | undefined, ChartType>([
+    ['hourglass', ChartType.Hourglass],
     ['relatives', ChartType.Relatives],
     ['fancy', ChartType.Fancy],
     ['donatso', ChartType.Donatso],
   ]);
 
-  const hash = getParam('file');
-  const url = getParam('url');
-  const embedded = getParam('embedded') === 'true'; // False by default.
   const staticUrl = getStaticUrl();
   let sourceSpec: DataSourceSpec | undefined = undefined;
   if (staticUrl) {
@@ -128,35 +117,6 @@ export function getArguments(location: H.Location): Arguments {
       url: staticUrl,
       handleCors: false,
     };
-  } else if (getParam('source') === 'wikitree') {
-    const windowSearch =
-      typeof window !== 'undefined' ? parseQuery(window.location.search) : {};
-    sourceSpec = {
-      source: DataSourceEnum.WIKITREE,
-      authcode:
-        getParam('authcode') || getParamFromSearch('authcode', windowSearch),
-    };
-  } else if (getParam('source') === 'google-drive') {
-    const fileId = getParam('fileId');
-    if (fileId) {
-      sourceSpec = {
-        source: DataSourceEnum.GOOGLE_DRIVE,
-        fileId,
-      };
-    }
-  } else if (hash) {
-    sourceSpec = {
-      source: DataSourceEnum.UPLOADED,
-      hash,
-    };
-  } else if (url) {
-    sourceSpec = {
-      source: DataSourceEnum.GEDCOM_URL,
-      url,
-      handleCors: getParam('handleCors') !== 'false', // True by default.
-    };
-  } else if (embedded) {
-    sourceSpec = {source: DataSourceEnum.EMBEDDED};
   }
 
   const indi = getParam('indi');
@@ -192,13 +152,12 @@ export function getArguments(location: H.Location): Arguments {
     selection,
     detail,
     // Hourglass is the default view.
-    chartType: chartTypes.get(view) || ChartType.Hourglass,
+    chartType: chartTypes.get(getParam('view')) || ChartType.Hourglass,
 
     showSidePanel: getShowSidePanel(),
-    standalone: getParam('standalone') !== 'false' && !embedded && !staticUrl,
-    showWikiTreeMenus: getParam('showWikiTreeMenus') !== 'false', // True by default.
+    standalone: false,
     freezeAnimation: getParam('freeze') === 'true', // False by default
-    config: argsToConfig(search),
+    config: STATIC_CHART_CONFIG,
   };
 }
 

@@ -1,8 +1,6 @@
 import {useCallback, useMemo} from 'react';
 import {useLocation, useNavigate} from 'react-router';
 import {IndiInfo} from 'topola';
-import {PRIVATE_ID_PREFIX} from '../datasource/wikitree';
-import {Config, configToArgs} from '../sidepanel/config/config';
 import {analyticsEvent} from '../util/analytics';
 import {getArguments, getUrlForArgs} from '../util/url_args';
 
@@ -36,10 +34,6 @@ export function useUrlState() {
    */
   const onSelection = useCallback(
     (selection: IndiInfo) => {
-      // Don't allow selecting WikiTree private profiles.
-      if (selection.id.startsWith(PRIVATE_ID_PREFIX)) {
-        return;
-      }
       analyticsEvent('selection_changed');
       updateUrl({
         indi: selection.id,
@@ -76,21 +70,10 @@ export function useUrlState() {
     );
   }, [args.showSidePanel, updateUrl]);
 
-  /**
-   * Updates the URL parameters based on configuration updates.
-   */
-  const onConfigChange = useCallback(
-    (config: Config) => {
-      updateUrl(configToArgs(config), {replace: true});
-    },
-    [updateUrl],
-  );
-
   return {
     args,
     chartType: args.chartType,
     standalone: args.standalone,
-    showWikiTreeMenus: args.showWikiTreeMenus,
     freezeAnimation: args.freezeAnimation,
     showSidePanel: args.showSidePanel,
     config: args.config,
@@ -101,6 +84,5 @@ export function useUrlState() {
     onSelection,
     onDetailSelection,
     onToggleSidePanel,
-    onConfigChange,
   };
 }

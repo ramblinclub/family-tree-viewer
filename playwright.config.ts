@@ -24,7 +24,7 @@ export default defineConfig({
   projects: [
     {
       name: 'e2e',
-      testIgnore: ['*_visual.spec.ts', 'probers/**'],
+      testIgnore: ['*_visual.spec.ts'],
       use: {
         ...devices['Desktop Chrome'],
       },
@@ -40,8 +40,8 @@ export default defineConfig({
   ],
   webServer: {
     command: process.env.CI
-      ? 'npx vite preview --port 3000 --strictPort' // CI already builds the app; preview directly with strict port
-      : 'npx vite --no-open --port 3000 --strictPort',
+      ? 'VITE_STATIC_URL=https://example.org/family.ged npx vite preview --port 3000 --strictPort' // CI already builds the app; preview directly with strict port
+      : 'VITE_STATIC_URL=https://example.org/family.ged npx vite --no-open --port 3000 --strictPort',
     port: 3000,
     reuseExistingServer: !process.env.CI,
     stdout: 'ignore',

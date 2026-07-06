@@ -1,9 +1,23 @@
 dist
 node_modules
 src/react-app-env.d.ts
-playwright-report/
 test-results/
 .playwright/
 .idea
 .vscode
 .env
+
+# Playwright
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+/e2e/
+/.github/workflows/playwright.yml
+
+# Local family data used for static-site validation
+/public/*.ged
+/public/*.gdz
+/public/*.gedzip
+/public/*.zip
+/public/photos/

@@ -109,8 +109,7 @@ describe('url_args', () => {
       expect(args.selection).toBeUndefined();
       expect(args.detail).toBeUndefined();
       expect(args.chartType).toBe(ChartType.Hourglass);
-      expect(args.standalone).toBe(true);
-      expect(args.showWikiTreeMenus).toBe(true);
+      expect(args.standalone).toBe(false);
       expect(args.freezeAnimation).toBe(false);
       expect(args.showSidePanel).toBe(true); // default on desktop
       expect(args.config).toEqual({
@@ -137,61 +136,13 @@ describe('url_args', () => {
       );
     });
 
-    it('parses WikiTree source spec', () => {
+    it('ignores integration and arbitrary data-source query params', () => {
       const args = getArguments(
-        createLocation('?source=wikitree&authcode=123'),
+        createLocation(
+          '?source=wikitree&authcode=123&file=hash123&url=http://example.com/tree.ged&embedded=true',
+        ),
       );
-      expect(args.sourceSpec).toEqual({
-        source: DataSourceEnum.WIKITREE,
-        authcode: '123',
-      });
-    });
-
-    it('parses Google Drive source spec', () => {
-      const args = getArguments(
-        createLocation('?source=google-drive&fileId=abc'),
-      );
-      expect(args.sourceSpec).toEqual({
-        source: DataSourceEnum.GOOGLE_DRIVE,
-        fileId: 'abc',
-      });
-    });
-
-    it('parses Uploaded source spec', () => {
-      const args = getArguments(createLocation('?file=hash123'));
-      expect(args.sourceSpec).toEqual({
-        source: DataSourceEnum.UPLOADED,
-        hash: 'hash123',
-      });
-    });
-
-    it('parses GEDCOM URL source spec', () => {
-      const args = getArguments(
-        createLocation('?url=http://example.com/tree.ged'),
-      );
-      expect(args.sourceSpec).toEqual({
-        source: DataSourceEnum.GEDCOM_URL,
-        url: 'http://example.com/tree.ged',
-        handleCors: true,
-      });
-    });
-
-    it('parses GEDCOM URL source spec with handleCors false', () => {
-      const args = getArguments(
-        createLocation('?url=http://example.com/tree.ged&handleCors=false'),
-      );
-      expect(args.sourceSpec).toEqual({
-        source: DataSourceEnum.GEDCOM_URL,
-        url: 'http://example.com/tree.ged',
-        handleCors: false,
-      });
-    });
-
-    it('parses Embedded source spec', () => {
-      const args = getArguments(createLocation('?embedded=true'));
-      expect(args.sourceSpec).toEqual({
-        source: DataSourceEnum.EMBEDDED,
-      });
+      expect(args.sourceSpec).toBeUndefined();
     });
 
     it('prefers staticUrl over other source specs', () => {
@@ -262,23 +213,22 @@ describe('url_args', () => {
       ).toBe(true);
     });
 
-    it('parses boolean settings (standalone, showWikiTreeMenus, freeze)', () => {
+    it('parses freeze while keeping static-site standalone disabled', () => {
       const args = getArguments(
         createLocation('?standalone=false&showWikiTreeMenus=false&freeze=true'),
       );
       expect(args.standalone).toBe(false);
-      expect(args.showWikiTreeMenus).toBe(false);
       expect(args.freezeAnimation).toBe(true);
     });
 
-    it('parses config object from query parameters', () => {
+    it('uses static config instead of URL-configurable display settings', () => {
       const args = getArguments(createLocation('?c=s&i=h&s=h&p=s&pn=5'));
       expect(args.config).toEqual({
-        color: ChartColors.COLOR_BY_SEX,
-        id: Ids.HIDE,
-        sex: Sex.HIDE,
-        place: PlaceDisplay.SHORT,
-        placeCount: 5,
+        color: ChartColors.COLOR_BY_GENERATION,
+        id: Ids.SHOW,
+        sex: Sex.SHOW,
+        place: PlaceDisplay.FULL,
+        placeCount: 2,
       });
     });
   });

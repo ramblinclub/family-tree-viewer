@@ -32,7 +32,7 @@ test.describe('Details panel visual validation @visual', () => {
 
     await mockGedcomResponse(context, complexNameGedcom);
 
-    await page.goto('/#/view?url=https://example.org/family.ged');
+    await page.goto('/#/view');
     const sidebar = page.locator('#sidebar');
     await sidebar.waitFor();
     await expect(sidebar).toHaveScreenshot('details-complex-name.png');
@@ -71,7 +71,7 @@ test.describe('Details panel visual validation @visual', () => {
       });
     });
 
-    await page.goto('/#/view?url=https://example.org/family.ged');
+    await page.goto('/#/view');
     const sidebar = page.locator('#sidebar');
     await sidebar.waitFor();
 
@@ -130,7 +130,7 @@ test.describe('Details panel visual validation @visual', () => {
 
     await mockGedcomResponse(context, customFactsGedcom);
 
-    await page.goto('/#/view?url=https://example.org/family.ged');
+    await page.goto('/#/view');
     const sidebar = page.locator('#sidebar');
     await sidebar.waitFor();
     await expect(sidebar).toHaveScreenshot('details-events-sources.png');
@@ -196,7 +196,7 @@ test.describe('Details panel visual validation @visual', () => {
 
     await mockGedcomResponse(context, immediateFamilyGedcom);
 
-    await page.goto('/#/view?url=https://example.org/family.ged');
+    await page.goto('/#/view');
     const sidebar = page.locator('#sidebar');
     await sidebar.waitFor();
     await expect(sidebar).toHaveScreenshot('details-immediate-family.png');
@@ -225,7 +225,7 @@ test.describe('Details panel visual validation @visual', () => {
 
     await mockGedcomResponse(context, fallbackGedcom);
 
-    await page.goto('/#/view?url=https://example.org/family.ged');
+    await page.goto('/#/view');
     const sidebar = page.locator('#sidebar');
     await sidebar.waitFor();
 

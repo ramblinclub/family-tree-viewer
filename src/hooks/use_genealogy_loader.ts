@@ -2,30 +2,13 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {IntlShape} from 'react-intl';
 import {useLocation, useNavigate} from 'react-router';
 import {IndiInfo} from 'topola';
-import {DataSourceEnum, SourceSelection} from '../datasource/data_source';
-import {EmbeddedSourceSpec} from '../datasource/embedded';
-import {
-  GoogleDriveAuthError,
-  GoogleDriveSourceSpec,
-} from '../datasource/google_drive';
-import {isGoogleDriveConfigured} from '../datasource/google_drive_service';
-import {
-  embeddedDataSource,
-  gedcomUrlDataSource,
-  googleDriveDataSource,
-  uploadedDataSource,
-} from '../datasource/instances';
+import {SourceSelection} from '../datasource/data_source';
+import {gedcomUrlDataSource} from '../datasource/instances';
 import {
   getSelection,
   revokeObjectUrls,
-  UploadSourceSpec,
   UrlSourceSpec,
 } from '../datasource/load_data';
-import {
-  loadWikiTree,
-  WikiTreeDataSource,
-  WikiTreeSourceSpec,
-} from '../datasource/wikitree';
 import {AppState} from '../pages/view_page';
 import {getI18nMessage} from '../util/error_i18n';
 import {TopolaData} from '../util/gedcom_util';
@@ -40,10 +23,8 @@ export function useGenealogyLoader(options: {
   intl: IntlShape;
   urlSelection?: IndiInfo;
   urlDetail?: string;
-  /** Callback triggered when a Google Drive authorization error occurs. */
-  onAuthError: (fileId: string) => void;
 }) {
-  const {intl, urlSelection, urlDetail, onAuthError} = options;
+  const {intl, urlSelection, urlDetail} = options;
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -65,11 +46,6 @@ export function useGenealogyLoader(options: {
     };
   }, []);
 
-  const wikiTreeDataSource = useMemo(
-    () => new WikiTreeDataSource(intl),
-    [intl],
-  );
-
   const isNewData = useCallback(
     (newSourceSpec: DataSourceSpec, newSelection?: IndiInfo) => {
       if (!sourceSpec || sourceSpec.source !== newSourceSpec.source) {
@@ -80,42 +56,13 @@ export function useGenealogyLoader(options: {
         spec: sourceSpec,
         selection: loadedSelectionRef.current,
       };
-      switch (newSource.spec.source) {
-        case DataSourceEnum.UPLOADED:
-          return uploadedDataSource.isNewData(
-            newSource as unknown as SourceSelection<UploadSourceSpec>,
-            oldSource as unknown as SourceSelection<UploadSourceSpec>,
-            data,
-          );
-        case DataSourceEnum.GEDCOM_URL:
-          return gedcomUrlDataSource.isNewData(
-            newSource as unknown as SourceSelection<UrlSourceSpec>,
-            oldSource as unknown as SourceSelection<UrlSourceSpec>,
-            data,
-          );
-        case DataSourceEnum.WIKITREE:
-          return wikiTreeDataSource.isNewData(
-            newSource as unknown as SourceSelection<WikiTreeSourceSpec>,
-            oldSource as unknown as SourceSelection<WikiTreeSourceSpec>,
-            data,
-          );
-        case DataSourceEnum.EMBEDDED:
-          return embeddedDataSource.isNewData(
-            newSource as unknown as SourceSelection<EmbeddedSourceSpec>,
-            oldSource as unknown as SourceSelection<EmbeddedSourceSpec>,
-            data,
-          );
-        case DataSourceEnum.GOOGLE_DRIVE:
-          return googleDriveDataSource.isNewData(
-            newSource as unknown as SourceSelection<GoogleDriveSourceSpec>,
-            oldSource as unknown as SourceSelection<GoogleDriveSourceSpec>,
-            data,
-          );
-        default:
-          return false;
-      }
+      return gedcomUrlDataSource.isNewData(
+        newSource as SourceSelection<UrlSourceSpec>,
+        oldSource as SourceSelection<UrlSourceSpec>,
+        data,
+      );
     },
-    [sourceSpec, data, wikiTreeDataSource],
+    [sourceSpec, data],
   );
 
   const loadData = useCallback(
@@ -124,52 +71,12 @@ export function useGenealogyLoader(options: {
       newSelection?: IndiInfo,
       onProgress?: (status: string) => void,
     ) => {
-      switch (newSourceSpec.source) {
-        case DataSourceEnum.UPLOADED:
-          return uploadedDataSource.loadData(
-            {
-              spec: newSourceSpec as UploadSourceSpec,
-              selection: newSelection,
-            },
-            onProgress,
-          );
-        case DataSourceEnum.GEDCOM_URL:
-          return gedcomUrlDataSource.loadData(
-            {spec: newSourceSpec as UrlSourceSpec, selection: newSelection},
-            onProgress,
-          );
-        case DataSourceEnum.WIKITREE:
-          return wikiTreeDataSource.loadData(
-            {
-              spec: newSourceSpec as WikiTreeSourceSpec,
-              selection: newSelection,
-            },
-            onProgress,
-          );
-        case DataSourceEnum.EMBEDDED:
-          return embeddedDataSource.loadData(
-            {
-              spec: newSourceSpec as EmbeddedSourceSpec,
-              selection: newSelection,
-            },
-            onProgress,
-          );
-        case DataSourceEnum.GOOGLE_DRIVE:
-          if (!isGoogleDriveConfigured()) {
-            throw new Error('Google Drive integration is not configured.');
-          }
-          return googleDriveDataSource.loadData(
-            {
-              spec: newSourceSpec as GoogleDriveSourceSpec,
-              selection: newSelection,
-            },
-            onProgress,
-          );
-        default:
-          throw new Error('Unsupported data source');
-      }
+      return gedcomUrlDataSource.loadData(
+        {spec: newSourceSpec as UrlSourceSpec, selection: newSelection},
+        onProgress,
+      );
     },
-    [wikiTreeDataSource],
+    [],
   );
 
   const setErrorMessage = useCallback((message: string) => {
@@ -231,63 +138,10 @@ export function useGenealogyLoader(options: {
         if (!isMountedRef.current || fetchIdRef.current !== currentFetchId) {
           return;
         }
-        if (error instanceof GoogleDriveAuthError) {
-          if (newSourceSpec.source === DataSourceEnum.GOOGLE_DRIVE) {
-            onAuthError((newSourceSpec as GoogleDriveSourceSpec).fileId);
-          }
-        } else {
-          setErrorMessage(getI18nMessage(error as Error, intl));
-        }
+        setErrorMessage(getI18nMessage(error as Error, intl));
       }
     },
-    [intl, loadData, onAuthError, setErrorMessage],
-  );
-
-  const shouldTriggerWikiTreeLoadMore = useCallback(
-    (newSourceSpec: DataSourceSpec, newSelection?: IndiInfo) => {
-      if (state !== AppState.SHOWING_CHART && state !== AppState.LOADING_MORE) {
-        return false;
-      }
-      return (
-        newSourceSpec.source === DataSourceEnum.WIKITREE &&
-        !!newSelection &&
-        (!loadedSelectionRef.current ||
-          loadedSelectionRef.current.id !== newSelection.id)
-      );
-    },
-    [state],
-  );
-
-  const triggerWikiTreeLoadMore = useCallback(
-    async (selection: IndiInfo) => {
-      setState(AppState.LOADING_MORE);
-      const currentFetchId = ++fetchIdRef.current;
-      try {
-        const data = await loadWikiTree(selection.id, intl);
-        if (!isMountedRef.current || fetchIdRef.current !== currentFetchId) {
-          return;
-        }
-        const newSelection = getSelection(data.chartData, selection);
-        setData(data);
-        loadedSelectionRef.current = newSelection;
-        setState(AppState.SHOWING_CHART);
-      } catch (error: unknown) {
-        if (!isMountedRef.current || fetchIdRef.current !== currentFetchId) {
-          return;
-        }
-        setState(AppState.SHOWING_CHART);
-        displayErrorPopup(
-          intl.formatMessage(
-            {
-              id: 'error.failed_wikitree_load_more',
-              defaultMessage: 'Failed to load data from WikiTree. {error}',
-            },
-            {error: (error as Error).message || String(error)},
-          ),
-        );
-      }
-    },
-    [intl, displayErrorPopup],
+    [intl, loadData, setErrorMessage],
   );
 
   // Main data loading and updating side-effect
@@ -308,23 +162,10 @@ export function useGenealogyLoader(options: {
 
     if (shouldTriggerNewLoad(args.sourceSpec, args.selection)) {
       triggerNewLoad(args.sourceSpec, args.selection);
-    } else if (
-      shouldTriggerWikiTreeLoadMore(args.sourceSpec, args.selection) &&
-      args.selection
-    ) {
-      triggerWikiTreeLoadMore(args.selection);
     } else if (state === AppState.LOADING_MORE) {
       setState(AppState.SHOWING_CHART);
     }
-  }, [
-    location,
-    state,
-    navigate,
-    shouldTriggerNewLoad,
-    triggerNewLoad,
-    shouldTriggerWikiTreeLoadMore,
-    triggerWikiTreeLoadMore,
-  ]);
+  }, [location, state, navigate, shouldTriggerNewLoad, triggerNewLoad]);
 
   // Clean up object URLs created for uploaded images/files when the dataset
   // changes or the app unmounts to prevent memory leaks.

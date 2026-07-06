@@ -1,4 +1,4 @@
-import {useCallback, useMemo} from 'react';
+import {useMemo} from 'react';
 import {useIntl} from 'react-intl';
 import {Loader, SidebarPushable, SidebarPusher} from 'semantic-ui-react';
 import {IndiInfo} from 'topola';
@@ -12,13 +12,9 @@ import {
 } from '../chart';
 import {ErrorMessage, ErrorPopup} from '../components/error_display';
 import {ProgressPill} from '../components/progress_pill';
-import {DataSourceEnum} from '../datasource/data_source';
 import {DonatsoChart} from '../donatso-chart';
 import {useGenealogyLoader} from '../hooks/use_genealogy_loader';
-import {useGoogleDriveAuth} from '../hooks/use_google_drive_auth';
 import {useUrlState} from '../hooks/use_url_state';
-import {useWebMcpBridge} from '../hooks/use_webmcp_bridge';
-import {GoogleAuthModal} from '../menu/google_auth_modal';
 import {TopBar} from '../menu/top_bar';
 import {Config, Ids, Sex} from '../sidepanel/config/config';
 import {SidePanel} from '../sidepanel/side-panel';
@@ -61,7 +57,6 @@ export function ViewPage() {
   const {
     chartType,
     standalone,
-    showWikiTreeMenus,
     freezeAnimation,
     showSidePanel,
     config,
@@ -70,7 +65,6 @@ export function ViewPage() {
     onSelection,
     onDetailSelection,
     onToggleSidePanel,
-    onConfigChange,
   } = useUrlState();
 
   const {
@@ -83,38 +77,17 @@ export function ViewPage() {
     updatedSelection,
     detailIndi,
     onDismissErrorPopup,
-    resetLoader,
-    clearData,
     setLoadingStatus,
     displayErrorPopup,
   } = useGenealogyLoader({
     intl,
     urlSelection,
     urlDetail,
-    onAuthError: useCallback((fileId) => {
-      triggerAuthError(fileId);
-    }, []),
-  });
-
-  const {
-    showAuthModal,
-    failedFileId,
-    hasGoogleToken,
-    setHasGoogleToken,
-    onGoogleSignOut,
-    triggerAuthError,
-    onAuthSuccess,
-    onCancel,
-  } = useGoogleDriveAuth({
-    onSignOut: clearData,
-    onAuthSuccess: resetLoader,
   });
 
   useMemo(() => {
     updateChartWithConfig(config, data);
   }, [config, data]);
-
-  useWebMcpBridge(data, detailIndi, onSelection);
 
   function onPrint() {
     analyticsEvent('print');
@@ -215,7 +188,6 @@ export function ViewPage() {
                 config={config}
                 expanded={showSidePanel}
                 onToggle={onToggleSidePanel}
-                onConfigChange={onConfigChange}
               />
               <SidebarPusher>{renderChart(selection)}</SidebarPusher>
             </SidebarPushable>
@@ -237,7 +209,7 @@ export function ViewPage() {
       <ProgressPill loadingStatus={loadingStatus} state={state} />
       <TopBar
         data={data?.chartData}
-        allowAllRelativesChart={sourceSpec?.source !== DataSourceEnum.WIKITREE}
+        allowAllRelativesChart={true}
         allowPrintAndDownload={chartType !== ChartType.Donatso}
         showingChart={
           state === AppState.SHOWING_CHART || state === AppState.LOADING_MORE
@@ -250,21 +222,9 @@ export function ViewPage() {
           onDownloadPng,
           onDownloadSvg,
         }}
-        showWikiTreeMenus={
-          sourceSpec?.source === DataSourceEnum.WIKITREE && showWikiTreeMenus
-        }
-        hasGoogleToken={hasGoogleToken}
-        onGoogleSignOut={onGoogleSignOut}
-        onGoogleTokenAcquired={() => setHasGoogleToken(true)}
+        sourceUrl={sourceSpec?.url}
       />
       {renderMainArea()}
-      {showAuthModal && failedFileId && (
-        <GoogleAuthModal
-          failedFileId={failedFileId}
-          onAuthSuccess={onAuthSuccess}
-          onCancel={onCancel}
-        />
-      )}
     </>
   );
 }

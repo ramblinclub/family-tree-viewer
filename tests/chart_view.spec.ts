@@ -4,10 +4,10 @@ import {setupGedcomRoute} from './helpers';
 test.describe('Chart view', () => {
   test.beforeEach(async ({page, context}) => {
     await setupGedcomRoute(context);
-    await page.goto('/#/view?url=https://example.org/family.ged');
+    await page.goto('/#/view');
   });
 
-  test('loads data from URL', async ({page}) => {
+  test('loads static GEDCOM data', async ({page}) => {
     await expect(page.locator('#content')).toContainText('Bonifacy');
   });
 

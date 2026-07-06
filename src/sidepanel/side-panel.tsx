@@ -1,7 +1,7 @@
 import {useIntl} from 'react-intl';
-import {Button, Icon, Sidebar, Tab} from 'semantic-ui-react';
+import {Button, Icon, Sidebar} from 'semantic-ui-react';
 import {TopolaData} from '../util/gedcom_util';
-import {Config, ConfigPanel} from './config/config';
+import {Config} from './config/config';
 import {CollapsedDetails} from './details/collapsed-details';
 import {Details} from './details/details';
 
@@ -9,7 +9,6 @@ interface SidePanelProps {
   data: TopolaData;
   selectedIndiId: string;
   config: Config;
-  onConfigChange: (config: Config) => void;
   expanded: boolean;
   onToggle: () => void;
 }
@@ -18,41 +17,14 @@ export function SidePanel({
   data,
   selectedIndiId,
   config,
-  onConfigChange,
   expanded,
   onToggle,
 }: SidePanelProps) {
   const intl = useIntl();
-
-  const tabs = [
-    {
-      menuItem: intl.formatMessage({
-        id: 'tab.info',
-        defaultMessage: 'Info',
-      }),
-      render: () => (
-        <Details
-          gedcom={data.gedcom}
-          indi={selectedIndiId}
-          config={config}
-          images={data.images}
-        />
-      ),
-    },
-    {
-      menuItem: intl.formatMessage({
-        id: 'tab.settings',
-        defaultMessage: 'Settings',
-      }),
-      render: () => (
-        <ConfigPanel
-          gedcom={data.gedcom}
-          config={config}
-          onChange={onConfigChange}
-        />
-      ),
-    },
-  ];
+  const label = intl.formatMessage({
+    id: 'tab.info',
+    defaultMessage: 'Info',
+  });
 
   return (
     <Sidebar
@@ -64,7 +36,14 @@ export function SidePanel({
       visible={true}
     >
       {expanded ? (
-        <Tab id="sideTabs" panes={tabs} />
+        <section id="sideDetails" aria-label={label}>
+          <Details
+            gedcom={data.gedcom}
+            indi={selectedIndiId}
+            config={config}
+            images={data.images}
+          />
+        </section>
       ) : (
         <CollapsedDetails gedcom={data.gedcom} indi={selectedIndiId} />
       )}

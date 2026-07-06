@@ -16,9 +16,7 @@ test.describe('Core SVG Canvas Layouts @visual', () => {
 
   for (const layout of layouts) {
     test(`chart-${layout.view}`, async ({page}) => {
-      await page.goto(
-        `/#/view?url=https://example.org/family.ged&view=${layout.view}`,
-      );
+      await page.goto(`/#/view?view=${layout.view}`);
       const container = page.locator(layout.selector);
       await container.waitFor({state: 'visible'});
       // Wait for D3 rendering and layout stabilization.
