@@ -48,22 +48,22 @@ struct FamilyArchiveDocument: Codable {
 }
 
 struct Person: Codable, Identifiable, Hashable {
-    let id: String
-    let givenName: String
-    let familyName: String
-    let alternateNames: [String]
-    let lifespan: String
-    let summary: String
-    let biography: String
-    let privacy: PrivacyLevel
-    let relationshipToMe: String?
-    let profileImagePath: String?
-    let facts: [PersonFact]
-    let events: [LifeEvent]?
-    let storyChapters: [StoryChapter]?
-    let immediateFamily: ImmediateFamily
-    let media: [MediaReference]
-    let sources: [SourceReference]
+    var id: String
+    var givenName: String
+    var familyName: String
+    var alternateNames: [String]
+    var lifespan: String
+    var summary: String
+    var biography: String
+    var privacy: PrivacyLevel
+    var relationshipToMe: String?
+    var profileImagePath: String?
+    var facts: [PersonFact]
+    var events: [LifeEvent]?
+    var storyChapters: [StoryChapter]?
+    var immediateFamily: ImmediateFamily
+    var media: [MediaReference]
+    var sources: [SourceReference]
 
     var displayName: String {
         [givenName, familyName]
@@ -119,32 +119,32 @@ enum PrivacyLevel: String, Codable, Hashable {
 }
 
 struct PersonFact: Codable, Identifiable, Hashable {
-    let id: String
-    let label: String
-    let value: String
-    let place: String?
-    let isApproximate: Bool?
-    let sourceIDs: [String]?
+    var id: String
+    var label: String
+    var value: String
+    var place: String?
+    var isApproximate: Bool?
+    var sourceIDs: [String]?
 }
 
 struct LifeEvent: Codable, Identifiable, Hashable {
-    let id: String
-    let date: String
-    let sortKey: Int?
-    let title: String
-    let summary: String
-    let place: String?
-    let category: String
-    let isApproximate: Bool?
-    let sourceIDs: [String]?
+    var id: String
+    var date: String
+    var sortKey: Int?
+    var title: String
+    var summary: String
+    var place: String?
+    var category: String
+    var isApproximate: Bool?
+    var sourceIDs: [String]?
 }
 
 struct StoryChapter: Codable, Identifiable, Hashable {
-    let id: String
-    let title: String
-    let dateRange: String?
-    let summary: String?
-    let body: String
+    var id: String
+    var title: String
+    var dateRange: String?
+    var summary: String?
+    var body: String
 }
 
 struct ImmediateFamily: Codable, Hashable {
@@ -155,16 +155,16 @@ struct ImmediateFamily: Codable, Hashable {
 }
 
 struct MediaReference: Codable, Identifiable, Hashable {
-    let id: String
-    let kind: MediaKind
-    let title: String
-    let date: String?
-    let path: String?
-    let caption: String?
-    let tags: [String]?
-    let collection: String?
-    let isApproximate: Bool?
-    let personIDs: [Person.ID]?
+    var id: String
+    var kind: MediaKind
+    var title: String
+    var date: String?
+    var path: String?
+    var caption: String?
+    var tags: [String]?
+    var collection: String?
+    var isApproximate: Bool?
+    var personIDs: [Person.ID]?
 }
 
 enum MediaKind: String, Codable, Hashable {

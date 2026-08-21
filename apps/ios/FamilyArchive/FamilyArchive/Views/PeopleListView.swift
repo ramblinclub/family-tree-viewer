@@ -19,22 +19,34 @@ enum ArchiveFileResolver {
 }
 
 struct PeopleListView: View {
-    let repository: FamilyRepository
+    @ObservedObject var repository: FamilyRepository
     let initialPersonID: Person.ID?
 
     @State private var searchText = ""
     @State private var navigationPath = NavigationPath()
 
     private var filteredPeople: [Person] {
+        let people = repository.people.sorted(by: birthYearOrder)
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return repository.people
+            return people
         }
 
-        return repository.people.filter { person in
+        return people.filter { person in
             person.displayName.localizedCaseInsensitiveContains(searchText) ||
                 person.alternateNames.contains { $0.localizedCaseInsensitiveContains(searchText) } ||
                 person.summary.localizedCaseInsensitiveContains(searchText)
         }
+    }
+
+    private func birthYearOrder(_ left: Person, _ right: Person) -> Bool {
+        let leftYear = sortingBirthYear(for: left) ?? Int.max
+        let rightYear = sortingBirthYear(for: right) ?? Int.max
+        if leftYear != rightYear { return leftYear < rightYear }
+        return left.displayName.localizedStandardCompare(right.displayName) == .orderedAscending
+    }
+
+    private func sortingBirthYear(for person: Person) -> Int? {
+        repository.chronologicalBirthYear(for: person.id)
     }
 
     var body: some View {
@@ -57,6 +69,7 @@ struct PeopleListView: View {
                                 NavigationLink(value: person.id) {
                                     PersonRow(
                                         person: person,
+                                        repository: repository,
                                         isAccountHolder: repository.document.accountHolderID == person.id
                                     )
                                 }
@@ -84,8 +97,14 @@ struct PeopleListView: View {
                 }
             }
             .onAppear {
-                guard navigationPath.isEmpty, let initialPersonID else { return }
-                navigationPath.append(initialPersonID)
+                if let initialPersonID {
+                    guard navigationPath.isEmpty else { return }
+                    navigationPath.append(initialPersonID)
+                } else {
+                    // A normal launch should always land on the family list,
+                    // even if SwiftUI restored a previously open profile route.
+                    navigationPath = NavigationPath()
+                }
             }
         }
     }
@@ -111,11 +130,18 @@ struct PeopleListView: View {
 
 struct FamilyMemberTile: View {
     let person: Person
+    let repository: FamilyRepository?
     var isAccountHolder = false
+
+    init(person: Person, repository: FamilyRepository? = nil, isAccountHolder: Bool = false) {
+        self.person = person
+        self.repository = repository
+        self.isAccountHolder = isAccountHolder
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            FamilyMemberPhotoView(person: person, size: 40)
+            FamilyMemberPhotoView(person: person, size: 40, repository: repository)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -134,7 +160,7 @@ struct FamilyMemberTile: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
                         .layoutPriority(1)
-                    if person.isLiving {
+                    if repository?.isLiving(person) ?? person.isLiving {
                         Circle()
                             .fill(ArchiveTheme.accent)
                             .frame(width: 5, height: 5)
@@ -143,6 +169,12 @@ struct FamilyMemberTile: View {
                             .font(ArchiveTypography.metadata)
                             .foregroundStyle(ArchiveTheme.accent)
                             .lineLimit(1)
+                    } else if repository?.hasUnknownDeathDate(person) == true {
+                        Text("Death date unknown")
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
                     }
                 }
             }
@@ -174,6 +206,7 @@ struct AccountHolderBadge: View {
 private struct FamilyMemberPhotoView: View {
     let person: Person
     let size: CGFloat
+    let repository: FamilyRepository?
 
     var body: some View {
         Group {
@@ -181,9 +214,9 @@ private struct FamilyMemberPhotoView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .grayscale(person.isLiving ? 0 : 1)
+                    .grayscale((repository?.isLiving(person) ?? person.isLiving) ? 0 : 1)
             } else {
-                MonogramView(person: person, size: size)
+                MonogramView(person: person, size: size, isLiving: repository?.isLiving(person) ?? person.isLiving)
             }
         }
         .frame(width: size, height: size)
@@ -192,7 +225,7 @@ private struct FamilyMemberPhotoView: View {
     }
 
     private var loadedImage: UIImage? {
-        let path = person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        let path = repository?.photoPath(for: person.id) ?? person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
         guard let path else { return nil }
         return ArchiveFileResolver.image(for: path)
     }
@@ -200,14 +233,35 @@ private struct FamilyMemberPhotoView: View {
 
 private struct PersonRow: View {
     let person: Person
+    let repository: FamilyRepository
     let isAccountHolder: Bool
 
     var body: some View {
-        FamilyMemberTile(person: person, isAccountHolder: isAccountHolder)
+        FamilyMemberTile(person: person, repository: repository, isAccountHolder: isAccountHolder)
     }
 }
 
 extension Person {
+    var birthYear: Int? {
+        if let birthValue = birthFact?.value {
+            return birthValue
+                .split(whereSeparator: { !$0.isNumber })
+                .compactMap { Int($0) }
+                .first(where: { (1000...2100).contains($0) })
+        }
+
+        // A lifespan such as "????–1889" contains only a death year. Do not
+        // mistake that year for a birth year when ordering the family list.
+        let trimmedLifespan = lifespan.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLifespan.hasPrefix("?") else { return nil }
+
+        let value = trimmedLifespan
+        return value
+            .split(whereSeparator: { !$0.isNumber })
+            .compactMap { Int($0) }
+            .first(where: { (1000...2100).contains($0) })
+    }
+
     var lifeDateLine: String {
         let birth = birthFact?.value
         let death = deathFact?.value
@@ -268,6 +322,13 @@ private struct SearchField: View {
 struct MonogramView: View {
     let person: Person
     let size: CGFloat
+    let isLiving: Bool
+
+    init(person: Person, size: CGFloat, isLiving: Bool? = nil) {
+        self.person = person
+        self.size = size
+        self.isLiving = isLiving ?? person.isLiving
+    }
 
     var body: some View {
         ZStack {
@@ -285,31 +346,40 @@ struct MonogramView: View {
                 .foregroundStyle(.white)
         }
         .frame(width: size, height: size)
-        .grayscale(person.isLiving ? 0 : 1)
+        .grayscale(isLiving ? 0 : 1)
         .accessibilityHidden(true)
     }
 }
 
 struct MainTabView: View {
-    let repository: FamilyRepository
+    @ObservedObject var repository: FamilyRepository
     let initialPersonID: Person.ID?
 
-    @State private var selectedTab: MainTab = .home
+    @State private var selectedTab: MainTab = .family
     @State private var familyResetID = UUID()
     @State private var shouldOpenInitialPerson = true
+    @State private var personIDToOpen: Person.ID?
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 switch selectedTab {
                 case .home:
-                    HomeView(repository: repository, selectedTab: $selectedTab)
+                    HomeView(repository: repository) { personID in
+                        // Profiles belong to Family, even when discovered from
+                        // the Home reminders. This keeps the selected tab and
+                        // the navigation stack consistent.
+                        personIDToOpen = personID
+                        shouldOpenInitialPerson = false
+                        familyResetID = UUID()
+                        selectedTab = .family
+                    }
                 case .tree:
                     TreePlaceholderView()
                 case .family:
                     PeopleListView(
                         repository: repository,
-                        initialPersonID: shouldOpenInitialPerson ? initialPersonID : nil
+                        initialPersonID: personIDToOpen ?? (shouldOpenInitialPerson ? initialPersonID : nil)
                     )
                     .id(familyResetID)
                 case .memories:
@@ -320,6 +390,7 @@ struct MainTabView: View {
 
             ArchiveBottomNavigation(selectedTab: $selectedTab) { tab in
                 if tab == .family {
+                    personIDToOpen = nil
                     shouldOpenInitialPerson = false
                     familyResetID = UUID()
                 }
@@ -449,9 +520,14 @@ enum ArchiveShape {
 }
 
 private struct HomeView: View {
-    let repository: FamilyRepository
-    @Binding var selectedTab: MainTab
+    @ObservedObject var repository: FamilyRepository
+    let onOpenPerson: (Person.ID) -> Void
     @State private var showingSettings = false
+
+    private var accountHolder: Person? {
+        guard let id = repository.document.accountHolderID else { return nil }
+        return repository.person(id: id)
+    }
 
     var body: some View {
         NavigationStack {
@@ -467,7 +543,12 @@ private struct HomeView: View {
 
                     detailSection("Upcoming dates to remember") {
                         ForEach(upcomingDates) { date in
-                            RememberedDateRow(date: date)
+                            Button {
+                                onOpenPerson(date.personID)
+                            } label: {
+                                RememberedDateRow(date: date)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.top, 28)
@@ -475,8 +556,8 @@ private struct HomeView: View {
                     detailSection("Archive at a glance") {
                         HStack(spacing: 0) {
                             HomeStat(value: "\(repository.people.count)", label: "People")
-                            HomeStat(value: "\(repository.people.filter(\.isLiving).count)", label: "Living")
-                            HomeStat(value: "\(repository.people.filter { !$0.isLiving }.count)", label: "Deceased")
+                            HomeStat(value: "\(repository.people.filter { repository.isLiving($0) }.count)", label: "Living")
+                            HomeStat(value: "\(repository.people.filter { !repository.isLiving($0) }.count)", label: "Deceased")
                             HomeStat(value: "\(repository.people.reduce(0) { $0 + $1.media.count })", label: "Memories")
                         }
                         .padding(.vertical, 14)
@@ -497,7 +578,7 @@ private struct HomeView: View {
                     Button {
                         showingSettings = true
                     } label: {
-                        UserProfilePhotoView(size: 28)
+                        UserProfilePhotoView(person: accountHolder, repository: repository, size: 40)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Open account settings")
@@ -506,27 +587,84 @@ private struct HomeView: View {
         }
         .sheet(isPresented: $showingSettings) {
             NavigationStack {
-                SettingsView()
+                SettingsView(person: accountHolder, repository: repository)
             }
         }
     }
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
+        let name = accountHolder?.givenName ?? "Elena"
         switch hour {
-        case 5..<12: return "Good morning, Elena"
-        case 12..<18: return "Good afternoon, Elena"
-        default: return "Good evening, Elena"
+        case 5..<12: return "Good morning, \(name)"
+        case 12..<18: return "Good afternoon, \(name)"
+        default: return "Good evening, \(name)"
         }
     }
 
     private var upcomingDates: [RememberedDate] {
-        [
-            RememberedDate(id: "eleanor-memorial", date: "4 Sep", title: "Eleanor’s remembrance day", detail: "2018 · Lakeview"),
-            RememberedDate(id: "morgan-birthday", date: "23 Oct", title: "Morgan Bennett’s birthday", detail: "1958 · Lakeview"),
-            RememberedDate(id: "anton-birthday", date: "14 Feb", title: "Anton Orlov’s birthday", detail: "1923 · North Harbor"),
-            RememberedDate(id: "eleanor-birthday", date: "12 May", title: "Eleanor Hart’s birthday", detail: "1931 · Lakeview")
-        ]
+        var dates: [RememberedDate] = []
+
+        for person in repository.people {
+            if let birth = person.birthFact,
+               let parts = calendarParts(from: birth.value) {
+                dates.append(RememberedDate(
+                    id: "birthday-\(person.id)",
+                    personID: person.id,
+                    date: shortMonthDay(month: parts.month, day: parts.day),
+                    title: "\(person.displayName)’s birthday",
+                    detail: [parts.year.map(String.init), birth.place].compactMap { $0 }.joined(separator: " · "),
+                    sortKey: upcomingSortKey(month: parts.month, day: parts.day)
+                ))
+            }
+
+            if let death = person.deathFact,
+               let parts = calendarParts(from: death.value) {
+                dates.append(RememberedDate(
+                    id: "remembrance-\(person.id)",
+                    personID: person.id,
+                    date: shortMonthDay(month: parts.month, day: parts.day),
+                    title: "\(person.displayName)’s remembrance day",
+                    detail: [parts.year.map(String.init), death.place].compactMap { $0 }.joined(separator: " · "),
+                    sortKey: upcomingSortKey(month: parts.month, day: parts.day)
+                ))
+            }
+        }
+
+        return dates.sorted { $0.sortKey < $1.sortKey }.prefix(5).map { $0 }
+    }
+
+    private func calendarParts(from value: String) -> (year: Int?, month: Int, day: Int)? {
+        let formats = ["d MMMM yyyy", "d MMM yyyy", "MMMM d, yyyy", "MMM d, yyyy"]
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        for format in formats {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) {
+                let components = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
+                if let month = components.month, let day = components.day {
+                    return (components.year, month, day)
+                }
+            }
+        }
+        return nil
+    }
+
+    private func shortMonthDay(month: Int, day: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: Calendar.current.date(from: DateComponents(year: 2000, month: month, day: day)) ?? Date())
+    }
+
+    private func upcomingSortKey(month: Int, day: Int) -> Int {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date()
+        let today = calendar.startOfDay(for: now)
+        let year = calendar.component(.year, from: now)
+        let candidate = calendar.date(from: DateComponents(year: year, month: month, day: day)) ?? now
+        let offset = candidate < today ? 10_000 : 0
+        return offset + month * 100 + day
     }
 
     @ViewBuilder
@@ -544,9 +682,11 @@ private struct HomeView: View {
 
 private struct RememberedDate: Identifiable {
     let id: String
+    let personID: Person.ID
     let date: String
     let title: String
     let detail: String
+    let sortKey: Int
 }
 
 private struct RememberedDateRow: View {
@@ -577,37 +717,61 @@ private struct RememberedDateRow: View {
 }
 
 private struct UserProfilePhotoView: View {
+    let person: Person?
+    let repository: FamilyRepository?
     var size: CGFloat = 48
+
+    init(person: Person? = nil, repository: FamilyRepository? = nil, size: CGFloat = 48) {
+        self.person = person
+        self.repository = repository
+        self.size = size
+    }
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+            if let image = loadedImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
-                )
-            Text("EL")
-                .font(.system(size: size * 0.35, weight: .semibold))
-                .foregroundStyle(.white)
+                Text(person?.initials ?? "EL")
+                    .font(.system(size: size * 0.35, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
         }
         .frame(width: size, height: size)
+        .clipped()
+        .clipShape(Circle())
         .accessibilityLabel("Elena profile")
+    }
+
+    private var loadedImage: UIImage? {
+        guard let person,
+              let path = repository?.photoPath(for: person.id) ?? person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path else { return nil }
+        return ArchiveFileResolver.image(for: path)
     }
 }
 
 private struct SettingsView: View {
+    let person: Person?
+    let repository: FamilyRepository?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 14) {
-                    UserProfilePhotoView()
+                    UserProfilePhotoView(person: person, repository: repository)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Elena")
+                        Text(person?.displayName ?? "Elena")
                             .font(.title2.weight(.bold))
                         Text("Account profile")
                             .font(.subheadline)
@@ -715,7 +879,7 @@ private struct TreePlaceholderView: View {
 }
 
 private struct MemoriesView: View {
-    let repository: FamilyRepository
+    @ObservedObject var repository: FamilyRepository
 
     @State private var searchText = ""
     @State private var filter: MemoryFilter = .photo

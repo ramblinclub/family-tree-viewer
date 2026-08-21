@@ -2,48 +2,119 @@ import SwiftUI
 import UIKit
 
 struct PersonDetailView: View {
-    let person: Person
-    let repository: FamilyRepository
+    private let initialPerson: Person
+    private let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+
+    private var person: Person {
+        repository.person(id: personID) ?? initialPerson
+    }
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedTab: DetailTab = .overview
+    @State private var selectedTab: DetailTab = .family
     @State private var showingActions = false
     @State private var showingAllMedia = false
+    @State private var showingEditor = false
+    @State private var showingMediaEditor = false
+    @State private var showingEventsManager = false
+    @State private var showingStoriesManager = false
+
+    init(person: Person, repository: FamilyRepository) {
+        initialPerson = person
+        personID = person.id
+        _repository = ObservedObject(wrappedValue: repository)
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            detailTopBar
-            ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    profileHeader
-                    profileMediaPreview
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                detailTopBar
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        profileHeader
+                        profileMediaPreview
 
-                    Section {
-                        tabContent
-                            .padding(.horizontal, 20)
-                            .padding(.top, 22)
-                            .padding(.bottom, 32)
-                    } header: {
-                        tabBar
-                            .background(Color(uiColor: .systemBackground))
+                        Section {
+                            tabContent
+                                .padding(.horizontal, 20)
+                                .padding(.top, 22)
+                                .padding(.bottom, 32)
+                        } header: {
+                            tabBar
+                                .background(Color(uiColor: .systemBackground))
+                        }
                     }
                 }
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
+
+            if showingActions {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture { showingActions = false }
+
+                profileActionsMenu
+                    .padding(.top, 58)
+                    .padding(.trailing, 20)
+                    .zIndex(2)
+            }
         }
         .foregroundStyle(ArchiveTheme.ink)
         .background(Color(uiColor: .systemBackground))
         .toolbar(.hidden, for: .navigationBar)
-        .confirmationDialog("Profile actions", isPresented: $showingActions, titleVisibility: .visible) {
-            Button("Edit profile") {}
-            Button("Add memory") {}
-            Button("Share profile") {}
-            Button("Report an issue", role: .destructive) {}
-            Button("Cancel", role: .cancel) {}
-        }
         .sheet(isPresented: $showingAllMedia) {
             PersonMediaGalleryView(person: person)
         }
+        .sheet(isPresented: $showingEditor) {
+            ProfileEditorView(person: person, repository: repository)
+        }
+        .sheet(isPresented: $showingMediaEditor) {
+            PersonMediaEditorView(person: person, repository: repository)
+        }
+        .sheet(isPresented: $showingEventsManager) {
+            LifeEventsManagerView(person: person, repository: repository)
+        }
+        .sheet(isPresented: $showingStoriesManager) {
+            StoriesManagerView(person: person, repository: repository)
+        }
+    }
+
+    private var profileActionsMenu: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            profileAction("Edit profile", systemImage: "person.crop.circle") {
+                showingActions = false
+                showingEditor = true
+            }
+            profileAction("Edit media", systemImage: "photo") {
+                showingActions = false
+                showingMediaEditor = true
+            }
+            profileAction("Share profile", systemImage: "square.and.arrow.up") {
+                showingActions = false
+            }
+        }
+        .frame(width: 188, alignment: .leading)
+        .background(Color(uiColor: .systemBackground))
+        .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+        .shadow(color: ArchiveTheme.ink.opacity(0.14), radius: 8, y: 3)
+    }
+
+    private func profileAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(ArchiveTypography.icon)
+                    .frame(width: 18)
+                Text(title)
+                    .font(ArchiveTypography.body)
+                Spacer()
+            }
+            .foregroundStyle(ArchiveTheme.ink)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var detailTopBar: some View {
@@ -90,7 +161,7 @@ struct PersonDetailView: View {
     private var profileHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
-                ProfilePhotoView(person: person, size: 72)
+                ProfilePhotoView(person: person, size: 72, repository: repository)
                     // Align the photo with the visible cap-height of the name,
                     // not the font's invisible line-box top.
                     .padding(.top, ArchiveTypography.profileNameOpticalTopInset)
@@ -148,6 +219,10 @@ struct PersonDetailView: View {
     }
 
     private var profileLifeSummary: String? {
+        if repository.hasUnknownDeathDate(person) {
+            return "Death date unknown"
+        }
+
         let lifespanYears = years(in: person.lifespan)
         let birthValue = person.birthFact?.value
         let deathValue = person.deathFact?.value
@@ -271,7 +346,7 @@ struct PersonDetailView: View {
     }
 
     private var profileMediaPath: String? {
-        person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        repository.photoPath(for: person.id)
     }
 
     @ViewBuilder
@@ -294,7 +369,19 @@ struct PersonDetailView: View {
 
     private var timelineContent: some View {
         VStack(alignment: .leading, spacing: 28) {
-            detailSection("Life events & records") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("LIFE EVENTS & RECORDS")
+                        .font(ArchiveTypography.sectionTitle)
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.ink)
+                    Spacer()
+                    Button("Manage") { showingEventsManager = true }
+                        .font(ArchiveTypography.action)
+                        .foregroundStyle(ArchiveTheme.action)
+                        .buttonStyle(.plain)
+                }
+
                 VStack(alignment: .leading, spacing: 0) {
                     if !timelineEvents.isEmpty {
                         ForEach(Array(timelineEvents.enumerated()), id: \.element.id) { index, event in
@@ -314,12 +401,23 @@ struct PersonDetailView: View {
                     }
                 }
             }
-
         }
     }
 
     private var storiesContent: some View {
         VStack(alignment: .leading, spacing: 28) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("STORIES")
+                    .font(ArchiveTypography.sectionTitle)
+                    .tracking(1.2)
+                    .foregroundStyle(ArchiveTheme.ink)
+                Spacer()
+                Button("Manage") { showingStoriesManager = true }
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.action)
+                    .buttonStyle(.plain)
+            }
+
             if !person.structuredStories.isEmpty {
                 ForEach(person.structuredStories) { chapter in
                     VStack(alignment: .leading, spacing: 10) {
@@ -439,7 +537,7 @@ struct PersonDetailView: View {
 
             ForEach(repository.people(ids: ids)) { relative in
                 NavigationLink(value: relative.id) {
-                    FamilyMemberTile(person: relative)
+                    FamilyMemberTile(person: relative, repository: repository)
                 }
                 .buttonStyle(.plain)
                 .padding(.bottom, 6)
@@ -656,6 +754,13 @@ private struct ProfileDateLine: View {
 private struct ProfilePhotoView: View {
     let person: Person
     let size: CGFloat
+    let repository: FamilyRepository?
+
+    init(person: Person, size: CGFloat, repository: FamilyRepository? = nil) {
+        self.person = person
+        self.size = size
+        self.repository = repository
+    }
 
     var body: some View {
         Group {
@@ -663,10 +768,14 @@ private struct ProfilePhotoView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .grayscale(person.isLiving ? 0 : 1)
+                    .grayscale((repository?.isLiving(person) ?? person.isLiving) ? 0 : 1)
             } else {
                 ZStack(alignment: .bottomLeading) {
-                    MonogramView(person: person, size: size)
+                    MonogramView(
+                        person: person,
+                        size: size,
+                        isLiving: repository?.isLiving(person) ?? person.isLiving
+                    )
                     Image(systemName: "photo")
                         .font(ArchiveTypography.metadataEmphasis)
                         .foregroundStyle(.white)
@@ -680,17 +789,17 @@ private struct ProfilePhotoView: View {
     }
 
     private var loadedImage: UIImage? {
-        let path = person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        let path = repository?.photoPath(for: person.id) ?? person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
         guard let path else { return nil }
         return ArchiveFileResolver.image(for: path)
     }
 }
 
 private enum DetailTab: String, CaseIterable, Identifiable {
-    case overview
     case timeline
     case stories
     case family
+    case overview
 
     var id: String { rawValue }
 
@@ -1275,4 +1384,557 @@ private struct MediaStat: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
     }
+}
+
+// MARK: - Private editors
+
+private struct ProfileEditorView: View {
+    let repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: Person
+    @State private var birthDate: String
+    @State private var birthPlace: String
+    @State private var deathDate: String
+    @State private var deathPlace: String
+    @State private var profileImagePath: String
+
+    init(person: Person, repository: FamilyRepository) {
+        self.repository = repository
+        _draft = State(initialValue: person)
+        _birthDate = State(initialValue: person.birthFact?.value ?? "")
+        _birthPlace = State(initialValue: person.birthFact?.place ?? "")
+        _deathDate = State(initialValue: person.deathFact?.value ?? "")
+        _deathPlace = State(initialValue: person.deathFact?.place ?? "")
+        _profileImagePath = State(initialValue: person.profileImagePath ?? "")
+    }
+
+    private var photoOptions: [String] {
+        draft.media.filter { $0.kind == .photo }.compactMap(\.path)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Profile") {
+                    TextField("First name", text: $draft.givenName)
+                    TextField("Last name", text: $draft.familyName)
+                    TextField("Also known as", text: Binding(
+                        get: { draft.alternateNames.joined(separator: ", ") },
+                        set: { draft.alternateNames = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
+                    ))
+
+                    Picker("Profile image", selection: $profileImagePath) {
+                        Text("Use initials").tag("")
+                        ForEach(photoOptions, id: \.self) { path in
+                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                                .lineLimit(1)
+                                .tag(path)
+                        }
+                    }
+                }
+
+                Section("Birth") {
+                    TextField("Full date", text: $birthDate)
+                    TextField("Place", text: $birthPlace)
+                }
+
+                Section("Death") {
+                    TextField("Full date", text: $deathDate)
+                    TextField("Place", text: $deathPlace)
+                }
+
+            }
+            .navigationTitle("Edit profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        var updated = draft
+        let oldBirthID = draft.birthFact?.id
+        let oldDeathID = draft.deathFact?.id
+        var facts = draft.facts.filter { $0.id != oldBirthID && $0.id != oldDeathID }
+
+        if !birthDate.trimmed.isEmpty {
+            facts.append(PersonFact(
+                id: oldBirthID ?? UUID().uuidString,
+                label: draft.birthFact?.label ?? "Born",
+                value: birthDate.trimmed,
+                place: birthPlace.trimmed.isEmpty ? nil : birthPlace.trimmed,
+                isApproximate: draft.birthFact?.isApproximate,
+                sourceIDs: draft.birthFact?.sourceIDs
+            ))
+        }
+        if !deathDate.trimmed.isEmpty {
+            facts.append(PersonFact(
+                id: oldDeathID ?? UUID().uuidString,
+                label: draft.deathFact?.label ?? "Died",
+                value: deathDate.trimmed,
+                place: deathPlace.trimmed.isEmpty ? nil : deathPlace.trimmed,
+                isApproximate: draft.deathFact?.isApproximate,
+                sourceIDs: draft.deathFact?.sourceIDs
+            ))
+        }
+
+        updated.facts = facts
+        updated.profileImagePath = profileImagePath.trimmed.isEmpty ? nil : profileImagePath
+        repository.updatePerson(updated)
+        dismiss()
+    }
+}
+
+private struct LifeEventsManagerView: View {
+    private let initialPerson: Person
+    private let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var addingEvent = false
+    @State private var editingEvent: LifeEvent?
+
+    init(person: Person, repository: FamilyRepository) {
+        initialPerson = person
+        personID = person.id
+        _repository = ObservedObject(wrappedValue: repository)
+    }
+
+    private var person: Person { repository.person(id: personID) ?? initialPerson }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if person.structuredEvents.isEmpty {
+                    Text("No life events yet.")
+                        .foregroundStyle(ArchiveTheme.metadata)
+                } else {
+                    ForEach(person.orderedEvents) { event in
+                        Button { editingEvent = event } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(event.title.isEmpty ? "Untitled event" : event.title)
+                                        .font(ArchiveTypography.contentTitle)
+                                        .foregroundStyle(ArchiveTheme.ink)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.metadata)
+                                }
+                                if !event.date.isEmpty {
+                                    Text(ArchiveDateFormatter.display(event.date) ?? event.date)
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.metadata)
+                                }
+                                if !event.summary.isEmpty {
+                                    Text(event.summary)
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.muted)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions {
+                            Button(role: .destructive) { delete(event) } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Life events")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        addingEvent = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Add life event")
+                }
+            }
+            .sheet(isPresented: $addingEvent) {
+                EventEditorView(event: nil) { event in
+                    var updated = person
+                    updated.events = (updated.events ?? []) + [event]
+                    repository.updatePerson(updated)
+                }
+            }
+            .sheet(item: $editingEvent) { event in
+                EventEditorView(event: event) { updatedEvent in
+                    var updated = person
+                    var events = updated.events ?? []
+                    if let index = events.firstIndex(where: { $0.id == updatedEvent.id }) {
+                        events[index] = updatedEvent
+                    }
+                    updated.events = events
+                    repository.updatePerson(updated)
+                    editingEvent = nil
+                }
+            }
+        }
+    }
+
+    private func delete(_ event: LifeEvent) {
+        var updated = person
+        updated.events?.removeAll { $0.id == event.id }
+        repository.updatePerson(updated)
+    }
+}
+
+private struct StoriesManagerView: View {
+    private let initialPerson: Person
+    private let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var addingStory = false
+    @State private var editingStory: StoryChapter?
+
+    init(person: Person, repository: FamilyRepository) {
+        initialPerson = person
+        personID = person.id
+        _repository = ObservedObject(wrappedValue: repository)
+    }
+
+    private var person: Person { repository.person(id: personID) ?? initialPerson }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if person.structuredStories.isEmpty {
+                    Text("No stories yet.")
+                        .foregroundStyle(ArchiveTheme.metadata)
+                } else {
+                    ForEach(person.structuredStories) { story in
+                        Button { editingStory = story } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(story.title.isEmpty ? "Untitled story" : story.title)
+                                        .font(ArchiveTypography.contentTitle)
+                                        .foregroundStyle(ArchiveTheme.ink)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.metadata)
+                                }
+                                if let dateRange = story.dateRange, !dateRange.isEmpty {
+                                    Text(dateRange)
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.metadata)
+                                }
+                                Text(story.summary ?? story.body)
+                                    .font(ArchiveTypography.metadata)
+                                    .foregroundStyle(ArchiveTheme.muted)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions {
+                            Button(role: .destructive) { delete(story) } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Stories")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        addingStory = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Add story")
+                }
+            }
+            .sheet(isPresented: $addingStory) {
+                StoryEditorView(story: nil) { story in
+                    var updated = person
+                    updated.storyChapters = (updated.storyChapters ?? []) + [story]
+                    repository.updatePerson(updated)
+                }
+            }
+            .sheet(item: $editingStory) { story in
+                StoryEditorView(story: story) { updatedStory in
+                    var updated = person
+                    var stories = updated.storyChapters ?? []
+                    if let index = stories.firstIndex(where: { $0.id == updatedStory.id }) {
+                        stories[index] = updatedStory
+                    }
+                    updated.storyChapters = stories
+                    repository.updatePerson(updated)
+                    editingStory = nil
+                }
+            }
+        }
+    }
+
+    private func delete(_ story: StoryChapter) {
+        var updated = person
+        updated.storyChapters?.removeAll { $0.id == story.id }
+        repository.updatePerson(updated)
+    }
+}
+
+private struct EventEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: LifeEvent
+    let onSave: (LifeEvent) -> Void
+
+    init(event: LifeEvent?, onSave: @escaping (LifeEvent) -> Void) {
+        self.onSave = onSave
+        _draft = State(initialValue: event ?? LifeEvent(
+            id: UUID().uuidString,
+            date: "",
+            sortKey: nil,
+            title: "",
+            summary: "",
+            place: nil,
+            category: "",
+            isApproximate: nil,
+            sourceIDs: nil
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Event") {
+                    TextField("Date", text: $draft.date)
+                    TextField("Title", text: $draft.title)
+                    TextField("Description", text: $draft.summary, axis: .vertical)
+                        .lineLimit(3...8)
+                    TextField("Place", text: Binding(
+                        get: { draft.place ?? "" },
+                        set: { draft.place = $0.trimmed.isEmpty ? nil : $0 }
+                    ))
+                    TextField("Category", text: $draft.category)
+                    Toggle("Approximate date", isOn: Binding(
+                        get: { draft.isApproximate ?? false },
+                        set: { draft.isApproximate = $0 }
+                    ))
+                }
+            }
+            .navigationTitle("Edit event")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        var saved = draft
+                        saved.sortKey = editorSortKey(saved.date)
+                        onSave(saved)
+                        dismiss()
+                    }
+                    .disabled(draft.title.trimmed.isEmpty && draft.summary.trimmed.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct StoryEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: StoryChapter
+    let onSave: (StoryChapter) -> Void
+
+    init(story: StoryChapter?, onSave: @escaping (StoryChapter) -> Void) {
+        self.onSave = onSave
+        _draft = State(initialValue: story ?? StoryChapter(
+            id: UUID().uuidString,
+            title: "",
+            dateRange: nil,
+            summary: nil,
+            body: ""
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Story") {
+                    TextField("Title", text: $draft.title)
+                    TextField("Date or range", text: Binding(
+                        get: { draft.dateRange ?? "" },
+                        set: { draft.dateRange = $0.trimmed.isEmpty ? nil : $0 }
+                    ))
+                    TextField("Highlighted introduction", text: Binding(
+                        get: { draft.summary ?? "" },
+                        set: { draft.summary = $0.trimmed.isEmpty ? nil : $0 }
+                    ), axis: .vertical)
+                        .lineLimit(2...5)
+                    TextField("Story", text: $draft.body, axis: .vertical)
+                        .lineLimit(8...20)
+                }
+            }
+            .navigationTitle("Edit story")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(draft)
+                        dismiss()
+                    }
+                    .disabled(draft.title.trimmed.isEmpty && draft.body.trimmed.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct PersonMediaEditorView: View {
+    private let initialPerson: Person
+    private let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var editingMedia: MediaReference?
+
+    init(person: Person, repository: FamilyRepository) {
+        initialPerson = person
+        personID = person.id
+        _repository = ObservedObject(wrappedValue: repository)
+    }
+
+    private var person: Person { repository.person(id: personID) ?? initialPerson }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if person.media.isEmpty {
+                    Text("No media has been added yet.")
+                        .foregroundStyle(ArchiveTheme.metadata)
+                } else {
+                    ForEach(person.media) { item in
+                        Button { editingMedia = item } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: item.kind.systemImage)
+                                    .foregroundStyle(ArchiveTheme.action)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.caption?.trimmed.isEmpty == false ? item.caption! : item.kind.rawValue.capitalized)
+                                        .foregroundStyle(ArchiveTheme.ink)
+                                    if let date = item.date, !date.isEmpty {
+                                        Text(ArchiveDateFormatter.display(date) ?? date)
+                                            .font(ArchiveTypography.metadata)
+                                            .foregroundStyle(ArchiveTheme.metadata)
+                                    }
+                                    Text("Related to \((item.personIDs ?? [person.id]).count) people")
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.metadata)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(ArchiveTypography.metadata)
+                                    .foregroundStyle(ArchiveTheme.metadata)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                repository.removeMedia(item, from: person.id)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit media")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(item: $editingMedia) { item in
+                MediaMetadataEditor(item: item, ownerID: person.id, repository: repository)
+            }
+        }
+    }
+}
+
+private struct MediaMetadataEditor: View {
+    let item: MediaReference
+    let ownerID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var caption: String
+    @State private var date: String
+    @State private var relatedIDs: Set<Person.ID>
+
+    init(item: MediaReference, ownerID: Person.ID, repository: FamilyRepository) {
+        self.item = item
+        self.ownerID = ownerID
+        _repository = ObservedObject(wrappedValue: repository)
+        _caption = State(initialValue: item.caption ?? "")
+        _date = State(initialValue: item.date ?? "")
+        _relatedIDs = State(initialValue: Set(item.personIDs ?? [ownerID]))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Caption") {
+                    TextField("Caption", text: $caption, axis: .vertical)
+                        .lineLimit(2...5)
+                    TextField("Date", text: $date)
+                }
+
+                Section("Related people") {
+                    ForEach(repository.people) { person in
+                        Toggle(isOn: Binding(
+                            get: { relatedIDs.contains(person.id) },
+                            set: { enabled in
+                                if enabled { relatedIDs.insert(person.id) }
+                                else if person.id != ownerID { relatedIDs.remove(person.id) }
+                            }
+                        )) {
+                            Text(person.displayName)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit media")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        var updated = item
+                        updated.caption = caption.trimmed.isEmpty ? nil : caption.trimmed
+                        updated.date = date.trimmed.isEmpty ? nil : date.trimmed
+                        updated.personIDs = Array(relatedIDs.union([ownerID])).sorted()
+                        repository.updateMedia(updated, for: ownerID)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+private func editorSortKey(_ value: String) -> Int? {
+    let years = value.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.filter { (1000...2100).contains($0) }
+    guard let year = years.first else { return nil }
+    return year * 10000
 }
