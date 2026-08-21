@@ -21,3 +21,12 @@ test-results/
 /public/*.gedzip
 /public/*.zip
 /public/photos/
+
+# Xcode local state and build output
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Private family data must never be committed
+/apps/ios/**/PrivateData/
+/apps/ios/**/*.private.json

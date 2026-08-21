@@ -1,0 +1,286 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000001 /* FamilyArchiveApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* FamilyArchiveApp.swift */; };
+		100000000000000000000002 /* ArchiveModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* ArchiveModels.swift */; };
+		100000000000000000000003 /* FamilyRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* FamilyRepository.swift */; };
+		100000000000000000000004 /* PeopleListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* PeopleListView.swift */; };
+		100000000000000000000005 /* PersonDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* PersonDetailView.swift */; };
+		100000000000000000000006 /* sample-family.json in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* sample-family.json */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* FamilyArchiveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FamilyArchiveApp.swift; sourceTree = "<group>"; };
+		200000000000000000000002 /* ArchiveModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveModels.swift; sourceTree = "<group>"; };
+		200000000000000000000003 /* FamilyRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FamilyRepository.swift; sourceTree = "<group>"; };
+		200000000000000000000004 /* PeopleListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleListView.swift; sourceTree = "<group>"; };
+		200000000000000000000005 /* PersonDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonDetailView.swift; sourceTree = "<group>"; };
+		200000000000000000000006 /* sample-family.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sample-family.json"; sourceTree = "<group>"; };
+		200000000000000000000007 /* FamilyArchive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FamilyArchive.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		300000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		400000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				400000000000000000000002 /* FamilyArchive */,
+				400000000000000000000006 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		400000000000000000000002 /* FamilyArchive */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000001 /* FamilyArchiveApp.swift */,
+				400000000000000000000003 /* Models */,
+				400000000000000000000004 /* Data */,
+				400000000000000000000005 /* Views */,
+				400000000000000000000007 /* Resources */,
+			);
+			path = FamilyArchive;
+			sourceTree = "<group>";
+		};
+		400000000000000000000003 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000002 /* ArchiveModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		400000000000000000000004 /* Data */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000003 /* FamilyRepository.swift */,
+			);
+			path = Data;
+			sourceTree = "<group>";
+		};
+		400000000000000000000005 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000004 /* PeopleListView.swift */,
+				200000000000000000000005 /* PersonDetailView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		400000000000000000000006 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000007 /* FamilyArchive.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		400000000000000000000007 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000006 /* sample-family.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		500000000000000000000001 /* FamilyArchive */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 900000000000000000000002 /* Build configuration list for PBXNativeTarget "FamilyArchive" */;
+			buildPhases = (
+				300000000000000000000002 /* Sources */,
+				300000000000000000000001 /* Frameworks */,
+				300000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FamilyArchive;
+			productName = FamilyArchive;
+			productReference = 200000000000000000000007 /* FamilyArchive.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		600000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					500000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = 900000000000000000000001 /* Build configuration list for PBXProject "FamilyArchive" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 400000000000000000000001;
+			productRefGroup = 400000000000000000000006 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				500000000000000000000001 /* FamilyArchive */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		300000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000006 /* sample-family.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		300000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000001 /* FamilyArchiveApp.swift in Sources */,
+				100000000000000000000002 /* ArchiveModels.swift in Sources */,
+				100000000000000000000003 /* FamilyRepository.swift in Sources */,
+				100000000000000000000004 /* PeopleListView.swift in Sources */,
+				100000000000000000000005 /* PersonDetailView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		700000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		700000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		800000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Family Archive";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ramblinclub.familyarchive;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		800000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Family Archive";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ramblinclub.familyarchive;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		900000000000000000000001 /* Build configuration list for PBXProject "FamilyArchive" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				700000000000000000000001 /* Debug */,
+				700000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		900000000000000000000002 /* Build configuration list for PBXNativeTarget "FamilyArchive" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				800000000000000000000001 /* Debug */,
+				800000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 600000000000000000000001 /* Project object */;
+}

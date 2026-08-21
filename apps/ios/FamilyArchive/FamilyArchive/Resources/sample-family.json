@@ -1,0 +1,313 @@
+{
+  "schemaVersion": 1,
+  "title": "Family Archive",
+  "people": [
+    {
+      "id": "sample-eleanor-hart",
+      "givenName": "Eleanor",
+      "familyName": "Hart",
+      "alternateNames": ["Eleanor Bennett"],
+      "lifespan": "1931–2018",
+      "summary": "Teacher, gardener, and keeper of family letters.",
+      "biography": "Eleanor taught primary school for more than three decades. She kept correspondence, photographs, and handwritten recipes that later became the beginning of the family archive.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "eleanor-birth", "label": "Born", "value": "12 May 1931", "place": "Lakeview"},
+        {"id": "eleanor-death", "label": "Died", "value": "4 September 2018", "place": "Lakeview"},
+        {"id": "eleanor-work", "label": "Occupation", "value": "Teacher", "place": null}
+      ],
+      "immediateFamily": {
+        "parents": [],
+        "partners": ["sample-samuel-hart"],
+        "siblings": [],
+        "children": ["sample-morgan-bennett"]
+      },
+      "media": [
+        {"id": "eleanor-photo", "kind": "photo", "title": "School portrait", "date": "1954", "path": null},
+        {"id": "eleanor-letters", "kind": "document", "title": "Collected letters", "date": "1948–1962", "path": null}
+      ],
+      "sources": [
+        {"id": "eleanor-source", "kind": "synthetic-sample", "locator": "sample-family.json"}
+      ]
+    },
+    {
+      "id": "sample-samuel-hart",
+      "givenName": "Samuel",
+      "familyName": "Hart",
+      "alternateNames": [],
+      "lifespan": "1929–2004",
+      "summary": "Carpenter and amateur photographer.",
+      "biography": "Samuel documented ordinary family life with a small camera and labeled most prints with dates and places.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "samuel-birth", "label": "Born", "value": "8 February 1929", "place": "Northfield"},
+        {"id": "samuel-death", "label": "Died", "value": "17 June 2004", "place": "Lakeview"},
+        {"id": "samuel-work", "label": "Occupation", "value": "Carpenter", "place": null}
+      ],
+      "immediateFamily": {
+        "parents": [],
+        "partners": ["sample-eleanor-hart"],
+        "siblings": [],
+        "children": ["sample-morgan-bennett"]
+      },
+      "media": [
+        {"id": "samuel-camera", "kind": "photo", "title": "Samuel with his camera", "date": "1961", "path": null}
+      ],
+      "sources": [
+        {"id": "samuel-source", "kind": "synthetic-sample", "locator": "sample-family.json"}
+      ]
+    },
+    {
+      "id": "sample-morgan-bennett",
+      "givenName": "Morgan",
+      "familyName": "Bennett",
+      "alternateNames": ["Morgan Hart"],
+      "lifespan": "1958–",
+      "summary": "Family historian and oral-history recorder.",
+      "biography": "Morgan began interviewing relatives and organizing the photographs inherited from Eleanor and Samuel.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "morgan-birth", "label": "Born", "value": "23 October 1958", "place": "Lakeview"},
+        {"id": "morgan-work", "label": "Occupation", "value": "Librarian", "place": null}
+      ],
+      "immediateFamily": {
+        "parents": ["sample-eleanor-hart", "sample-samuel-hart"],
+        "partners": ["sample-jordan-bennett"],
+        "siblings": [],
+        "children": ["sample-avery-bennett", "sample-riley-bennett"]
+      },
+      "media": [
+        {"id": "morgan-audio", "kind": "audio", "title": "Family interview", "date": "2002", "path": null}
+      ],
+      "sources": [
+        {"id": "morgan-source", "kind": "synthetic-sample", "locator": "sample-family.json"}
+      ]
+    },
+    {
+      "id": "sample-jordan-bennett",
+      "givenName": "Jordan",
+      "familyName": "Bennett",
+      "alternateNames": [],
+      "lifespan": "1957–",
+      "summary": "Architect and family trip planner.",
+      "biography": "Jordan contributed travel journals, maps, and annotated albums to the collection.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "jordan-birth", "label": "Born", "value": "2 March 1957", "place": "Fairhaven"},
+        {"id": "jordan-work", "label": "Occupation", "value": "Architect", "place": null}
+      ],
+      "immediateFamily": {
+        "parents": [],
+        "partners": ["sample-morgan-bennett"],
+        "siblings": [],
+        "children": ["sample-avery-bennett", "sample-riley-bennett"]
+      },
+      "media": [],
+      "sources": [
+        {"id": "jordan-source", "kind": "synthetic-sample", "locator": "sample-family.json"}
+      ]
+    },
+    {
+      "id": "sample-avery-bennett",
+      "givenName": "Avery",
+      "familyName": "Bennett",
+      "alternateNames": [],
+      "lifespan": "1985–",
+      "summary": "Digitized the first boxes of photographs.",
+      "biography": "Avery scanned the oldest albums and created the first searchable index of names and dates.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "avery-birth", "label": "Born", "value": "14 July 1985", "place": "Fairhaven"}
+      ],
+      "immediateFamily": {
+        "parents": ["sample-morgan-bennett", "sample-jordan-bennett"],
+        "partners": [],
+        "siblings": ["sample-riley-bennett"],
+        "children": []
+      },
+      "media": [
+        {"id": "avery-album", "kind": "photo", "title": "First scanned album", "date": "2010", "path": null}
+      ],
+      "sources": [
+        {"id": "avery-source", "kind": "synthetic-sample", "locator": "sample-family.json"}
+      ]
+    },
+    {
+      "id": "sample-riley-bennett",
+      "givenName": "Riley",
+      "familyName": "Bennett",
+      "alternateNames": [],
+      "lifespan": "1988–",
+      "summary": "Recorded captions and stories for the digital archive.",
+      "biography": "Riley collected missing captions by sharing photographs with relatives and recording their recollections.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "riley-birth", "label": "Born", "value": "30 November 1988", "place": "Fairhaven"}
+      ],
+      "immediateFamily": {
+        "parents": ["sample-morgan-bennett", "sample-jordan-bennett"],
+        "partners": [],
+        "siblings": ["sample-avery-bennett"],
+        "children": []
+      },
+      "media": [
+        {"id": "riley-notes", "kind": "document", "title": "Photo-caption notebook", "date": "2012", "path": null}
+      ],
+      "sources": [
+        {"id": "riley-source", "kind": "synthetic-sample", "locator": "sample-family.json"}
+      ]
+    },
+    {
+      "id": "sample-anton-orlov",
+      "givenName": "Anton",
+      "familyName": "Orlov",
+      "alternateNames": ["Anton O."],
+      "lifespan": "1923–1989",
+      "summary": "Engineer, amateur astronomer, and careful keeper of family records.",
+      "biography": "Anton grew up near a busy freight line and learned to draw machines before he learned to name them. A box of pencil diagrams survives with notes in three languages. His work took him between workshops, bridges, and signal stations, while at home he kept a precise ledger of repairs, birthdays, weather, and visitors. After retiring, Anton recorded neighbors’ memories and made star charts for his grandchildren; those notebooks now sit beside the family photographs.",
+      "privacy": "sample",
+      "relationshipToMe": "Distant relative",
+      "profileImagePath": null,
+      "facts": [
+        {"id": "anton-birth", "label": "Born", "value": "14 February 1923", "place": "North Harbor"},
+        {"id": "anton-death", "label": "Died", "value": "6 October 1989", "place": "Silver City"},
+        {"id": "anton-education", "label": "Education", "value": "Mechanical engineering", "place": null},
+        {"id": "anton-work", "label": "Occupation", "value": "Railway engineer", "place": null},
+        {"id": "anton-known-for", "label": "Known for", "value": "Star charts and bridge sketches", "place": null},
+        {"id": "anton-residence", "label": "Residence", "value": "North Harbor, 1951–1989", "place": null},
+        {"id": "anton-languages", "label": "Languages", "value": "English, Russian, and French", "place": null},
+        {"id": "anton-status", "label": "Archive status", "value": "Curated and reviewed", "place": null}
+      ],
+      "events": [
+        {"id": "anton-event-birth", "date": "14 February 1923", "sortKey": 19230214, "title": "Born", "summary": "Anton was born near North Harbor and grew up around workshops and freight lines.", "place": "North Harbor", "category": "birth", "isApproximate": false, "sourceIDs": ["anton-source-gedcom"]},
+        {"id": "anton-event-school", "date": "1931–1940", "sortKey": 19310000, "title": "School years", "summary": "He kept notebooks of mechanical sketches, star maps, and new words in several languages.", "place": "North Harbor", "category": "education", "isApproximate": false, "sourceIDs": ["anton-source-interview"]},
+        {"id": "anton-event-training", "date": "1941–1944", "sortKey": 19410000, "title": "Technical training", "summary": "Anton learned drafting, surveying, and field repair while supporting a transport workshop.", "place": "East Junction", "category": "education", "isApproximate": true, "sourceIDs": ["anton-source-gedcom"]},
+        {"id": "anton-event-marriage", "date": "1945", "sortKey": 19450000, "title": "Family life begins", "summary": "He married Lidia and began saving letters, household lists, and small family photographs.", "place": "East Junction", "category": "family", "isApproximate": true, "sourceIDs": ["anton-source-interview"]},
+        {"id": "anton-event-graduation", "date": "1949", "sortKey": 19490000, "title": "Graduated in engineering", "summary": "Anton completed advanced studies in mechanical engineering and returned to practical design work.", "place": "Silver City", "category": "education", "isApproximate": false, "sourceIDs": ["anton-source-gedcom"]},
+        {"id": "anton-event-engineer", "date": "1951–1963", "sortKey": 19510000, "title": "Railway engineering", "summary": "He inspected bridges and signal stations, bringing home careful sketches of each project.", "place": "North Harbor and Silver City", "category": "work", "isApproximate": false, "sourceIDs": ["anton-source-gedcom"]},
+        {"id": "anton-event-research", "date": "1964–1971", "sortKey": 19640000, "title": "Research and invention", "summary": "Anton led a small design group and kept prototype notes alongside family correspondence.", "place": "Silver City", "category": "work", "isApproximate": true, "sourceIDs": ["anton-source-review"]},
+        {"id": "anton-event-garden", "date": "1972–1982", "sortKey": 19720000, "title": "Garden observatory", "summary": "After moving to a quieter neighborhood, he built a small observatory and taught grandchildren to read the sky.", "place": "Hill Garden", "category": "interests", "isApproximate": false, "sourceIDs": ["anton-source-interview"]},
+        {"id": "anton-event-recording", "date": "1984–1986", "sortKey": 19840000, "title": "Recorded neighborhood memories", "summary": "Anton interviewed neighbors about work, migration, music, and the changing city.", "place": "Hill Garden", "category": "story", "isApproximate": false, "sourceIDs": ["anton-source-interview"]},
+        {"id": "anton-event-death", "date": "6 October 1989", "sortKey": 19891006, "title": "Died", "summary": "Anton died in Silver City; his notebooks and labeled boxes remained with the family.", "place": "Silver City", "category": "death", "isApproximate": false, "sourceIDs": ["anton-source-gedcom"]}
+      ],
+      "storyChapters": [
+        {"id": "anton-story-early-years", "title": "Early years & education", "dateRange": "1923–1949", "summary": "A visual thinker who learned by drawing machines, maps, and constellations.", "body": "Anton’s earliest notebooks combine mechanical diagrams with observations of the night sky. Teachers remembered his patience with difficult problems, while relatives remembered that he could repair a clock with improvised tools. His education moved between practical workshops and formal engineering study, giving him a habit of explaining complex systems with simple drawings."},
+        {"id": "anton-story-family", "title": "Family life", "dateRange": "1945–1989", "summary": "Letters, ledgers, and small rituals made the household archive.", "body": "Anton and Lidia kept a household ledger that began as a list of repairs and gradually became a record of birthdays, visitors, weather, and family decisions. Anton wrote short captions on the backs of photographs and saved cards in envelopes by year. The family remembers him as quiet in crowds and intensely curious at the kitchen table."},
+        {"id": "anton-story-career", "title": "Engineering career", "dateRange": "1951–1971", "summary": "Field work and research shaped the way Anton recorded the world.", "body": "His professional life moved between inspection trips, drafting rooms, and a small research group. He kept copies of bridge sketches and signal diagrams, not as trophies but as reminders of what had changed. Colleagues valued his ability to notice a small fault before it became a large one."},
+        {"id": "anton-story-later-years", "title": "Later years", "dateRange": "1972–1989", "summary": "Retirement opened time for gardens, star charts, music, and oral history.", "body": "In retirement Anton built a modest garden observatory and made seasonal star charts for the children around him. He repaired radios, tuned an old piano, and recorded neighborhood stories on a portable cassette deck. His later notebooks are less technical and more personal, filled with names, jokes, weather, and questions he wanted to ask."},
+        {"id": "anton-story-legacy", "title": "What remains", "dateRange": "Archive today", "summary": "A connected collection of people, objects, and memories.", "body": "The surviving collection brings together photographs, working papers, audio memories, and the small labels that connect them. Some dates are exact; others are estimates based on captions or recollections. The archive preserves both the objects and the uncertainty around them so future family members can continue the research."}
+      ],
+      "immediateFamily": {
+        "parents": ["sample-anton-parent-mara", "sample-anton-parent-ilya"],
+        "partners": ["sample-anton-partner-lidia"],
+        "siblings": ["sample-anton-sibling-sofia"],
+        "children": ["sample-anton-child-elena"]
+      },
+      "media": [
+        {"id": "anton-photo-01", "kind": "photo", "title": "Workshop portrait", "date": "1942", "path": null, "caption": "Anton beside a drafting table, still wearing his workshop coat.", "tags": ["portrait", "workshop"], "collection": "People & places", "isApproximate": false},
+        {"id": "anton-photo-02", "kind": "photo", "title": "Bridge inspection team", "date": "1951", "path": null, "caption": "A field team pauses after an inspection day.", "tags": ["career", "group"], "collection": "People & places", "isApproximate": true},
+        {"id": "anton-photo-03", "kind": "photo", "title": "Family summer gathering", "date": "1963", "path": null, "caption": "A summer table with relatives, neighbors, and a borrowed camera.", "tags": ["family", "summer"], "collection": "Family life", "isApproximate": false},
+        {"id": "anton-photo-04", "kind": "photo", "title": "Garden observatory", "date": "1970", "path": null, "caption": "The first version of the backyard observatory.", "tags": ["garden", "astronomy"], "collection": "Later years", "isApproximate": true},
+        {"id": "anton-photo-05", "kind": "photo", "title": "Silver City station", "date": "1977", "path": null, "caption": "A station platform photographed during a return visit.", "tags": ["railway", "place"], "collection": "People & places", "isApproximate": false},
+        {"id": "anton-photo-06", "kind": "photo", "title": "Last winter portrait", "date": "1987", "path": null, "caption": "A winter portrait made two years before Anton’s death.", "tags": ["portrait", "later years"], "collection": "People & places", "isApproximate": false},
+        {"id": "anton-plans", "kind": "document", "title": "Bridge-sketch folio", "date": "1946–1958", "path": null, "caption": "Annotated plans, measurements, and revisions from field work.", "tags": ["engineering", "drawings"], "collection": "Work papers", "isApproximate": false},
+        {"id": "anton-ledger", "kind": "document", "title": "Household ledger", "date": "1951–1989", "path": null, "caption": "A running record of repairs, visitors, birthdays, and weather.", "tags": ["family", "notebook"], "collection": "Family life", "isApproximate": false},
+        {"id": "anton-star-charts", "kind": "document", "title": "Hand-drawn star charts", "date": "1972–1988", "path": null, "caption": "Seasonal charts made for the garden observatory.", "tags": ["astronomy", "handwritten"], "collection": "Later years", "isApproximate": true},
+        {"id": "anton-interview-01", "kind": "audio", "title": "Recorded neighborhood memories", "date": "1984", "path": null, "caption": "Anton asks neighbors about work, migration, and music.", "tags": ["oral history", "neighbors"], "collection": "Recorded memories", "isApproximate": false},
+        {"id": "anton-interview-02", "kind": "audio", "title": "Workshop stories", "date": "1986", "path": null, "caption": "A conversation about tools, bridges, and the first engineering job.", "tags": ["oral history", "career"], "collection": "Recorded memories", "isApproximate": false},
+        {"id": "anton-film", "kind": "video", "title": "Family garden film", "date": "1975", "path": null, "caption": "A short silent film of the garden and observatory.", "tags": ["family", "garden"], "collection": "Moving images", "isApproximate": false}
+      ],
+      "sources": [
+        {"id": "anton-source-gedcom", "kind": "synthetic-gedcom", "locator": "sample-family.json", "title": "Structured family record", "notes": "Synthetic source representing dates, relationships, and selected record fields."},
+        {"id": "anton-source-interview", "kind": "synthetic-interview", "locator": "sample-family.json", "title": "Oral-history notes", "notes": "Synthetic source representing remembered stories and captions."},
+        {"id": "anton-source-review", "kind": "synthetic-editorial-review", "locator": "sample-family.json", "title": "Archive review notes", "notes": "Synthetic source representing provenance checks and uncertainty flags."
+        }
+      ]
+    },
+    {
+      "id": "sample-anton-parent-mara",
+      "givenName": "Mara",
+      "familyName": "Orlov",
+      "alternateNames": [],
+      "lifespan": "1898–1974",
+      "summary": "Seamstress and keeper of household notebooks.",
+      "biography": "Mara kept the household notebooks that Anton later continued.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "mara-birth", "label": "Born", "value": "1898", "place": "North Harbor"},
+        {"id": "mara-work", "label": "Occupation", "value": "Seamstress", "place": null}
+      ],
+      "immediateFamily": {"parents": [], "partners": ["sample-anton-parent-ilya"], "siblings": [], "children": ["sample-anton-orlov"]},
+      "media": [],
+      "sources": [{"id": "mara-source", "kind": "synthetic-sample", "locator": "sample-family.json"}]
+    },
+    {
+      "id": "sample-anton-parent-ilya",
+      "givenName": "Ilya",
+      "familyName": "Orlov",
+      "alternateNames": [],
+      "lifespan": "1894–1968",
+      "summary": "Rail yard mechanic and patient teacher.",
+      "biography": "Ilya taught Anton how to name tools, measure twice, and save useful scraps of paper.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "ilya-birth", "label": "Born", "value": "1894", "place": "North Harbor"},
+        {"id": "ilya-work", "label": "Occupation", "value": "Mechanic", "place": null}
+      ],
+      "immediateFamily": {"parents": [], "partners": ["sample-anton-parent-mara"], "siblings": [], "children": ["sample-anton-orlov"]},
+      "media": [],
+      "sources": [{"id": "ilya-source", "kind": "synthetic-sample", "locator": "sample-family.json"}]
+    },
+    {
+      "id": "sample-anton-partner-lidia",
+      "givenName": "Lidia",
+      "familyName": "Orlov",
+      "alternateNames": [],
+      "lifespan": "1926–1998",
+      "summary": "Music teacher and co-keeper of the family archive.",
+      "biography": "Lidia preserved letters, music notebooks, and the labels that made Anton’s boxes understandable.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "lidia-birth", "label": "Born", "value": "1926", "place": "East Junction"},
+        {"id": "lidia-work", "label": "Occupation", "value": "Music teacher", "place": null}
+      ],
+      "immediateFamily": {"parents": [], "partners": ["sample-anton-orlov"], "siblings": [], "children": ["sample-anton-child-elena"]},
+      "media": [],
+      "sources": [{"id": "lidia-source", "kind": "synthetic-sample", "locator": "sample-family.json"}]
+    },
+    {
+      "id": "sample-anton-sibling-sofia",
+      "givenName": "Sofia",
+      "familyName": "Orlov",
+      "alternateNames": [],
+      "lifespan": "1920–2001",
+      "summary": "Bookkeeper and long-distance letter writer.",
+      "biography": "Sofia exchanged letters with Anton for decades and supplied dates for several family photographs.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "sofia-birth", "label": "Born", "value": "1920", "place": "North Harbor"},
+        {"id": "sofia-work", "label": "Occupation", "value": "Bookkeeper", "place": null}
+      ],
+      "immediateFamily": {"parents": ["sample-anton-parent-mara", "sample-anton-parent-ilya"], "partners": [], "siblings": ["sample-anton-orlov"], "children": []},
+      "media": [],
+      "sources": [{"id": "sofia-source", "kind": "synthetic-sample", "locator": "sample-family.json"}]
+    },
+    {
+      "id": "sample-anton-child-elena",
+      "givenName": "Elena",
+      "familyName": "Orlov",
+      "alternateNames": [],
+      "lifespan": "1950–",
+      "summary": "Teacher and steward of Anton’s notebooks.",
+      "biography": "Elena inherited the labeled boxes and began arranging them by person, date, and story.",
+      "privacy": "sample",
+      "facts": [
+        {"id": "elena-birth", "label": "Born", "value": "1950", "place": "Silver City"},
+        {"id": "elena-work", "label": "Occupation", "value": "Teacher", "place": null}
+      ],
+      "immediateFamily": {"parents": ["sample-anton-orlov", "sample-anton-partner-lidia"], "partners": [], "siblings": [], "children": []},
+      "media": [],
+      "sources": [{"id": "elena-source", "kind": "synthetic-sample", "locator": "sample-family.json"}]
+    }
+  ]
+}
