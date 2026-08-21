@@ -42,9 +42,10 @@ struct PersonDetailView: View {
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 40, height: 40)
-                    .background(Color(uiColor: .secondarySystemBackground))
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -62,9 +63,10 @@ struct PersonDetailView: View {
                 showingActions = true
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 40, height: 40)
-                    .background(Color(uiColor: .secondarySystemBackground))
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -90,16 +92,16 @@ struct PersonDetailView: View {
                             Text("Also known as ")
                             + Text(person.alternateNames.joined(separator: " · "))
                         )
-                            .font(.caption)
-                            .foregroundStyle(ArchiveTheme.muted)
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.bottom, 6)
                     }
 
                     if let lifeSummary = profileLifeSummary {
                         Text(lifeSummary)
-                            .font(.caption)
-                            .foregroundStyle(ArchiveTheme.ink)
+                            .font(ArchiveTypography.body)
+                            .foregroundStyle(ArchiveTheme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -119,10 +121,7 @@ struct PersonDetailView: View {
             }
 
             if !person.summary.isEmpty {
-                Text(person.summary)
-                    .font(.subheadline)
-                    .foregroundStyle(ArchiveTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                ArchiveParagraph(person.summary)
             }
         }
         .padding(.horizontal, 20)
@@ -190,10 +189,10 @@ struct PersonDetailView: View {
                 } label: {
                     VStack(spacing: 8) {
                         Image(systemName: tab.systemImage)
-                            .font(.subheadline.weight(.semibold))
+                            .font(ArchiveTypography.icon)
 
                         Text(tab.title)
-                            .font(.caption.weight(.medium))
+                            .font(ArchiveTypography.metadataEmphasis)
                             .lineLimit(1)
                     }
                     .foregroundStyle(selectedTab == tab ? ArchiveTheme.action : .secondary)
@@ -224,10 +223,10 @@ struct PersonDetailView: View {
                 }
 
                 LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
-                    spacing: 8
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5),
+                    spacing: 6
                 ) {
-                    ForEach(person.media.prefix(4)) { item in
+                    ForEach(person.media.prefix(5)) { item in
                         ProfileMediaPreviewTile(item: item)
                     }
                 }
@@ -269,8 +268,10 @@ struct PersonDetailView: View {
                         }
                     } else {
                         Text("No additional dated events recorded.")
-                            .font(.subheadline)
+                            .font(ArchiveTypography.paragraph)
                             .foregroundStyle(ArchiveTheme.muted)
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
                             .padding(.vertical, 12)
                     }
                 }
@@ -283,28 +284,36 @@ struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 28) {
             if !person.structuredStories.isEmpty {
                 ForEach(person.structuredStories) { chapter in
-                    detailSection(chapter.title) {
-                        if let dateRange = chapter.dateRange {
-                            Text(dateRange)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(ArchiveTheme.muted)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(chapter.title.uppercased())
+                            .font(ArchiveTypography.sectionTitle)
+                            .tracking(1.2)
+                            .foregroundStyle(ArchiveTheme.ink)
+
+                        if let dateRange = chapter.dateRange, let summary = chapter.summary {
+                            ArchiveDatedContentBlock(
+                                date: dateRange,
+                                title: summary,
+                                body: chapter.body
+                            )
+                        } else {
+                            if let dateRange = chapter.dateRange {
+                                ArchiveContentDate(dateRange)
+                            }
+                            if let summary = chapter.summary {
+                                ArchiveContentTitle(summary)
+                            }
                         }
-                        if let summary = chapter.summary {
-                            Text(summary)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(ArchiveTheme.muted)
-                                .padding(.top, 4)
+                        if chapter.dateRange == nil || chapter.summary == nil {
+                            ArchiveParagraph(chapter.body)
+                                .textSelection(.enabled)
                         }
-                        Text(chapter.body)
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .padding(.top, 4)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
                 detailSection("Life story") {
-                    Text(person.biography)
-                        .font(.body)
+                    ArchiveParagraph(person.biography)
                         .textSelection(.enabled)
                 }
             }
@@ -333,9 +342,7 @@ struct PersonDetailView: View {
                 familySection
             } else {
                 detailSection("Immediate family") {
-                    Text("No immediate family connections are recorded for this profile yet.")
-                        .font(.body)
-                        .foregroundStyle(ArchiveTheme.muted)
+                    ArchiveParagraph("No immediate family connections are recorded for this profile yet.")
                 }
             }
         }
@@ -389,28 +396,15 @@ struct PersonDetailView: View {
     private func familyGroup(title: String, ids: [Person.ID]) -> some View {
         if !ids.isEmpty {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(ArchiveTypography.contentTitle)
                 .padding(.top, 10)
 
             ForEach(repository.people(ids: ids)) { relative in
                 NavigationLink(value: relative.id) {
-                    HStack(spacing: 12) {
-                        MonogramView(person: relative, size: 36)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(relative.displayName)
-                            Text(relative.lifespan)
-                                .font(.caption)
-                                .foregroundStyle(ArchiveTheme.muted)
-                        }
-                        Spacer()
-                        Image(systemName: "arrow.up.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(ArchiveTheme.muted)
-                    }
-                    .padding(.vertical, 10)
+                    FamilyMemberTile(person: relative)
                 }
                 .buttonStyle(.plain)
-                Divider()
+                .padding(.bottom, 6)
             }
         }
     }
@@ -443,6 +437,100 @@ struct PersonDetailView: View {
 
             VStack(alignment: .leading, spacing: 0, content: content)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ArchiveParagraph: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(ArchiveTypography.paragraph)
+            .foregroundStyle(ArchiveTheme.muted)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct ArchiveContentDate: View {
+    let value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
+
+    var body: some View {
+        Text(value)
+            .font(ArchiveTypography.metadataEmphasis)
+            .foregroundStyle(ArchiveTheme.metadata)
+    }
+}
+
+private struct ArchiveContentTitle: View {
+    let value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
+
+    var body: some View {
+        Text(value)
+            .font(ArchiveTypography.contentTitle)
+            .foregroundStyle(ArchiveTheme.ink)
+    }
+}
+
+private struct ArchiveDatedContentTitle: View {
+    let date: String
+    let title: String
+    let note: String?
+
+    init(date: String, title: String, note: String? = nil) {
+        self.date = date
+        self.title = title
+        self.note = note
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                ArchiveContentDate(date)
+                Spacer()
+                if let note {
+                    Text(note)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                }
+            }
+            ArchiveContentTitle(title)
+        }
+    }
+}
+
+private struct ArchiveDatedContentBlock: View {
+    let date: String
+    let title: String
+    let bodyText: String
+    let note: String?
+
+    init(date: String, title: String, body: String, note: String? = nil) {
+        self.date = date
+        self.title = title
+        self.bodyText = body
+        self.note = note
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ArchiveDatedContentTitle(date: date, title: title, note: note)
+            ArchiveParagraph(bodyText)
+                .textSelection(.enabled)
+        }
     }
 }
 
@@ -453,12 +541,12 @@ private struct ProfileDateLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(label):")
-                .font(.caption.weight(.bold))
+                .font(ArchiveTypography.metadataEmphasis)
                 .foregroundStyle(ArchiveTheme.ink)
                 .frame(width: 54, alignment: .leading)
             Text(dateAndPlace)
-                .font(.caption)
-                .foregroundStyle(ArchiveTheme.muted)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -479,11 +567,12 @@ private struct ProfilePhotoView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .grayscale(person.isLiving ? 0 : 1)
             } else {
                 ZStack(alignment: .bottomLeading) {
                     MonogramView(person: person, size: size)
                     Image(systemName: "photo")
-                        .font(.caption.weight(.semibold))
+                        .font(ArchiveTypography.metadataEmphasis)
                         .foregroundStyle(.white)
                         .padding(8)
                 }
@@ -534,7 +623,7 @@ private struct FactRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 18) {
             Text(fact.label)
-                .font(.subheadline)
+                .font(ArchiveTypography.supporting)
                 .foregroundStyle(ArchiveTheme.muted)
 
             Spacer()
@@ -542,9 +631,9 @@ private struct FactRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(fact.value)
                 if let place = fact.place {
-                    Text(place)
-                        .font(.caption)
-                        .foregroundStyle(ArchiveTheme.muted)
+                Text(place)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
                 }
             }
         }
@@ -573,14 +662,13 @@ private struct TimelineRow: View {
             }
             .frame(width: 10)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(fact.label)
-                    .font(.subheadline.weight(.semibold))
-                Text(fact.value)
+            VStack(alignment: .leading, spacing: 4) {
+                ArchiveContentTitle(fact.label)
+                ArchiveParagraph(fact.value)
                 if let place = fact.place {
                     Text(place)
-                        .font(.caption)
-                        .foregroundStyle(ArchiveTheme.muted)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
                 }
             }
             .padding(.vertical, 11)
@@ -609,25 +697,16 @@ private struct LifeEventRow: View {
             .frame(width: 10)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(event.date)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(ArchiveTheme.muted)
-                    Spacer()
-                    if event.isApproximate == true {
-                        Text("Approximate")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(ArchiveTheme.muted)
-                    }
-                }
-                Text(event.title)
-                    .font(.subheadline.weight(.semibold))
-                Text(event.summary)
-                    .font(.subheadline)
+                ArchiveDatedContentBlock(
+                    date: event.date,
+                    title: event.title,
+                    body: event.summary,
+                    note: event.isApproximate == true ? "Approximate" : nil
+                )
                 if let place = event.place {
                     Text(place)
-                        .font(.caption)
-                        .foregroundStyle(ArchiveTheme.muted)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
                 }
             }
             .padding(.vertical, 11)
@@ -650,7 +729,7 @@ private struct ProfileMediaPreviewTile: View {
                 )
 
             Image(systemName: item.kind.systemImage)
-                .font(.body.weight(.semibold))
+                .font(ArchiveTypography.icon)
                 .foregroundStyle(.white)
         }
         .aspectRatio(1, contentMode: .fit)
@@ -673,47 +752,47 @@ private struct MediaTile: View {
                     )
 
                 Image(systemName: item.kind.systemImage)
-                    .font(.title2)
+                    .font(ArchiveTypography.bodyEmphasis)
                     .foregroundStyle(.white)
                     .padding(12)
             }
             .frame(height: 106)
 
             Text(item.title)
-                .font(.subheadline.weight(.medium))
+                .font(ArchiveTypography.supportingEmphasis)
                 .lineLimit(2)
 
             if let date = item.date {
                 Text(date)
-                    .font(.caption)
-                    .foregroundStyle(ArchiveTheme.muted)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
             }
 
             if let caption = item.caption, !caption.isEmpty {
                 Text(caption)
-                    .font(.caption)
-                    .foregroundStyle(ArchiveTheme.muted)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
                     .lineLimit(2)
             }
 
             if let collection = item.collection, !collection.isEmpty {
                 Text(collection)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(ArchiveTheme.muted)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
                     .lineLimit(1)
             }
 
             if let tags = item.tags, !tags.isEmpty {
                 Text(tags.map { "#\($0)" }.joined(separator: "  "))
-                    .font(.caption2)
-                    .foregroundStyle(ArchiveTheme.muted)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
                     .lineLimit(1)
             }
 
             if item.isApproximate == true {
                 Text("Date approximate")
-                    .font(.caption2)
-                    .foregroundStyle(ArchiveTheme.muted)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -727,15 +806,15 @@ private struct SourceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(source.title ?? source.kind)
-                .font(.subheadline.weight(.semibold))
+                .font(ArchiveTypography.supportingEmphasis)
             Text(source.locator)
-                .font(.caption)
-                .foregroundStyle(ArchiveTheme.muted)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
                 .textSelection(.enabled)
             if let notes = source.notes, !notes.isEmpty {
                 Text(notes)
-                    .font(.caption)
-                    .foregroundStyle(ArchiveTheme.muted)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
             }
         }
         .padding(.vertical, 11)
@@ -750,10 +829,10 @@ private struct MediaStat: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(.title3.weight(.semibold))
+                .font(ArchiveTypography.supportingEmphasis)
             Text(label)
-                .font(.caption)
-                    .foregroundStyle(ArchiveTheme.muted)
+                .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)

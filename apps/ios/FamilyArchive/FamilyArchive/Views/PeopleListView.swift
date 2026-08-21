@@ -26,7 +26,8 @@ struct PeopleListView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     archiveHeader
 
-                    SearchField(text: $searchText)
+                    SearchField(text: $searchText, placeholder: "Search family")
+                        .padding(.top, 12)
                         .padding(.bottom, 20)
 
                     if filteredPeople.isEmpty {
@@ -48,7 +49,7 @@ struct PeopleListView: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, ArchiveLayout.pageHorizontal)
             .background(Color(uiColor: .systemBackground))
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
@@ -70,29 +71,61 @@ struct PeopleListView: View {
     }
 
     private var archiveHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("FAMILY")
-                .font(.caption.weight(.semibold))
-                .tracking(1.5)
-                .foregroundStyle(ArchiveTheme.accent)
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(1.2)
+                .foregroundStyle(ArchiveTheme.ink)
 
-            HStack(alignment: .firstTextBaseline) {
-                Text(repository.document.title)
-                    .font(.system(.largeTitle, design: .serif).weight(.bold))
+            Text("·")
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
 
-                Spacer()
+            Text("\(repository.people.count)")
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(ArchiveTheme.metadata)
+        }
+        .padding(.top, ArchiveLayout.pageTop)
+    }
+}
 
-                Text("\(repository.people.count)")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.secondary)
+struct FamilyMemberTile: View {
+    let person: Person
+
+    var body: some View {
+        HStack(spacing: 14) {
+            MonogramView(person: person, size: 40)
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(person.displayName)
+                    .font(ArchiveTypography.contentTitle)
+
+                HStack(spacing: 5) {
+                    Text(person.lifeDateLine)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .layoutPriority(1)
+                    if person.isLiving {
+                        Circle()
+                            .fill(ArchiveTheme.accent)
+                            .frame(width: 5, height: 5)
+                            .accessibilityLabel("Living")
+                        Text("Living")
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.accent)
+                            .lineLimit(1)
+                    }
+                }
             }
 
-            Text("People and their immediate family connections")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 18)
+            Spacer(minLength: 8)
         }
-        .padding(.top, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -100,53 +133,43 @@ private struct PersonRow: View {
     let person: Person
 
     var body: some View {
-        HStack(spacing: 14) {
-            MonogramView(person: person, size: 48)
+        FamilyMemberTile(person: person)
+    }
+}
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(person.displayName)
-                    .font(.headline)
+extension Person {
+    var lifeDateLine: String {
+        let birth = birthFact?.value
+        let death = deathFact?.value
 
-                Text(person.lifespan)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 6) {
-                    Rectangle()
-                        .fill(person.isLiving ? Color.green : Color.secondary)
-                        .frame(width: 7, height: 7)
-                    Text(person.lifeStatusLabel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(person.isLiving ? .green : .secondary)
-                }
-
-                if !person.summary.isEmpty {
-                    Text(person.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "arrow.up.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        switch (birth, death) {
+        case let (birth?, death?):
+            return "\(birth) – \(death)"
+        case let (birth?, nil):
+            return birth
+        case (nil, _):
+            return lifespan
         }
-        .padding(.vertical, 16)
     }
 }
 
 private struct SearchField: View {
     @Binding var text: String
+    let placeholder: String
+
+    init(text: Binding<String>, placeholder: String) {
+        _text = text
+        self.placeholder = placeholder
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .font(ArchiveTypography.icon)
+                .foregroundStyle(ArchiveTheme.muted)
 
-            TextField("Search people", text: $text)
+            TextField(placeholder, text: $text)
+                .font(ArchiveTypography.body)
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
 
@@ -161,10 +184,14 @@ private struct SearchField: View {
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 14)
-        .frame(height: 48)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .overlay(Rectangle().stroke(Color(uiColor: .separator), lineWidth: 1))
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .background(ArchiveTheme.controlBackground)
+        .clipShape(ArchiveShape.control)
+        .overlay(
+            ArchiveShape.control
+                .stroke(ArchiveTheme.controlBorder, lineWidth: 1)
+        )
     }
 }
 
@@ -184,10 +211,11 @@ struct MonogramView: View {
                 )
 
             Text(person.initials)
-                .font(.system(size: size * 0.34, weight: .semibold, design: .rounded))
+                .font(.system(size: size * 0.34, weight: .semibold))
                 .foregroundStyle(.white)
         }
         .frame(width: size, height: size)
+        .grayscale(person.isLiving ? 0 : 1)
         .accessibilityHidden(true)
     }
 }
@@ -199,32 +227,24 @@ struct MainTabView: View {
     @State private var selectedTab: MainTab = .home
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            HomeView(repository: repository, selectedTab: $selectedTab)
-                .tabItem {
-                    Label("Home", systemImage: "house")
+        VStack(spacing: 0) {
+            Group {
+                switch selectedTab {
+                case .home:
+                    HomeView(repository: repository, selectedTab: $selectedTab)
+                case .tree:
+                    TreePlaceholderView()
+                case .family:
+                    PeopleListView(repository: repository, initialPersonID: initialPersonID)
+                case .memories:
+                    MemoriesView(repository: repository)
                 }
-                .tag(MainTab.home)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            TreePlaceholderView()
-                .tabItem {
-                    Label("Tree", systemImage: "point.3.connected.trianglepath.dotted")
-                }
-                .tag(MainTab.tree)
-
-            PeopleListView(repository: repository, initialPersonID: initialPersonID)
-                .tabItem {
-                    Label("Family", systemImage: "person.2")
-                }
-                .tag(MainTab.family)
-
-            MemoriesView(repository: repository)
-                .tabItem {
-                    Label("Memories", systemImage: "photo.on.rectangle")
-                }
-                .tag(MainTab.memories)
+            ArchiveBottomNavigation(selectedTab: $selectedTab)
         }
-        .tint(ArchiveTheme.accent)
+        .background(Color(uiColor: .systemBackground))
         .onAppear {
             if initialPersonID != nil {
                 selectedTab = .family
@@ -233,11 +253,65 @@ struct MainTabView: View {
     }
 }
 
-enum MainTab: Hashable {
+private struct ArchiveBottomNavigation: View {
+    @Binding var selectedTab: MainTab
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(MainTab.allCases, id: \.self) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: tab.systemImage)
+                            .font(ArchiveTypography.icon)
+
+                        Text(tab.title)
+                            .font(ArchiveTypography.metadataEmphasis)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(selectedTab == tab ? .white : Color.white.opacity(0.68))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 68)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+                .accessibilityLabel(tab.title)
+            }
+        }
+        .frame(height: 68)
+        .background(ArchiveTheme.ink)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(ArchiveTheme.ink)
+                .frame(height: 1)
+        }
+    }
+}
+
+enum MainTab: Hashable, CaseIterable {
     case home
     case tree
     case family
     case memories
+
+    var title: String {
+        switch self {
+        case .home: "Home"
+        case .tree: "Tree"
+        case .family: "Family"
+        case .memories: "Memories"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .home: "house"
+        case .tree: "point.3.connected.trianglepath.dotted"
+        case .family: "person.2"
+        case .memories: "photo.on.rectangle"
+        }
+    }
 }
 
 enum ArchiveTheme {
@@ -245,14 +319,39 @@ enum ArchiveTheme {
     static let accentLight = Color(red: 0.88, green: 0.43, blue: 0.16)
     static let ink = Color(red: 0.12, green: 0.18, blue: 0.17)
     static let muted = Color(red: 0.34, green: 0.39, blue: 0.37)
+    static let metadata = Color(red: 0.46, green: 0.50, blue: 0.48)
+    static let controlBackground = Color(uiColor: .systemBackground)
+    static let controlBorder = Color(uiColor: .separator)
+    static let actionBackground = Color(red: 0.93, green: 0.95, blue: 0.94)
     static let action = accent
 }
 
 enum ArchiveTypography {
     static let navigationTitle = Font.system(size: 17, weight: .semibold)
-    static let profileName = Font.system(size: 28, weight: .bold, design: .serif)
+    static let pageTitle = Font.system(size: 34, weight: .bold)
+    static let profileName = Font.system(size: 28, weight: .bold)
+    static let body = Font.system(size: 15, weight: .regular)
+    static let paragraph = body
+    static let bodyEmphasis = Font.system(size: 17, weight: .semibold)
+    static let supporting = Font.system(size: 15, weight: .regular)
+    static let supportingEmphasis = Font.system(size: 15, weight: .semibold)
+    static let contentTitle = Font.system(size: 16, weight: .medium)
+    static let metadata = Font.system(size: 13, weight: .regular)
+    static let metadataEmphasis = Font.system(size: 13, weight: .semibold)
     static let sectionTitle = Font.system(size: 13, weight: .semibold)
     static let action = Font.system(size: 14, weight: .semibold)
+    static let icon = Font.system(size: 17, weight: .semibold)
+}
+
+enum ArchiveLayout {
+    static let pageHorizontal: CGFloat = 20
+    static let pageTop: CGFloat = 28
+    static let pageBottom: CGFloat = 32
+}
+
+enum ArchiveShape {
+    static let control = Rectangle()
+    static let actionDiameter: CGFloat = 40
 }
 
 private struct HomeView: View {
@@ -265,7 +364,7 @@ private struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(greeting)
-                        .font(.system(.largeTitle, design: .serif).weight(.bold))
+                        .font(.system(.largeTitle).weight(.bold))
 
                     Text("Your family, stories, and memories in one place.")
                         .font(.subheadline)
@@ -291,9 +390,9 @@ private struct HomeView: View {
                     }
                     .padding(.top, 28)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 24)
-                .padding(.bottom, 32)
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
             .background(Color(uiColor: .systemBackground))
@@ -397,7 +496,7 @@ private struct UserProfilePhotoView: View {
                     )
                 )
             Text("EL")
-                .font(.system(size: size * 0.35, weight: .semibold, design: .rounded))
+                .font(.system(size: size * 0.35, weight: .semibold))
                 .foregroundStyle(.white)
         }
         .frame(width: size, height: size)
@@ -432,8 +531,9 @@ private struct SettingsView: View {
                 AccountRow(title: "Your relationship view", detail: "Choose how family relationships are described")
                 AccountRow(title: "Privacy", detail: "Control what is visible to other family members")
             }
-            .padding(20)
-            .padding(.top, 24)
+            .padding(.horizontal, ArchiveLayout.pageHorizontal)
+            .padding(.top, ArchiveLayout.pageTop)
+            .padding(.bottom, ArchiveLayout.pageBottom)
         }
         .scrollIndicators(.hidden)
         .background(Color(uiColor: .systemBackground))
@@ -498,17 +598,22 @@ private struct TreePlaceholderView: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
                 Text("TREE")
-                    .font(.caption.weight(.semibold))
-                    .tracking(1.5)
-                    .foregroundStyle(ArchiveTheme.accent)
+                    .font(ArchiveTypography.sectionTitle)
+                    .tracking(1.2)
+                    .foregroundStyle(ArchiveTheme.ink)
                 Text("Family tree")
-                    .font(.system(.largeTitle, design: .serif).weight(.bold))
+                    .font(ArchiveTypography.pageTitle)
                 Text("The tree viewer is coming soon. Profiles and family links are available from the Family tab.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                    .font(ArchiveTypography.paragraph)
+                    .foregroundStyle(ArchiveTheme.muted)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
             }
-            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, ArchiveLayout.pageHorizontal)
+            .padding(.top, ArchiveLayout.pageTop)
+            .padding(.bottom, ArchiveLayout.pageBottom)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -565,20 +670,22 @@ private struct MemoriesView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("MEMORIES")
-                        .font(.caption.weight(.semibold))
-                        .tracking(1.5)
-                        .foregroundStyle(ArchiveTheme.accent)
+                        .font(ArchiveTypography.sectionTitle)
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.ink)
                     Text("Photos, documents & recordings")
-                        .font(.system(.largeTitle, design: .serif).weight(.bold))
+                        .font(ArchiveTypography.pageTitle)
                         .padding(.top, 6)
 
                     Text("Every photo, document, recording, and film in one searchable view.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(ArchiveTypography.paragraph)
+                        .foregroundStyle(ArchiveTheme.muted)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 6)
                         .padding(.bottom, 18)
 
-                    SearchField(text: $searchText)
+                    SearchField(text: $searchText, placeholder: "Search memories")
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -587,12 +694,16 @@ private struct MemoriesView: View {
                                     filter = option
                                 } label: {
                                     Text(option.title)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(filter == option ? .white : .primary)
+                                        .font(ArchiveTypography.metadataEmphasis)
+                                        .foregroundStyle(filter == option ? .white : ArchiveTheme.ink)
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 9)
-                        .background(filter == option ? ArchiveTheme.accent : Color(uiColor: .secondarySystemBackground))
-                                        .overlay(Rectangle().stroke(Color(uiColor: .separator), lineWidth: filter == option ? 0 : 1))
+                                        .background(filter == option ? ArchiveTheme.accent : Color(uiColor: .secondarySystemBackground))
+                                        .clipShape(ArchiveShape.control)
+                                        .overlay(
+                                            ArchiveShape.control
+                                                .stroke(Color(uiColor: .separator), lineWidth: filter == option ? 0 : 1)
+                                        )
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -602,8 +713,8 @@ private struct MemoriesView: View {
 
                     HStack {
                         Text("\(visibleMemories.count) memories")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .font(ArchiveTypography.metadataEmphasis)
+                            .foregroundStyle(ArchiveTheme.metadata)
 
                         Spacer()
 
@@ -625,11 +736,12 @@ private struct MemoriesView: View {
                                 Image(systemName: "arrow.up.arrow.down")
                                 Text(sort.title)
                             }
-                            .font(.caption.weight(.semibold))
+                            .font(ArchiveTypography.metadataEmphasis)
                             .foregroundStyle(ArchiveTheme.accent)
                             .padding(.vertical, 8)
                             .padding(.horizontal, 10)
-                            .overlay(Rectangle().stroke(ArchiveTheme.accent, lineWidth: 1))
+                            .clipShape(ArchiveShape.control)
+                            .overlay(ArchiveShape.control.stroke(ArchiveTheme.accent, lineWidth: 1))
                         }
                     }
                     .padding(.bottom, 8)
@@ -651,9 +763,9 @@ private struct MemoriesView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 28)
-                .padding(.bottom, 32)
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
             .background(Color(uiColor: .systemBackground))
@@ -735,7 +847,7 @@ private struct GalleryMemoryTile: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(memory.media.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(ArchiveTypography.contentTitle)
                     .lineLimit(2)
 
                 HStack(spacing: 4) {
@@ -745,8 +857,8 @@ private struct GalleryMemoryTile: View {
                         Text(date)
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
             }
         }
     }
@@ -781,7 +893,7 @@ private struct GalleryMediaVisual: View {
                 Image(systemName: memory.media.kind.systemImage)
                 Text(memory.media.kind.rawValue.capitalized)
             }
-            .font(.caption2.weight(.semibold))
+            .font(ArchiveTypography.metadataEmphasis)
             .foregroundStyle(.white)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -807,7 +919,7 @@ private struct MemoryDetailView: View {
                 GalleryMediaVisual(memory: memory)
 
                 Text(memory.media.title)
-                    .font(.system(.title2, design: .serif).weight(.bold))
+                    .font(ArchiveTypography.contentTitle)
 
                 HStack(spacing: 6) {
                     Text(memory.person.displayName)
@@ -816,12 +928,15 @@ private struct MemoryDetailView: View {
                         Text(date)
                     }
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
 
                 if let caption = memory.media.caption, !caption.isEmpty {
                     Text(caption)
-                        .font(.body)
+                        .font(ArchiveTypography.paragraph)
+                        .foregroundStyle(ArchiveTheme.muted)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let collection = memory.media.collection, !collection.isEmpty {
@@ -841,7 +956,7 @@ private struct MemoryDetailView: View {
                 } label: {
                     HStack {
                         Text("Open \(memory.person.displayName)’s profile")
-                            .font(.subheadline.weight(.semibold))
+                            .font(ArchiveTypography.action)
                         Spacer()
                         Image(systemName: "arrow.right")
                     }
@@ -851,7 +966,9 @@ private struct MemoryDetailView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(20)
+            .padding(.horizontal, ArchiveLayout.pageHorizontal)
+            .padding(.top, ArchiveLayout.pageTop)
+            .padding(.bottom, ArchiveLayout.pageBottom)
         }
         .scrollIndicators(.hidden)
         .background(Color(uiColor: .systemBackground))
@@ -867,11 +984,11 @@ private struct MemoryDetailRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label.uppercased())
-                .font(.caption.weight(.semibold))
+                .font(ArchiveTypography.sectionTitle)
                 .tracking(1.1)
-                .foregroundStyle(ArchiveTheme.accent)
+                .foregroundStyle(ArchiveTheme.ink)
             Text(value)
-                .font(.subheadline)
+                .font(ArchiveTypography.supporting)
         }
     }
 }
