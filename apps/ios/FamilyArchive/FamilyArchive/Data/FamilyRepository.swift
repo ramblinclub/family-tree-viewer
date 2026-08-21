@@ -40,12 +40,28 @@ struct FamilyRepository {
             return FamilyRepository(document: .empty)
         }
     }
+
+    static func localOrBundled(
+        fileManager: FileManager = .default,
+        bundle: Bundle = .main
+    ) -> FamilyRepository {
+        if let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let localURL = documentsURL.appendingPathComponent("family-archive.json")
+            if let data = try? Data(contentsOf: localURL),
+               let document = try? JSONDecoder().decode(FamilyArchiveDocument.self, from: data) {
+                return FamilyRepository(document: document)
+            }
+        }
+
+        return bundled(bundle: bundle)
+    }
 }
 
 private extension FamilyArchiveDocument {
     static let empty = FamilyArchiveDocument(
         schemaVersion: 1,
         title: "Family Archive",
+        accountHolderID: nil,
         people: []
     )
 }

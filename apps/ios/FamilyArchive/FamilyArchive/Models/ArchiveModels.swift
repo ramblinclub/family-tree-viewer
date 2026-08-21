@@ -1,8 +1,49 @@
 import Foundation
 
+enum ArchiveDateFormatter {
+    private static let inputFormats = [
+        "d MMMM yyyy",
+        "d MMM yyyy",
+        "MMMM d, yyyy",
+        "MMM d, yyyy",
+        "MMMM yyyy",
+        "MMM yyyy"
+    ]
+
+    private static let outputFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
+
+    static func display(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let inputFormatter = DateFormatter()
+        inputFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        for format in inputFormats {
+            inputFormatter.dateFormat = format
+            if let date = inputFormatter.date(from: trimmed) {
+                if format == "MMMM yyyy" || format == "MMM yyyy" {
+                    inputFormatter.dateFormat = "MMM yyyy"
+                    return inputFormatter.string(from: date)
+                }
+                return outputFormatter.string(from: date)
+            }
+        }
+
+        return trimmed
+    }
+}
+
 struct FamilyArchiveDocument: Codable {
     let schemaVersion: Int
     let title: String
+    let accountHolderID: Person.ID?
     let people: [Person]
 }
 
@@ -123,6 +164,7 @@ struct MediaReference: Codable, Identifiable, Hashable {
     let tags: [String]?
     let collection: String?
     let isApproximate: Bool?
+    let personIDs: [Person.ID]?
 }
 
 enum MediaKind: String, Codable, Hashable {

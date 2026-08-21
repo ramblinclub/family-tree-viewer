@@ -8,19 +8,26 @@ struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab: DetailTab = .overview
     @State private var showingActions = false
+    @State private var showingAllMedia = false
 
     var body: some View {
         VStack(spacing: 0) {
             detailTopBar
-            profileHeader
-            profileMediaPreview
-            tabBar
-
             ScrollView {
-                tabContent
-                    .padding(.horizontal, 20)
-                    .padding(.top, 22)
-                    .padding(.bottom, 32)
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    profileHeader
+                    profileMediaPreview
+
+                    Section {
+                        tabContent
+                            .padding(.horizontal, 20)
+                            .padding(.top, 22)
+                            .padding(.bottom, 32)
+                    } header: {
+                        tabBar
+                            .background(Color(uiColor: .systemBackground))
+                    }
+                }
             }
             .scrollIndicators(.hidden)
         }
@@ -33,6 +40,9 @@ struct PersonDetailView: View {
             Button("Share profile") {}
             Button("Report an issue", role: .destructive) {}
             Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $showingAllMedia) {
+            PersonMediaGalleryView(person: person)
         }
     }
 
@@ -81,11 +91,20 @@ struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
                 ProfilePhotoView(person: person, size: 72)
+                    // Align the photo with the visible cap-height of the name,
+                    // not the font's invisible line-box top.
+                    .padding(.top, ArchiveTypography.profileNameOpticalTopInset)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(person.displayName)
-                        .font(ArchiveTypography.profileName)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(person.displayName)
+                            .font(ArchiveTypography.profileName)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if repository.document.accountHolderID == person.id {
+                            AccountHolderBadge()
+                        }
+                    }
 
                     if !person.alternateNames.isEmpty {
                         (
@@ -106,8 +125,7 @@ struct PersonDetailView: View {
                     }
 
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .offset(y: -6)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -155,8 +173,13 @@ struct PersonDetailView: View {
         guard let value, !value.isEmpty else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "d MMMM yyyy"
-        return formatter.date(from: value)
+        for format in ["d MMMM yyyy", "d MMM yyyy", "MMMM d, yyyy", "MMM d, yyyy"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) {
+                return date
+            }
+        }
+        return nil
     }
 
     private func years(in value: String?) -> [Int] {
@@ -213,20 +236,31 @@ struct PersonDetailView: View {
 
     @ViewBuilder
     private var profileMediaPreview: some View {
-        if !person.media.isEmpty {
+        let previewMedia = person.media.filter { $0.path != profileMediaPath }
+
+        if !previewMedia.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("MEDIA")
                         .font(ArchiveTypography.sectionTitle)
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
+
+                    Spacer()
+
+                    Button("View all") {
+                        showingAllMedia = true
+                    }
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.action)
+                    .buttonStyle(.plain)
                 }
 
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5),
                     spacing: 6
                 ) {
-                    ForEach(person.media.prefix(5)) { item in
+                    ForEach(previewMedia.prefix(5)) { item in
                         ProfileMediaPreviewTile(item: item)
                     }
                 }
@@ -234,6 +268,10 @@ struct PersonDetailView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 14)
         }
+    }
+
+    private var profileMediaPath: String? {
+        person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
     }
 
     @ViewBuilder
@@ -291,7 +329,7 @@ struct PersonDetailView: View {
                             .foregroundStyle(ArchiveTheme.ink)
 
                         if let dateRange = chapter.dateRange, let summary = chapter.summary {
-                            ArchiveDatedContentBlock(
+                            StoryDatedContentBlock(
                                 date: dateRange,
                                 title: summary,
                                 body: chapter.body
@@ -301,7 +339,7 @@ struct PersonDetailView: View {
                                 ArchiveContentDate(dateRange)
                             }
                             if let summary = chapter.summary {
-                                ArchiveContentTitle(summary)
+                                StoryIntroParagraph(summary)
                             }
                         }
                         if chapter.dateRange == nil || chapter.summary == nil {
@@ -465,7 +503,7 @@ private struct ArchiveContentDate: View {
     }
 
     var body: some View {
-        Text(value)
+        Text(ArchiveDateFormatter.display(value) ?? value)
             .font(ArchiveTypography.metadataEmphasis)
             .foregroundStyle(ArchiveTheme.metadata)
     }
@@ -482,6 +520,28 @@ private struct ArchiveContentTitle: View {
         Text(value)
             .font(ArchiveTypography.contentTitle)
             .foregroundStyle(ArchiveTheme.ink)
+    }
+}
+
+private struct StoryIntroParagraph: View {
+    let value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Rectangle()
+                .fill(ArchiveTheme.accent)
+                .frame(width: 3)
+
+            Text(value)
+                .font(ArchiveTypography.paragraph)
+                .foregroundStyle(ArchiveTheme.ink)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -534,6 +594,41 @@ private struct ArchiveDatedContentBlock: View {
     }
 }
 
+private struct StoryDatedContentBlock: View {
+    let date: String
+    let title: String
+    let bodyText: String
+
+    init(date: String, title: String, body: String) {
+        self.date = date
+        self.title = title
+        self.bodyText = body
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                Rectangle()
+                    .fill(ArchiveTheme.accent)
+                    .frame(width: 3)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    ArchiveContentDate(date)
+                    Text(title)
+                        .font(ArchiveTypography.paragraph)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+                .padding(.bottom, 9)
+
+            ArchiveParagraph(bodyText)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 private struct ProfileDateLine: View {
     let label: String
     let fact: PersonFact
@@ -552,8 +647,9 @@ private struct ProfileDateLine: View {
     }
 
     private var dateAndPlace: String {
-        guard let place = fact.place, !place.isEmpty else { return fact.value }
-        return "\(fact.value), \(place)"
+        let date = ArchiveDateFormatter.display(fact.value) ?? fact.value
+        guard let place = fact.place, !place.isEmpty else { return date }
+        return "\(date), \(place)"
     }
 }
 
@@ -586,7 +682,7 @@ private struct ProfilePhotoView: View {
     private var loadedImage: UIImage? {
         let path = person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
         guard let path else { return nil }
-        return UIImage(contentsOfFile: path) ?? UIImage(named: path)
+        return ArchiveFileResolver.image(for: path)
     }
 }
 
@@ -718,21 +814,363 @@ private struct ProfileMediaPreviewTile: View {
     let item: MediaReference
 
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                ZStack {
+                    if let path = item.path, let image = ArchiveFileResolver.image(for: path) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Rectangle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
 
-            Image(systemName: item.kind.systemImage)
-                .font(ArchiveTypography.icon)
-                .foregroundStyle(.white)
+                        Image(systemName: item.kind.systemImage)
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        .clipped()
+    }
+}
+
+private struct PersonMediaGalleryView: View {
+    let person: Person
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedMedia: MediaReference?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            mediaTopBar
+
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    spacing: 14
+                ) {
+                    ForEach(person.media) { item in
+                        PersonMediaGalleryTile(item: item)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                            selectedMedia = item
+                        }
+                    }
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
+            }
+            .scrollIndicators(.hidden)
+            .background(Color(uiColor: .systemBackground))
         }
-        .aspectRatio(1, contentMode: .fit)
+        .foregroundStyle(ArchiveTheme.ink)
+        .background(Color(uiColor: .systemBackground))
+        .sheet(item: $selectedMedia) { item in
+            PersonMediaPagerView(items: person.media, initialID: item.id)
+        }
+    }
+
+    private var mediaTopBar: some View {
+        HStack {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close media gallery")
+
+            Spacer()
+
+            Text("Media")
+                .font(ArchiveTypography.navigationTitle)
+                .lineLimit(1)
+
+            Spacer()
+
+            // Balance the title against the leading close control.
+            Color.clear
+                .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+    }
+}
+
+private struct PersonMediaGalleryTile: View {
+    let item: MediaReference
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            PersonMediaVisual(item: item)
+
+            Group {
+                if let caption = item.caption, !caption.isEmpty {
+                    Text(captionWithDate(caption))
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .lineLimit(2)
+                } else if let date = item.date {
+                    Text(ArchiveDateFormatter.display(date) ?? date)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .lineLimit(2)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func captionWithDate(_ caption: String) -> String {
+        guard let date = item.date, !date.isEmpty else { return caption }
+        return "\(caption) · \(ArchiveDateFormatter.display(date) ?? date)"
+    }
+}
+
+private struct PersonMediaVisual: View {
+    let item: MediaReference
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                ZStack(alignment: .bottomLeading) {
+                    if item.kind == .photo,
+                       let path = item.path,
+                       let image = ArchiveFileResolver.image(for: path) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Rectangle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+
+                        Image(systemName: item.kind.systemImage)
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    if item.kind != .photo {
+                        Text(item.kind.rawValue.capitalized)
+                            .font(ArchiveTypography.metadataEmphasis)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.55))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .clipped()
+    }
+}
+
+private struct PersonMediaPagerView: View {
+    let items: [MediaReference]
+    let initialID: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedIndex: Int
+
+    init(items: [MediaReference], initialID: String) {
+        self.items = items
+        self.initialID = initialID
+        _selectedIndex = State(initialValue: items.firstIndex { $0.id == initialID } ?? 0)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            mediaTopBar
+
+            VStack(spacing: 0) {
+                TabView(selection: $selectedIndex) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        PersonMediaDetailContent(item: item)
+                            .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .automatic))
+
+                HStack {
+                    Button {
+                        selectedIndex = max(0, selectedIndex - 1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedIndex == 0)
+                    .opacity(selectedIndex == 0 ? 0.35 : 1)
+                    .accessibilityLabel("Previous photo")
+
+                    Spacer()
+
+                    Text("\(selectedIndex + 1) of \(items.count)")
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+
+                    Spacer()
+
+                    Button {
+                        selectedIndex = min(items.count - 1, selectedIndex + 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedIndex == items.count - 1)
+                    .opacity(selectedIndex == items.count - 1 ? 0.35 : 1)
+                    .accessibilityLabel("Next photo")
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color(uiColor: .systemBackground))
+            }
+            .background(Color(uiColor: .systemBackground))
+        }
+        .foregroundStyle(ArchiveTheme.ink)
+        .background(Color(uiColor: .systemBackground))
+    }
+
+    private var mediaTopBar: some View {
+        HStack {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close media")
+
+            Spacer()
+
+            Text("Media")
+                .font(ArchiveTypography.navigationTitle)
+                .lineLimit(1)
+
+            Spacer()
+
+            Color.clear
+                .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+    }
+}
+
+private struct PersonMediaDetailContent: View {
+    let item: MediaReference
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                PersonMediaLargeVisual(item: item)
+
+                if let caption = item.caption, !caption.isEmpty {
+                    Text(mediaCaptionWithDate(caption, date: item.date))
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let date = item.date {
+                    Text(ArchiveDateFormatter.display(date) ?? date)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                }
+
+                if let collection = item.collection, !collection.isEmpty {
+                    GalleryMetadataRow(label: "Collection", value: collection)
+                }
+
+                if let tags = item.tags, !tags.isEmpty {
+                    GalleryMetadataRow(label: "Tags", value: tags.joined(separator: " · "))
+                }
+            }
+            .padding(.horizontal, ArchiveLayout.pageHorizontal)
+            .padding(.top, ArchiveLayout.pageTop)
+            .padding(.bottom, ArchiveLayout.pageBottom)
+        }
+        .background(Color(uiColor: .systemBackground))
+    }
+}
+
+private func mediaCaptionWithDate(_ caption: String, date: String?) -> String {
+    guard let date, !date.isEmpty else { return caption }
+    return "\(caption) · \(ArchiveDateFormatter.display(date) ?? date)"
+}
+
+private struct PersonMediaLargeVisual: View {
+    let item: MediaReference
+
+    var body: some View {
+        Group {
+            if item.kind == .photo,
+               let path = item.path,
+               let image = ArchiveFileResolver.image(for: path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity)
+                    .background(ArchiveTheme.ink.opacity(0.05))
+            } else {
+                PersonMediaVisual(item: item)
+            }
+        }
+    }
+}
+
+private struct GalleryMetadataRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(ArchiveTheme.metadata)
+            Text(value)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.ink)
+        }
     }
 }
 
@@ -763,7 +1201,7 @@ private struct MediaTile: View {
                 .lineLimit(2)
 
             if let date = item.date {
-                Text(date)
+                Text(ArchiveDateFormatter.display(date) ?? date)
                     .font(ArchiveTypography.metadata)
                     .foregroundStyle(ArchiveTheme.metadata)
             }

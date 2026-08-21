@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct FamilyArchiveApp: App {
-    private let repository = FamilyRepository.bundled()
+    private let repository = FamilyRepository.localOrBundled()
 
     private var previewPersonID: Person.ID? {
         guard let flagIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "-preview-person"),

@@ -1,6 +1,23 @@
 import SwiftUI
 import UIKit
 
+enum ArchiveFileResolver {
+    static func image(for path: String) -> UIImage? {
+        if let image = UIImage(contentsOfFile: path) {
+            return image
+        }
+
+        if let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let localURL = documentsURL.appendingPathComponent(path)
+            if let image = UIImage(contentsOfFile: localURL.path) {
+                return image
+            }
+        }
+
+        return UIImage(named: path)
+    }
+}
+
 struct PeopleListView: View {
     let repository: FamilyRepository
     let initialPersonID: Person.ID?
@@ -38,7 +55,10 @@ struct PeopleListView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(filteredPeople) { person in
                                 NavigationLink(value: person.id) {
-                                    PersonRow(person: person)
+                                    PersonRow(
+                                        person: person,
+                                        isAccountHolder: repository.document.accountHolderID == person.id
+                                    )
                                 }
                                 .buttonStyle(.plain)
 
@@ -91,15 +111,21 @@ struct PeopleListView: View {
 
 struct FamilyMemberTile: View {
     let person: Person
+    var isAccountHolder = false
 
     var body: some View {
-        HStack(spacing: 14) {
-            MonogramView(person: person, size: 40)
-                .clipShape(Circle())
+        HStack(alignment: .top, spacing: 14) {
+            FamilyMemberPhotoView(person: person, size: 40)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(person.displayName)
-                    .font(ArchiveTypography.contentTitle)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(person.displayName)
+                        .font(ArchiveTypography.contentTitle)
+
+                    if isAccountHolder {
+                        AccountHolderBadge()
+                    }
+                }
 
                 HStack(spacing: 5) {
                     Text(person.lifeDateLine)
@@ -129,11 +155,55 @@ struct FamilyMemberTile: View {
     }
 }
 
-private struct PersonRow: View {
+struct AccountHolderBadge: View {
+    var body: some View {
+        Text("YOU")
+            .font(ArchiveTypography.sectionTitle)
+            .tracking(0.8)
+            .foregroundStyle(ArchiveTheme.action)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .overlay {
+                Rectangle()
+                    .stroke(ArchiveTheme.action, lineWidth: 1)
+            }
+            .accessibilityLabel("You, account holder")
+    }
+}
+
+private struct FamilyMemberPhotoView: View {
     let person: Person
+    let size: CGFloat
 
     var body: some View {
-        FamilyMemberTile(person: person)
+        Group {
+            if let image = loadedImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .grayscale(person.isLiving ? 0 : 1)
+            } else {
+                MonogramView(person: person, size: size)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .accessibilityLabel("Photo for \(person.displayName)")
+    }
+
+    private var loadedImage: UIImage? {
+        let path = person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        guard let path else { return nil }
+        return ArchiveFileResolver.image(for: path)
+    }
+}
+
+private struct PersonRow: View {
+    let person: Person
+    let isAccountHolder: Bool
+
+    var body: some View {
+        FamilyMemberTile(person: person, isAccountHolder: isAccountHolder)
     }
 }
 
@@ -144,9 +214,9 @@ extension Person {
 
         switch (birth, death) {
         case let (birth?, death?):
-            return "\(birth) – \(death)"
+            return "\(ArchiveDateFormatter.display(birth) ?? birth) – \(ArchiveDateFormatter.display(death) ?? death)"
         case let (birth?, nil):
-            return birth
+            return ArchiveDateFormatter.display(birth) ?? birth
         case (nil, _):
             return lifespan
         }
@@ -225,6 +295,8 @@ struct MainTabView: View {
     let initialPersonID: Person.ID?
 
     @State private var selectedTab: MainTab = .home
+    @State private var familyResetID = UUID()
+    @State private var shouldOpenInitialPerson = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -235,14 +307,24 @@ struct MainTabView: View {
                 case .tree:
                     TreePlaceholderView()
                 case .family:
-                    PeopleListView(repository: repository, initialPersonID: initialPersonID)
+                    PeopleListView(
+                        repository: repository,
+                        initialPersonID: shouldOpenInitialPerson ? initialPersonID : nil
+                    )
+                    .id(familyResetID)
                 case .memories:
                     MemoriesView(repository: repository)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            ArchiveBottomNavigation(selectedTab: $selectedTab)
+            ArchiveBottomNavigation(selectedTab: $selectedTab) { tab in
+                if tab == .family {
+                    shouldOpenInitialPerson = false
+                    familyResetID = UUID()
+                }
+                selectedTab = tab
+            }
         }
         .background(Color(uiColor: .systemBackground))
         .onAppear {
@@ -255,12 +337,18 @@ struct MainTabView: View {
 
 private struct ArchiveBottomNavigation: View {
     @Binding var selectedTab: MainTab
+    let onSelect: (MainTab) -> Void
+
+    init(selectedTab: Binding<MainTab>, onSelect: @escaping (MainTab) -> Void = { _ in }) {
+        _selectedTab = selectedTab
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(MainTab.allCases, id: \.self) { tab in
                 Button {
-                    selectedTab = tab
+                    onSelect(tab)
                 } label: {
                     VStack(spacing: 5) {
                         Image(systemName: tab.systemImage)
@@ -330,6 +418,12 @@ enum ArchiveTypography {
     static let navigationTitle = Font.system(size: 17, weight: .semibold)
     static let pageTitle = Font.system(size: 34, weight: .bold)
     static let profileName = Font.system(size: 28, weight: .bold)
+    /// SwiftUI aligns text using its line box. This is the distance from that
+    /// line-box top to the capital-letter top for the profile-name font.
+    static let profileNameOpticalTopInset: CGFloat = {
+        let font = UIFont.systemFont(ofSize: 28, weight: .bold)
+        return max(0, (font.lineHeight - font.capHeight) / 2)
+    }()
     static let body = Font.system(size: 15, weight: .regular)
     static let paragraph = body
     static let bodyEmphasis = Font.system(size: 17, weight: .semibold)
@@ -624,7 +718,7 @@ private struct MemoriesView: View {
     let repository: FamilyRepository
 
     @State private var searchText = ""
-    @State private var filter: MemoryFilter = .all
+    @State private var filter: MemoryFilter = .photo
     @State private var sort: MemorySort = .newest
     @State private var selectedMemory: MemoryItem?
 
@@ -669,23 +763,11 @@ private struct MemoriesView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("MEMORIES")
-                        .font(ArchiveTypography.sectionTitle)
-                        .tracking(1.2)
-                        .foregroundStyle(ArchiveTheme.ink)
-                    Text("Photos, documents & recordings")
-                        .font(ArchiveTypography.pageTitle)
-                        .padding(.top, 6)
+                    memoriesHeader
 
-                    Text("Every photo, document, recording, and film in one searchable view.")
-                        .font(ArchiveTypography.paragraph)
-                        .foregroundStyle(ArchiveTheme.muted)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 6)
-                        .padding(.bottom, 18)
-
-                    SearchField(text: $searchText, placeholder: "Search memories")
+                    SearchField(text: $searchText, placeholder: "Search \(filter.searchPlaceholder)")
+                        .padding(.top, 12)
+                        .padding(.bottom, 20)
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -712,7 +794,7 @@ private struct MemoriesView: View {
                     .padding(.vertical, 12)
 
                     HStack {
-                        Text("\(visibleMemories.count) memories")
+                        Text("\(visibleMemories.count) \(filter.countLabel)")
                             .font(ArchiveTypography.metadataEmphasis)
                             .foregroundStyle(ArchiveTheme.metadata)
 
@@ -753,18 +835,16 @@ private struct MemoriesView: View {
                     } else {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
                             ForEach(visibleMemories) { memory in
-                                Button {
-                                    selectedMemory = memory
-                                } label: {
-                                    GalleryMemoryTile(memory: memory)
-                                }
-                                .buttonStyle(.plain)
+                                GalleryMemoryTile(memory: memory)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        selectedMemory = memory
+                                    }
                             }
                         }
                     }
                 }
                 .padding(.horizontal, ArchiveLayout.pageHorizontal)
-                .padding(.top, ArchiveLayout.pageTop)
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
@@ -777,11 +857,17 @@ private struct MemoriesView: View {
                 }
             }
             .sheet(item: $selectedMemory) { memory in
-                NavigationStack {
-                    MemoryDetailView(memory: memory, repository: repository)
-                }
+                MemoriesPagerView(items: visibleMemories, initialID: memory.id, repository: repository)
             }
         }
+    }
+
+    private var memoriesHeader: some View {
+        Text("MEMORIES")
+            .font(ArchiveTypography.sectionTitle)
+            .tracking(1.2)
+            .foregroundStyle(ArchiveTheme.ink)
+        .padding(.top, ArchiveLayout.pageTop)
     }
 }
 
@@ -797,7 +883,6 @@ private struct MemoryItem: Identifiable {
 }
 
 private enum MemoryFilter: String, CaseIterable, Identifiable {
-    case all
     case photo
     case document
     case audio
@@ -807,7 +892,6 @@ private enum MemoryFilter: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .all: "All"
         case .photo: "Photos"
         case .document: "Documents"
         case .audio: "Audio"
@@ -815,8 +899,26 @@ private enum MemoryFilter: String, CaseIterable, Identifiable {
         }
     }
 
+    var countLabel: String {
+        switch self {
+        case .photo: "photos"
+        case .document: "documents"
+        case .audio: "audio recordings"
+        case .video: "videos"
+        }
+    }
+
+    var searchPlaceholder: String {
+        switch self {
+        case .photo: "photos"
+        case .document: "documents"
+        case .audio: "audio recordings"
+        case .video: "videos"
+        }
+    }
+
     func matches(_ kind: MediaKind) -> Bool {
-        self == .all || rawValue == kind.rawValue
+        rawValue == kind.rawValue
     }
 }
 
@@ -845,22 +947,24 @@ private struct GalleryMemoryTile: View {
         VStack(alignment: .leading, spacing: 7) {
             GalleryMediaVisual(memory: memory)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(memory.media.title)
-                    .font(ArchiveTypography.contentTitle)
-                    .lineLimit(2)
-
-                HStack(spacing: 4) {
-                    Text(memory.person.displayName)
-                    if let date = memory.media.date {
-                        Text("·")
-                        Text(date)
-                    }
+            Group {
+                if let caption = memory.media.caption, !caption.isEmpty {
+                    Text(memoryCaptionWithDate(caption, date: memory.media.date))
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .lineLimit(2)
+                } else if let date = memory.media.date {
+                    Text(ArchiveDateFormatter.display(date) ?? date)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .lineLimit(2)
+                } else {
+                    Color.clear
                 }
-                .font(ArchiveTypography.metadata)
-                .foregroundStyle(ArchiveTheme.metadata)
             }
+            .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -868,44 +972,50 @@ private struct GalleryMediaVisual: View {
     let memory: MemoryItem
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            if let image = loadedImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                ZStack(alignment: .bottomLeading) {
+                    if let image = loadedImage {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Rectangle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
 
-                Image(systemName: memory.media.kind.systemImage)
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+                        Image(systemName: memory.media.kind.systemImage)
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
 
-            HStack(spacing: 5) {
-                Image(systemName: memory.media.kind.systemImage)
-                Text(memory.media.kind.rawValue.capitalized)
+                    if memory.media.kind != .photo {
+                        HStack(spacing: 5) {
+                            Image(systemName: memory.media.kind.systemImage)
+                            Text(memory.media.kind.rawValue.capitalized)
+                        }
+                        .font(ArchiveTypography.metadataEmphasis)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.55))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .font(ArchiveTypography.metadataEmphasis)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.55))
-        }
-        .aspectRatio(1, contentMode: .fit)
         .clipped()
     }
 
     private var loadedImage: UIImage? {
         guard memory.media.kind == .photo, let path = memory.media.path else { return nil }
-        return UIImage(contentsOfFile: path) ?? UIImage(named: path)
+        return ArchiveFileResolver.image(for: path)
     }
 }
 
@@ -918,26 +1028,20 @@ private struct MemoryDetailView: View {
             VStack(alignment: .leading, spacing: 18) {
                 GalleryMediaVisual(memory: memory)
 
-                Text(memory.media.title)
-                    .font(ArchiveTypography.contentTitle)
-
-                HStack(spacing: 6) {
-                    Text(memory.person.displayName)
-                    if let date = memory.media.date {
-                        Text("·")
-                        Text(date)
-                    }
-                }
-                .font(ArchiveTypography.metadata)
-                .foregroundStyle(ArchiveTheme.metadata)
-
                 if let caption = memory.media.caption, !caption.isEmpty {
-                    Text(caption)
-                        .font(ArchiveTypography.paragraph)
-                        .foregroundStyle(ArchiveTheme.muted)
-                        .lineSpacing(3)
+                    Text(memoryCaptionWithDate(caption, date: memory.media.date))
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
                         .fixedSize(horizontal: false, vertical: true)
+                } else if let date = memory.media.date {
+                    Text(ArchiveDateFormatter.display(date) ?? date)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
                 }
+
+                Text(memory.person.displayName)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
 
                 if let collection = memory.media.collection, !collection.isEmpty {
                     MemoryDetailRow(label: "Collection", value: collection)
@@ -974,6 +1078,120 @@ private struct MemoryDetailView: View {
         .background(Color(uiColor: .systemBackground))
         .navigationTitle("Memory")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private func memoryCaptionWithDate(_ caption: String, date: String?) -> String {
+    guard let date, !date.isEmpty else { return caption }
+    return "\(caption) · \(ArchiveDateFormatter.display(date) ?? date)"
+}
+
+private struct MemoriesPagerView: View {
+    let items: [MemoryItem]
+    let initialID: String
+    let repository: FamilyRepository
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedIndex: Int
+
+    init(items: [MemoryItem], initialID: String, repository: FamilyRepository) {
+        self.items = items
+        self.initialID = initialID
+        self.repository = repository
+        _selectedIndex = State(initialValue: items.firstIndex { $0.id == initialID } ?? 0)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                memoriesTopBar
+
+                TabView(selection: $selectedIndex) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, memory in
+                        MemoryDetailView(memory: memory, repository: repository)
+                            .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .automatic))
+
+                HStack {
+                    Button {
+                        selectedIndex = max(0, selectedIndex - 1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedIndex == 0)
+                    .opacity(selectedIndex == 0 ? 0.35 : 1)
+                    .accessibilityLabel("Previous memory")
+
+                    Spacer()
+
+                    Text("\(selectedIndex + 1) of \(items.count)")
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+
+                    Spacer()
+
+                    Button {
+                        selectedIndex = min(items.count - 1, selectedIndex + 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedIndex == items.count - 1)
+                    .opacity(selectedIndex == items.count - 1 ? 0.35 : 1)
+                    .accessibilityLabel("Next memory")
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color(uiColor: .systemBackground))
+            }
+            .foregroundStyle(ArchiveTheme.ink)
+            .background(Color(uiColor: .systemBackground))
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    private var memoriesTopBar: some View {
+        HStack {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close memories")
+
+            Spacer()
+
+            Text("Memories")
+                .font(ArchiveTypography.navigationTitle)
+                .lineLimit(1)
+
+            Spacer()
+
+            Color.clear
+                .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 }
 
