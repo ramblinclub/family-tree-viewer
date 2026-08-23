@@ -18,24 +18,83 @@ enum ArchiveFileResolver {
     }
 }
 
+private struct FamilyNameFilterOption: Identifiable {
+    let id: String
+    let displayName: String
+    let variants: [String]
+}
+
 struct PeopleListView: View {
     @ObservedObject var repository: FamilyRepository
     let initialPersonID: Person.ID?
 
     @State private var searchText = ""
+    @State private var selectedFamilyNameKey: String?
+    @State private var storiesOnly = false
     @State private var navigationPath = NavigationPath()
 
     private var filteredPeople: [Person] {
         let people = repository.people.sorted(by: birthYearOrder)
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return people
-        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return people.filter { person in
-            person.displayName.localizedCaseInsensitiveContains(searchText) ||
-                person.alternateNames.contains { $0.localizedCaseInsensitiveContains(searchText) } ||
-                person.summary.localizedCaseInsensitiveContains(searchText)
+            let matchesSearch = query.isEmpty ||
+                person.displayName.localizedCaseInsensitiveContains(query) ||
+                person.alternateNames.contains { $0.localizedCaseInsensitiveContains(query) } ||
+                person.summary.localizedCaseInsensitiveContains(query)
+            let matchesFamilyName = selectedFamilyNameKey == nil ||
+                normalizedFamilyNameKey(person.familyName) == selectedFamilyNameKey
+            let matchesStories = !storiesOnly || person.hasStories
+            return matchesSearch && matchesFamilyName && matchesStories
         }
+    }
+
+    private var familyNameOptions: [FamilyNameFilterOption] {
+        let grouped = Dictionary(grouping: repository.people.map(\.familyName).filter { !$0.isEmpty }) {
+            normalizedFamilyNameKey($0)
+        }
+
+        return grouped.map { key, variants in
+            FamilyNameFilterOption(
+                id: key,
+                displayName: displayFamilyName(for: key, variants: variants),
+                variants: variants.sorted()
+            )
+        }
+        .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+    }
+
+    private func cyrillicAlias(for familyName: String) -> String {
+        switch familyName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "saparov": return "Сапаров"
+        case "fedotova": return "Федотова"
+        default: return familyName
+        }
+    }
+
+    private func masculineFamilyName(_ familyName: String) -> String {
+        let name = cyrillicAlias(for: familyName)
+        let lower = name.lowercased()
+
+        if lower.hasSuffix("ская") { return String(name.dropLast(4)) + "ской" }
+        if lower.hasSuffix("ова") { return String(name.dropLast(3)) + "ов" }
+        if lower.hasSuffix("ева") { return String(name.dropLast(3)) + "ев" }
+        if lower.hasSuffix("ина") { return String(name.dropLast(3)) + "ин" }
+        return name
+    }
+
+    private func normalizedFamilyNameKey(_ familyName: String) -> String {
+        masculineFamilyName(familyName)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private func displayFamilyName(for key: String, variants: [String]) -> String {
+        let cyrillicVariant = variants.first { variant in
+            cyrillicAlias(for: variant).unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
+        }
+        let source = cyrillicVariant ?? variants.first ?? key
+        return masculineFamilyName(source)
     }
 
     private func birthYearOrder(_ left: Person, _ right: Person) -> Bool {
@@ -57,10 +116,16 @@ struct PeopleListView: View {
 
                     SearchField(text: $searchText, placeholder: "Search family")
                         .padding(.top, 12)
-                        .padding(.bottom, 20)
+                        .padding(.bottom, 10)
+
+                    filterControls
+                        .padding(.bottom, 16)
 
                     if filteredPeople.isEmpty {
-                        ContentUnavailableView.search(text: searchText)
+                        ContentUnavailableView(
+                            searchText.isEmpty ? "No matching people" : "No results",
+                            systemImage: "person.2"
+                        )
                             .frame(maxWidth: .infinity)
                             .padding(.top, 48)
                     } else {
@@ -109,6 +174,75 @@ struct PeopleListView: View {
         }
     }
 
+    private var filterControls: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Button {
+                    selectedFamilyNameKey = nil
+                } label: {
+                    filterMenuLabel("All last names", isSelected: selectedFamilyNameKey == nil)
+                }
+
+                Divider()
+
+                ForEach(familyNameOptions) { option in
+                    Button {
+                        selectedFamilyNameKey = option.id
+                    } label: {
+                        filterMenuLabel(option.displayName, isSelected: selectedFamilyNameKey == option.id)
+                    }
+                }
+            } label: {
+                filterControlLabel(
+                    title: familyNameOptions.first(where: { $0.id == selectedFamilyNameKey })?.displayName ?? "Last name",
+                    systemImage: "textformat"
+                )
+            }
+            .accessibilityLabel("Filter by last name")
+
+            Button {
+                storiesOnly.toggle()
+            } label: {
+                filterControlLabel(
+                    title: "Stories",
+                    systemImage: storiesOnly ? "book.pages.fill" : "book.pages",
+                    isSelected: storiesOnly
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(storiesOnly ? "Showing people with stories" : "Show only people with stories")
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func filterControlLabel(title: String, systemImage: String, isSelected: Bool = false) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
+        .font(ArchiveTypography.metadataEmphasis)
+        .foregroundStyle(isSelected ? .white : ArchiveTheme.ink)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(isSelected ? ArchiveTheme.accent : ArchiveTheme.controlBackground)
+        .clipShape(ArchiveShape.control)
+        .overlay(
+            ArchiveShape.control
+                .stroke(isSelected ? ArchiveTheme.accent : ArchiveTheme.controlBorder, lineWidth: 1)
+        )
+    }
+
+    private func filterMenuLabel(_ title: String, isSelected: Bool) -> some View {
+        HStack {
+            Text(title)
+            if isSelected {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
     private var archiveHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("FAMILY")
@@ -150,6 +284,10 @@ struct FamilyMemberTile: View {
 
                     if isAccountHolder {
                         AccountHolderBadge()
+                    }
+
+                    if person.hasProfileContent {
+                        ProfileContentBadge()
                     }
                 }
 
@@ -203,6 +341,20 @@ struct AccountHolderBadge: View {
     }
 }
 
+private struct ProfileContentBadge: View {
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "book.pages")
+                .font(.system(size: 10, weight: .semibold))
+            Text("PROFILE")
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(0.5)
+        }
+        .foregroundStyle(ArchiveTheme.action)
+        .accessibilityLabel("Profile story available")
+    }
+}
+
 private struct FamilyMemberPhotoView: View {
     let person: Person
     let size: CGFloat
@@ -242,6 +394,20 @@ private struct PersonRow: View {
 }
 
 extension Person {
+    var hasStories: Bool {
+        !biography.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !structuredStories.isEmpty
+    }
+
+    var hasProfileContent: Bool {
+        hasStories ||
+            sources.contains { source in
+                let kind = source.kind.lowercased()
+                let locator = source.locator.lowercased()
+                return kind.contains("html") || locator.hasSuffix(".html")
+            }
+    }
+
     var birthYear: Int? {
         if let birthValue = birthFact?.value {
             return birthValue
