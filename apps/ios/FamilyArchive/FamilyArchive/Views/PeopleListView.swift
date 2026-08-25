@@ -1229,7 +1229,6 @@ private struct SettingsView: View {
     @State private var showingExporter = false
     @State private var showingImporter = false
     @State private var importConfirmation: ImportConfirmation?
-    @State private var importAccess: ScopedImportURL?
     @State private var transferMessage: TransferMessage?
     @State private var transferInProgress = false
 
@@ -1353,20 +1352,20 @@ private struct SettingsView: View {
                             _ = try repository.importPrivateArchive(at: url)
                             DispatchQueue.main.async {
                                 transferInProgress = false
-                                importAccess = nil
+                                cleanupTemporaryImport(at: url)
                                 transferMessage = TransferMessage(message: ArchiveCopy.text(english: "Private archive imported.", russian: "Приватный архив импортирован."))
                             }
                         } catch {
                             DispatchQueue.main.async {
                                 transferInProgress = false
-                                importAccess = nil
+                                cleanupTemporaryImport(at: url)
                                 transferMessage = TransferMessage(message: error.localizedDescription)
                             }
                         }
                     }
                 },
                 secondaryButton: .cancel(Text(ArchiveCopy.text(english: "Cancel", russian: "Отмена"))) {
-                    importAccess = nil
+                    cleanupTemporaryImport(at: confirmation.url)
                 }
             )
         }
@@ -1421,44 +1420,42 @@ private struct SettingsView: View {
     }
 
     private func importPrivateArchive(from url: URL) {
-        // Keep the security-scoped access alive from the file picker through
-        // the review alert and the eventual replacement. Files selected from
-        // Files/iCloud can otherwise become unreadable after the preview ends.
-        let access = ScopedImportURL(url: url)
+        let accessed = url.startAccessingSecurityScopedResource()
         transferInProgress = true
         DispatchQueue.global(qos: .userInitiated).async {
+            let localURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FamilyArchiveImport-(UUID().uuidString)", isDirectory: false)
+                .appendingPathExtension("familyarchive")
             do {
                 guard let repository else { throw ArchivePackageError.documentsUnavailable }
-                let summary = try repository.previewPrivateArchive(at: url)
+                // Files/iCloud URLs can be virtual provider locations rather
+                // than ordinary local files. Copy once while the security
+                // scope is active, then do all parsing and extraction locally.
+                try? FileManager.default.removeItem(at: localURL)
+                try FileManager.default.copyItem(at: url, to: localURL)
+                let summary = try repository.previewPrivateArchive(at: localURL)
+                if accessed { url.stopAccessingSecurityScopedResource() }
                 DispatchQueue.main.async {
                     transferInProgress = false
-                    importAccess = access
-                    importConfirmation = ImportConfirmation(url: url, summary: summary)
+                    importConfirmation = ImportConfirmation(url: localURL, summary: summary)
                 }
             } catch {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+                try? FileManager.default.removeItem(at: localURL)
                 DispatchQueue.main.async {
                     transferInProgress = false
-                    importAccess = nil
                     transferMessage = TransferMessage(message: error.localizedDescription)
                 }
             }
         }
     }
-}
 
-private final class ScopedImportURL: @unchecked Sendable {
-    let url: URL
-    private let accessGranted: Bool
-
-    init(url: URL) {
-        self.url = url
-        self.accessGranted = url.startAccessingSecurityScopedResource()
-    }
-
-    deinit {
-        if accessGranted {
-            url.stopAccessingSecurityScopedResource()
-        }
+    private func cleanupTemporaryImport(at url: URL) {
+        let temporaryRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        let candidate = url.standardizedFileURL.path
+        guard candidate.hasPrefix(temporaryRoot + "/"),
+              url.lastPathComponent.hasPrefix("FamilyArchiveImport-") else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 }
 
