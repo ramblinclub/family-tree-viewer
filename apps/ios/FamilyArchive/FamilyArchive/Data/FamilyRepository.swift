@@ -63,6 +63,7 @@ private struct PrivateDocumentStore {
 
     func bootstrap(document: FamilyArchiveDocument) throws {
         try save(document: document, changedPersonIDs: Set(document.people.map(\.id)), rebuildGEDCOM: true)
+        try copyReferencedAssetsIfNeeded(document: document)
         try copySidecarsIfAvailable()
     }
 
@@ -76,6 +77,11 @@ private struct PrivateDocumentStore {
     ) throws {
         try fileManager.createDirectory(at: peopleURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: privateDataURL, withIntermediateDirectories: true)
+
+        // Keep legacy Documents/media and Documents/documents references in
+        // the canonical store. Otherwise the JSON points at assets that are
+        // visible in the app but are absent from the exported store archive.
+        try copyReferencedAssetsIfNeeded(document: document)
 
         let peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
         let idsToWrite = changedPersonIDs.isEmpty ? Set(peopleByID.keys) : changedPersonIDs
@@ -123,6 +129,11 @@ private struct PrivateDocumentStore {
 
     func exportArchive(to destinationURL: URL) throws {
         guard fileManager.fileExists(atPath: rootURL.path) else { throw StoreError.storeUnavailable }
+        if let document = try loadDocument() {
+            // Export is also a repair point for records created by older
+            // builds, before referenced assets were synchronized on save.
+            try copyReferencedAssetsIfNeeded(document: document)
+        }
         try PrivateArchiveFile.write(directory: rootURL, to: destinationURL, fileManager: fileManager)
     }
 
@@ -151,8 +162,9 @@ private struct PrivateDocumentStore {
     private func copyReferencedAssetsIfNeeded(document: FamilyArchiveDocument) throws {
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
         for person in document.people {
-            for item in person.media {
-                guard let path = item.path,
+            let paths = person.media.compactMap(\.path) + [person.profileImagePath].compactMap { $0 }
+            for path in Set(paths) {
+                guard !path.isEmpty,
                       !path.hasPrefix("/"),
                       !path.split(separator: "/").contains("..") else { continue }
                 let destination = rootURL.appendingPathComponent(path)
