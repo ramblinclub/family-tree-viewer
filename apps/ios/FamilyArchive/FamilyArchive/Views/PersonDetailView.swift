@@ -11,7 +11,7 @@ struct PersonDetailView: View {
     }
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedTab: DetailTab = .family
+    @State private var selectedTab: DetailTab = .overview
     @State private var showingActions = false
     @State private var showingAllMedia = false
     @State private var showingEditor = false
@@ -81,15 +81,15 @@ struct PersonDetailView: View {
 
     private var profileActionsMenu: some View {
         VStack(alignment: .leading, spacing: 0) {
-            profileAction("Edit profile", systemImage: "person.crop.circle") {
+            profileAction(ArchiveCopy.text(english: "Edit profile", russian: "Изменить профиль"), systemImage: "person.crop.circle") {
                 showingActions = false
                 showingEditor = true
             }
-            profileAction("Edit media", systemImage: "photo") {
+            profileAction(ArchiveCopy.text(english: "Edit media", russian: "Изменить медиа"), systemImage: "photo") {
                 showingActions = false
                 showingMediaEditor = true
             }
-            profileAction("Share profile", systemImage: "square.and.arrow.up") {
+            profileAction(ArchiveCopy.text(english: "Share profile", russian: "Поделиться профилем"), systemImage: "square.and.arrow.up") {
                 showingActions = false
             }
         }
@@ -130,13 +130,30 @@ struct PersonDetailView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close profile")
+            .accessibilityLabel(ArchiveCopy.text(english: "Close profile", russian: "Закрыть профиль"))
 
             Spacer()
 
-            Text(person.relationshipToMe ?? "Family member")
-                .font(ArchiveTypography.navigationTitle)
-                .lineLimit(1)
+            HStack(spacing: 7) {
+                Text(person.relationshipToMe.map(ArchiveCopy.relationshipLabel) ?? ArchiveCopy.text(english: "Family member", russian: "Член семьи"))
+                    .font(ArchiveTypography.navigationTitle)
+                    .lineLimit(1)
+
+                Button {
+                    repository.appLanguage = repository.appLanguage == .english ? .russian : .english
+                } label: {
+                    Text(repository.appLanguage == .english ? "EN" : "RU")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .background(ArchiveTheme.actionBackground)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(repository.appLanguage == .english
+                    ? "Switch profile language to Russian"
+                    : "Переключить язык профиля на английский")
+            }
 
             Spacer()
 
@@ -151,7 +168,7 @@ struct PersonDetailView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Profile actions")
+            .accessibilityLabel(ArchiveCopy.text(english: "Profile actions", russian: "Действия профиля"))
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
@@ -177,9 +194,16 @@ struct PersonDetailView: View {
                         }
                     }
 
+                    if person.originalDisplayName != person.displayName {
+                        Text(person.originalDisplayName)
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     if !person.alternateNames.isEmpty {
                         (
-                            Text("Also known as ")
+                            Text(ArchiveCopy.text(english: "Also known as ", russian: "Также известен как "))
                             + Text(person.alternateNames.joined(separator: " · "))
                         )
                             .font(ArchiveTypography.metadata)
@@ -201,16 +225,16 @@ struct PersonDetailView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 if let birth = person.birthFact {
-                    ProfileDateLine(label: "Birth", fact: birth)
+                    ProfileDateLine(label: ArchiveCopy.text(english: "Birth", russian: "Рождение"), fact: birth)
                 }
 
                 if let death = person.deathFact {
-                    ProfileDateLine(label: "Death", fact: death)
+                    ProfileDateLine(label: ArchiveCopy.text(english: "Death", russian: "Смерть"), fact: death)
                 }
             }
 
-            if !person.summary.isEmpty {
-                ArchiveParagraph(person.summary)
+            if !person.localizedSummary.isEmpty {
+                ArchiveParagraph(person.localizedSummary)
             }
         }
         .padding(.horizontal, 20)
@@ -220,7 +244,7 @@ struct PersonDetailView: View {
 
     private var profileLifeSummary: String? {
         if repository.hasUnknownDeathDate(person) {
-            return "Death date unknown"
+            return ArchiveCopy.text(english: "Death date unknown", russian: "Дата смерти неизвестна")
         }
 
         let lifespanYears = years(in: person.lifespan)
@@ -237,11 +261,15 @@ struct PersonDetailView: View {
         if let deathYear {
             let age = age(from: birthDate, birthYear: birthYear, to: deathDate, endYear: deathYear)
             let yearsAgo = yearsAgo(from: deathDate, year: deathYear, calendar: calendar)
+            if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+                let unit = yearsAgo == 1 ? "год" : yearsAgo < 5 ? "года" : "лет"
+                return "Умер(ла) в возрасте \(age) · \(yearsAgo) \(unit) назад"
+            }
             return "Died at age \(age) · \(yearsAgo) \(yearsAgo == 1 ? "year" : "years") ago"
         }
 
         let age = age(from: birthDate, birthYear: birthYear, to: Date(), endYear: calendar.component(.year, from: Date()))
-        return "Age \(age)"
+        return ArchiveCopy.text(english: "Age \(age)", russian: "Возраст \(age)")
     }
 
     private func date(from value: String?) -> Date? {
@@ -316,14 +344,14 @@ struct PersonDetailView: View {
         if !previewMedia.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("MEDIA")
+                    Text(ArchiveCopy.text(english: "MEDIA", russian: "МЕДИА"))
                         .font(ArchiveTypography.sectionTitle)
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
 
                     Spacer()
 
-                    Button("View all") {
+                    Button(ArchiveCopy.text(english: "View all", russian: "Показать всё")) {
                         showingAllMedia = true
                     }
                     .font(ArchiveTypography.action)
@@ -363,20 +391,286 @@ struct PersonDetailView: View {
         }
     }
 
+    @ViewBuilder
     private var overviewContent: some View {
-        EmptyView()
+        if let connectionPreview {
+            ConnectionPathPreview(preview: connectionPreview, repository: repository)
+        } else {
+            EmptyView()
+        }
+    }
+
+    private var connectionPreview: ConnectionPathPreviewModel? {
+        // Build the relationship tree for every profile that can be reached
+        // from the account holder through the recorded family connections.
+        // Profiles without a discoverable path simply omit this section.
+        guard let accountID = repository.document.accountHolderID,
+              let account = repository.person(id: accountID),
+              let path = connectionPath(from: account.id, to: person.id) else {
+            return nil
+        }
+
+        let pathIDs = Set(path.map(\.id))
+        let steps = path.compactMap { node -> ConnectionPathStepModel? in
+            guard let pathPerson = repository.person(id: node.id) else { return nil }
+
+            let relationship: String?
+            if let relationshipKind = node.kindFromPrevious,
+               let index = path.firstIndex(where: { $0.id == node.id }),
+               index > 0,
+               let previousPerson = repository.person(id: path[index - 1].id) {
+                relationship = connectionLabel(from: previousPerson, to: pathPerson, kind: relationshipKind)
+            } else {
+                relationship = nil
+            }
+
+            return ConnectionPathStepModel(
+                person: pathPerson,
+                relationship: relationship,
+                contextPeople: repository.people(ids: pathPerson.immediateFamily.partners.filter { !pathIDs.contains($0) }),
+                isAccount: pathPerson.id == account.id,
+                isTarget: pathPerson.id == person.id
+            )
+        }
+
+        guard steps.count == path.count,
+              let summary = connectionSummary(for: person, path: path) else { return nil }
+
+        return ConnectionPathPreviewModel(
+            accountName: account.displayName,
+            targetName: person.displayName,
+            relationshipSummary: summary.text,
+            distanceSummary: summary.distance,
+            steps: steps
+        )
+    }
+
+    private func connectionPath(from startID: Person.ID, to targetID: Person.ID) -> [ConnectionPathNode]? {
+        guard startID != targetID else {
+            return [ConnectionPathNode(id: startID, kindFromPrevious: nil)]
+        }
+
+        var queue = [startID]
+        var queueIndex = 0
+        var previous: [Person.ID: (id: Person.ID, kind: ConnectionEdgeKind)] = [:]
+        var visited: Set<Person.ID> = [startID]
+
+        while queueIndex < queue.count {
+            let currentID = queue[queueIndex]
+            queueIndex += 1
+
+            for neighbor in connectionNeighbors(for: currentID) where !visited.contains(neighbor.id) {
+                visited.insert(neighbor.id)
+                previous[neighbor.id] = (currentID, neighbor.kind)
+                queue.append(neighbor.id)
+                if neighbor.id == targetID { break }
+            }
+
+            if visited.contains(targetID) { break }
+        }
+
+        guard visited.contains(targetID) else { return nil }
+
+        var ids: [Person.ID] = []
+        var currentID = targetID
+        while true {
+            ids.append(currentID)
+            if currentID == startID { break }
+            guard let previousID = previous[currentID]?.id else { return nil }
+            currentID = previousID
+        }
+
+        return ids.reversed().enumerated().map { index, id in
+            ConnectionPathNode(
+                id: id,
+                kindFromPrevious: index == 0 ? nil : previous[id]?.kind
+            )
+        }
+    }
+
+    private func connectionNeighbors(for personID: Person.ID) -> [ConnectionNeighbor] {
+        guard let person = repository.person(id: personID) else { return [] }
+
+        var neighbors: [ConnectionNeighbor] = []
+        var seen = Set<Person.ID>()
+
+        func add(_ id: Person.ID, kind: ConnectionEdgeKind) {
+            guard id != personID, repository.person(id: id) != nil, seen.insert(id).inserted else { return }
+            neighbors.append(ConnectionNeighbor(id: id, kind: kind))
+        }
+
+        person.immediateFamily.parents.forEach { add($0, kind: .parent) }
+        person.immediateFamily.children.forEach { add($0, kind: .child) }
+        person.immediateFamily.partners.forEach { add($0, kind: .partner) }
+        person.immediateFamily.siblings.forEach { add($0, kind: .sibling) }
+
+        // Some GEDCOM migrations omit sibling links. Infer them when two
+        // people share at least one recorded parent.
+        let parentIDs = Set(person.immediateFamily.parents)
+        if !parentIDs.isEmpty {
+            for candidate in repository.people where candidate.id != personID {
+                if !parentIDs.isDisjoint(with: candidate.immediateFamily.parents) {
+                    add(candidate.id, kind: .sibling)
+                }
+            }
+        }
+
+        return neighbors
+    }
+
+    private func connectionLabel(from source: Person, to destination: Person, kind: ConnectionEdgeKind) -> String {
+        let relationship = connectionWord(for: destination, kind: kind)
+        if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+            return "\(relationship) \(russianGenitiveName(of: source))"
+        }
+
+        let sourceName = source.givenName.isEmpty ? source.displayName : source.displayGivenName
+        return "\(sourceName)’s \(relationship)"
+    }
+
+    private func connectionWord(for person: Person, kind: ConnectionEdgeKind) -> String {
+        switch kind {
+        case .parent:
+            switch connectionGender(of: person) {
+            case .female: ArchiveCopy.text(english: "mother", russian: "мать")
+            case .male: ArchiveCopy.text(english: "father", russian: "отец")
+            case .unknown: ArchiveCopy.text(english: "parent", russian: "родитель")
+            }
+        case .child:
+            switch connectionGender(of: person) {
+            case .female: ArchiveCopy.text(english: "daughter", russian: "дочь")
+            case .male: ArchiveCopy.text(english: "son", russian: "сын")
+            case .unknown: ArchiveCopy.text(english: "child", russian: "ребёнок")
+            }
+        case .partner:
+            switch connectionGender(of: person) {
+            case .female: ArchiveCopy.text(english: "wife", russian: "жена")
+            case .male: ArchiveCopy.text(english: "husband", russian: "муж")
+            case .unknown: ArchiveCopy.text(english: "spouse", russian: "супруг(а)")
+            }
+        case .sibling:
+            switch connectionGender(of: person) {
+            case .female: ArchiveCopy.text(english: "sister", russian: "сестра")
+            case .male: ArchiveCopy.text(english: "brother", russian: "брат")
+            case .unknown: ArchiveCopy.text(english: "sibling", russian: "брат или сестра")
+            }
+        }
+    }
+
+    private func connectionSummary(for target: Person, path: [ConnectionPathNode]) -> (text: String, distance: String)? {
+        let kinds = path.dropFirst().compactMap(\.kindFromPrevious)
+        guard !kinds.isEmpty else { return nil }
+
+        if kinds.allSatisfy({ $0 == .parent }) {
+            let ancestor: String
+            switch connectionGender(of: target) {
+            case .female:
+                ancestor = ancestorTerm(for: kinds.count, feminine: true)
+            case .male:
+                ancestor = ancestorTerm(for: kinds.count, feminine: false)
+            case .unknown:
+                ancestor = ancestorTerm(for: kinds.count, feminine: nil)
+            }
+            if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+                return ("\(target.displayName) — ваша \(ancestor).", "\(kinds.count) поколений назад")
+            }
+            return ("\(target.displayName) is your \(ancestor).", "\(kinds.count) generations away")
+        }
+
+        let destinations = path.dropFirst().compactMap { repository.person(id: $0.id) }
+        let words = zip(kinds, destinations).map { connectionWord(for: $0.1, kind: $0.0) }
+        guard let first = words.first else { return nil }
+
+        if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+            var relation = "\(first) \(russianGenitiveName(of: repository.person(id: path[0].id) ?? person))"
+            for index in 1..<destinations.count {
+                let previous = repository.person(id: path[index].id)
+                relation = "\(words[index]) \(previous.map { russianGenitiveName(of: $0) } ?? "")"
+            }
+            let summary = "\(target.displayName) — \(relation)."
+            return (summary, "Связей: \(kinds.count)")
+        }
+
+        var phrase = ArchiveCopy.text(english: "your \(first)", russian: "ваш(а) \(first)")
+        for word in words.dropFirst() {
+            phrase += ArchiveCopy.text(english: "’s \(word)", russian: " — \(word)")
+        }
+        let summary = ArchiveCopy.text(english: "\(target.displayName) is \(phrase).", russian: "\(target.displayName) — \(phrase).")
+        let distance = ArchiveCopy.text(english: "\(kinds.count) connections away", russian: "Связей: \(kinds.count)")
+        return (summary, distance)
+    }
+
+    private func russianGenitiveName(of person: Person) -> String {
+        let name = person.displayGivenName
+        let normalized = name.lowercased().replacingOccurrences(of: "ё", with: "е")
+        let explicit: [String: String] = [
+            "иван": "Ивана", "владимир": "Владимира", "михаил": "Михаила", "константин": "Константина",
+            "сергей": "Сергея", "александр": "Александра", "яков": "Якова", "антон": "Антона",
+            "виктор": "Виктора", "степан": "Степана", "петр": "Петра", "евгений": "Евгения",
+            "илья": "Ильи", "юрий": "Юрия", "андрей": "Андрея", "аркадий": "Аркадия",
+            "елена": "Елены", "галина": "Галины", "ирина": "Ирины", "анна": "Анны",
+            "антонина": "Антонины", "ольга": "Ольги", "александра": "Александры", "мария": "Марии",
+            "татьяна": "Татьяны", "людмила": "Людмилы", "юлия": "Юлии", "евгения": "Евгении",
+            "надежда": "Надежды", "римма": "Риммы", "ариадна": "Ариадны", "раиса": "Раисы"
+        ]
+        if let result = explicit[normalized] { return result }
+        if normalized.hasSuffix("ия") { return String(name.dropLast(1)) + "и" }
+        if normalized.hasSuffix("а") || normalized.hasSuffix("я") || normalized.hasSuffix("ь") {
+            return String(name.dropLast()) + (normalized.hasSuffix("я") ? "и" : "ы")
+        }
+        if normalized.hasSuffix("й") { return String(name.dropLast()) + "я" }
+        return name + "а"
+    }
+
+    private func ancestorTerm(for generations: Int, feminine: Bool?) -> String {
+        let base: String
+        switch feminine {
+        case true:
+            base = ArchiveCopy.text(english: generations == 1 ? "mother" : "grandmother", russian: generations == 1 ? "мать" : "бабушка")
+        case false:
+            base = ArchiveCopy.text(english: generations == 1 ? "father" : "grandfather", russian: generations == 1 ? "отец" : "дедушка")
+        case nil:
+            base = ArchiveCopy.text(english: generations == 1 ? "parent" : "grandparent", russian: generations == 1 ? "родитель" : "бабушка или дедушка")
+        }
+
+        guard generations > 2 else { return base }
+        if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+            return String(repeating: "пра", count: generations - 2) + base
+        }
+        let greatPrefix = String(repeating: "great-", count: generations - 2)
+        return greatPrefix + base
+    }
+
+    private func connectionGender(of person: Person) -> ConnectionGender {
+        let name = person.givenName
+            .lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+
+        let femaleNames: Set<String> = [
+            "анна", "антонина", "александра", "галина", "елена", "евгения", "ирина",
+            "лидия", "мария", "ольга", "татьяна", "валентина", "раиса", "нина",
+            "тамара", "надежда", "вера", "зинаида", "людмила", "екатерина", "наталья"
+        ]
+        let maleNames: Set<String> = [
+            "иван", "владимир", "михаил", "константин", "яков", "сергей", "николай",
+            "евгений", "антон", "алексей", "виктор", "степан", "илья", "юрий"
+        ]
+
+        if femaleNames.contains(name) || name.hasSuffix("а") || name.hasSuffix("я") { return .female }
+        if maleNames.contains(name) { return .male }
+        return .unknown
     }
 
     private var timelineContent: some View {
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("LIFE EVENTS & RECORDS")
+                    Text(ArchiveCopy.text(english: "LIFE EVENTS & RECORDS", russian: "СОБЫТИЯ И ЗАПИСИ"))
                         .font(ArchiveTypography.sectionTitle)
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
                     Spacer()
-                    Button("Manage") { showingEventsManager = true }
+                    Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingEventsManager = true }
                         .font(ArchiveTypography.action)
                         .foregroundStyle(ArchiveTheme.action)
                         .buttonStyle(.plain)
@@ -385,14 +679,14 @@ struct PersonDetailView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if !timelineEvents.isEmpty {
                         ForEach(Array(timelineEvents.enumerated()), id: \.element.id) { index, event in
-                            LifeEventRow(event: event, isLast: index == timelineEvents.count - 1)
+                            LifeEventRow(personID: person.id, event: event, isLast: index == timelineEvents.count - 1)
                         }
                     } else if !supportingFacts.isEmpty {
                         ForEach(Array(supportingFacts.enumerated()), id: \.element.id) { index, fact in
                             TimelineRow(fact: fact, isLast: index == supportingFacts.count - 1)
                         }
                     } else {
-                        Text("No additional dated events recorded.")
+                        Text(ArchiveCopy.text(english: "No additional dated events recorded.", russian: "Дополнительные события с датами не записаны."))
                             .font(ArchiveTypography.paragraph)
                             .foregroundStyle(ArchiveTheme.muted)
                             .lineSpacing(3)
@@ -407,12 +701,12 @@ struct PersonDetailView: View {
     private var storiesContent: some View {
         VStack(alignment: .leading, spacing: 28) {
             HStack(alignment: .firstTextBaseline) {
-                Text("STORIES")
+                Text(ArchiveCopy.text(english: "STORIES", russian: "ИСТОРИИ"))
                     .font(ArchiveTypography.sectionTitle)
                     .tracking(1.2)
                     .foregroundStyle(ArchiveTheme.ink)
                 Spacer()
-                Button("Manage") { showingStoriesManager = true }
+                Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingStoriesManager = true }
                     .font(ArchiveTypography.action)
                     .foregroundStyle(ArchiveTheme.action)
                     .buttonStyle(.plain)
@@ -421,7 +715,7 @@ struct PersonDetailView: View {
             if !person.structuredStories.isEmpty {
                 ForEach(person.structuredStories) { chapter in
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(chapter.title.uppercased())
+                        Text(NarrativeLocalizationStore.shared.storyTitle(person.id, storyID: chapter.id, source: chapter.title).uppercased())
                             .font(ArchiveTypography.sectionTitle)
                             .tracking(1.2)
                             .foregroundStyle(ArchiveTheme.ink)
@@ -429,27 +723,27 @@ struct PersonDetailView: View {
                         if let dateRange = chapter.dateRange, let summary = chapter.summary {
                             StoryDatedContentBlock(
                                 date: dateRange,
-                                title: summary,
-                                body: chapter.body
+                                title: NarrativeLocalizationStore.shared.storySummary(person.id, storyID: chapter.id, source: summary),
+                                body: NarrativeLocalizationStore.shared.storyBody(person.id, storyID: chapter.id, source: chapter.body)
                             )
                         } else {
                             if let dateRange = chapter.dateRange {
                                 ArchiveContentDate(dateRange)
                             }
                             if let summary = chapter.summary {
-                                StoryIntroParagraph(summary)
+                                StoryIntroParagraph(NarrativeLocalizationStore.shared.storySummary(person.id, storyID: chapter.id, source: summary))
                             }
                         }
                         if chapter.dateRange == nil || chapter.summary == nil {
-                            ArchiveParagraph(chapter.body)
+                            ArchiveParagraph(NarrativeLocalizationStore.shared.storyBody(person.id, storyID: chapter.id, source: chapter.body))
                                 .textSelection(.enabled)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                detailSection("Life story") {
-                    ArchiveParagraph(person.biography)
+                detailSection(ArchiveCopy.text(english: "Life story", russian: "История жизни")) {
+                    ArchiveParagraph(person.localizedBiography)
                         .textSelection(.enabled)
                 }
             }
@@ -459,7 +753,7 @@ struct PersonDetailView: View {
 
     private var mediaContent: some View {
         VStack(alignment: .leading, spacing: 28) {
-            detailSection("Media & documents") {
+            detailSection(ArchiveCopy.text(english: "Media & documents", russian: "Медиа и документы")) {
                 mediaStats
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 1) {
                     ForEach(person.media) { item in
@@ -477,8 +771,8 @@ struct PersonDetailView: View {
             if hasFamily {
                 familySection
             } else {
-                detailSection("Immediate family") {
-                    ArchiveParagraph("No immediate family connections are recorded for this profile yet.")
+                detailSection(ArchiveCopy.text(english: "Immediate family", russian: "Ближайшие родственники")) {
+                    ArchiveParagraph(ArchiveCopy.text(english: "No immediate family connections are recorded for this profile yet.", russian: "Для этого профиля пока не записаны близкие родственники."))
                 }
             }
         }
@@ -486,10 +780,10 @@ struct PersonDetailView: View {
 
     private var mediaStats: some View {
         HStack(spacing: 0) {
-            MediaStat(value: mediaCount(.photo), label: "Photos")
-            MediaStat(value: mediaCount(.document), label: "Documents")
-            MediaStat(value: mediaCount(.audio), label: "Audio")
-            MediaStat(value: mediaCount(.video), label: "Video")
+            MediaStat(value: mediaCount(.photo), label: ArchiveCopy.text(english: "Photos", russian: "Фото"))
+            MediaStat(value: mediaCount(.document), label: ArchiveCopy.text(english: "Documents", russian: "Документы"))
+            MediaStat(value: mediaCount(.audio), label: ArchiveCopy.text(english: "Audio", russian: "Аудио"))
+            MediaStat(value: mediaCount(.video), label: ArchiveCopy.text(english: "Video", russian: "Видео"))
         }
         .padding(.vertical, 12)
         .background(ArchiveTheme.ink.opacity(0.05))
@@ -520,11 +814,11 @@ struct PersonDetailView: View {
     }
 
     private var familySection: some View {
-        detailSection("Family") {
-            familyGroup(title: "Parents", ids: person.immediateFamily.parents)
-            familyGroup(title: "Spouse", ids: person.immediateFamily.partners)
-            familyGroup(title: "Children", ids: person.immediateFamily.children)
-            familyGroup(title: "Siblings", ids: person.immediateFamily.siblings)
+        detailSection(ArchiveCopy.text(english: "Family", russian: "Семья")) {
+            familyGroup(title: ArchiveCopy.text(english: "Parents", russian: "Родители"), ids: person.immediateFamily.parents)
+            familyGroup(title: ArchiveCopy.text(english: "Spouse", russian: "Супруг(а)"), ids: person.immediateFamily.partners)
+            familyGroup(title: ArchiveCopy.text(english: "Children", russian: "Дети"), ids: person.immediateFamily.children)
+            familyGroup(title: ArchiveCopy.text(english: "Siblings", russian: "Братья и сёстры"), ids: person.immediateFamily.siblings)
         }
     }
 
@@ -747,7 +1041,7 @@ private struct ProfileDateLine: View {
     private var dateAndPlace: String {
         let date = ArchiveDateFormatter.display(fact.value) ?? fact.value
         guard let place = fact.place, !place.isEmpty else { return date }
-        return "\(date), \(place)"
+        return "\(date), \(ArchiveCopy.place(place))"
     }
 }
 
@@ -796,19 +1090,19 @@ private struct ProfilePhotoView: View {
 }
 
 private enum DetailTab: String, CaseIterable, Identifiable {
+    case overview
     case timeline
     case stories
     case family
-    case overview
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .overview: "Overview"
-        case .timeline: "Life events"
-        case .stories: "Stories"
-        case .family: "Family"
+        case .overview: ArchiveCopy.text(english: "Overview", russian: "Обзор")
+        case .timeline: ArchiveCopy.text(english: "Life events", russian: "События")
+        case .stories: ArchiveCopy.text(english: "Stories", russian: "Истории")
+        case .family: ArchiveCopy.text(english: "Family", russian: "Семья")
         }
     }
 
@@ -822,19 +1116,160 @@ private enum DetailTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ConnectionPathPreviewModel {
+    let accountName: String
+    let targetName: String
+    let relationshipSummary: String
+    let distanceSummary: String
+    let steps: [ConnectionPathStepModel]
+}
+
+private enum ConnectionEdgeKind {
+    case parent
+    case child
+    case partner
+    case sibling
+}
+
+private enum ConnectionGender {
+    case female
+    case male
+    case unknown
+}
+
+private struct ConnectionNeighbor {
+    let id: Person.ID
+    let kind: ConnectionEdgeKind
+}
+
+private struct ConnectionPathNode {
+    let id: Person.ID
+    let kindFromPrevious: ConnectionEdgeKind?
+}
+
+private struct ConnectionPathStepModel: Identifiable {
+    let person: Person
+    let relationship: String?
+    let contextPeople: [Person]
+    let isAccount: Bool
+    let isTarget: Bool
+
+    var id: Person.ID { person.id }
+}
+
+private struct ConnectionPathPreview: View {
+    let preview: ConnectionPathPreviewModel
+    let repository: FamilyRepository
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(ArchiveCopy.text(english: "YOUR RELATIONSHIP", russian: "ВАША СВЯЗЬ"))
+                    .font(ArchiveTypography.sectionTitle)
+                    .tracking(1.2)
+                    .foregroundStyle(ArchiveTheme.ink)
+
+                Text(preview.relationshipSummary)
+                    .font(ArchiveTypography.paragraph)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(preview.distanceSummary)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(preview.steps.enumerated()), id: \.element.id) { index, step in
+                    connectionStep(step, isLast: index == preview.steps.count - 1)
+                }
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func connectionStep(_ step: ConnectionPathStepModel, isLast: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 0) {
+                Rectangle()
+                    .fill(step.isTarget || step.isAccount ? ArchiveTheme.action : ArchiveTheme.controlBorder)
+                    .frame(width: 10, height: 10)
+                    .padding(.top, 3)
+
+                if !isLast {
+                    Rectangle()
+                        .fill(ArchiveTheme.controlBorder)
+                        .frame(width: 1, height: 56)
+                }
+            }
+            .frame(width: 10)
+
+            VStack(alignment: .leading, spacing: 4) {
+                if step.isAccount {
+                    Text(ArchiveCopy.text(english: "YOU", russian: "ВЫ"))
+                        .font(ArchiveTypography.metadata)
+                        .tracking(0.7)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                } else if let relationship = step.relationship {
+                    Text(relationship.uppercased())
+                        .font(ArchiveTypography.metadata)
+                        .tracking(0.7)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    NavigationLink(value: step.person.id) {
+                        Text(step.person.displayName)
+                            .font(ArchiveTypography.contentTitle)
+                            .foregroundStyle(step.isTarget || step.isAccount ? ArchiveTheme.action : ArchiveTheme.ink)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.leading, 8)
+
+                if !step.contextPeople.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(ArchiveCopy.text(english: "with", russian: "с"))
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
+
+                        ForEach(Array(step.contextPeople.enumerated()), id: \.element.id) { index, contextPerson in
+                            if index > 0 {
+                                Text("&")
+                                    .font(ArchiveTypography.metadata)
+                                    .foregroundStyle(ArchiveTheme.metadata)
+                            }
+
+                            NavigationLink(value: contextPerson.id) {
+                                Text(contextPerson.displayName)
+                                    .font(ArchiveTypography.metadata)
+                                    .foregroundStyle(ArchiveTheme.metadata)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                        .padding(.leading, 8)
+                }
+            }
+            .padding(.bottom, 14)
+        }
+    }
+}
+
 private struct FactRow: View {
     let fact: PersonFact
 
     var body: some View {
         HStack(alignment: .top, spacing: 18) {
-            Text(fact.label)
+            Text(fact.localizedLabel)
                 .font(ArchiveTypography.supporting)
                 .foregroundStyle(ArchiveTheme.muted)
 
             Spacer()
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(fact.value)
+                Text(fact.localizedValue)
                 if let place = fact.place {
                 Text(place)
                         .font(ArchiveTypography.metadata)
@@ -868,10 +1303,10 @@ private struct TimelineRow: View {
             .frame(width: 10)
 
             VStack(alignment: .leading, spacing: 4) {
-                ArchiveContentTitle(fact.label)
-                ArchiveParagraph(fact.value)
+                ArchiveContentTitle(fact.localizedLabel)
+                ArchiveParagraph(ArchiveDateFormatter.display(fact.localizedValue) ?? fact.localizedValue)
                 if let place = fact.place {
-                    Text(place)
+                    Text(ArchiveCopy.place(place))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
@@ -882,6 +1317,7 @@ private struct TimelineRow: View {
 }
 
 private struct LifeEventRow: View {
+    let personID: Person.ID
     let event: LifeEvent
     let isLast: Bool
 
@@ -904,12 +1340,12 @@ private struct LifeEventRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ArchiveDatedContentBlock(
                     date: event.date,
-                    title: event.title,
-                    body: event.summary,
-                    note: event.isApproximate == true ? "Approximate" : nil
+                    title: NarrativeLocalizationStore.shared.eventTitle(personID, eventID: event.id, source: event.localizedTitle),
+                    body: NarrativeLocalizationStore.shared.eventSummary(personID, eventID: event.id, source: event.localizedSummary),
+                    note: event.isApproximate == true ? ArchiveCopy.text(english: "Approximate", russian: "Примерно") : nil
                 )
                 if let place = event.place {
-                    Text(place)
+                    Text(ArchiveCopy.place(place))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
@@ -968,7 +1404,7 @@ private struct PersonMediaGalleryView: View {
                     spacing: 14
                 ) {
                     ForEach(person.media) { item in
-                        PersonMediaGalleryTile(item: item)
+                        PersonMediaGalleryTile(personID: person.id, item: item)
                             .contentShape(Rectangle())
                             .onTapGesture {
                             selectedMedia = item
@@ -985,7 +1421,7 @@ private struct PersonMediaGalleryView: View {
         .foregroundStyle(ArchiveTheme.ink)
         .background(Color(uiColor: .systemBackground))
         .sheet(item: $selectedMedia) { item in
-            PersonMediaPagerView(items: person.media, initialID: item.id)
+            PersonMediaPagerView(personID: person.id, items: person.media, initialID: item.id)
         }
     }
 
@@ -1002,11 +1438,11 @@ private struct PersonMediaGalleryView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close media gallery")
+            .accessibilityLabel(ArchiveCopy.text(english: "Close media gallery", russian: "Закрыть галерею медиа"))
 
             Spacer()
 
-            Text("Media")
+            Text(ArchiveCopy.text(english: "Media", russian: "Медиа"))
                 .font(ArchiveTypography.navigationTitle)
                 .lineLimit(1)
 
@@ -1023,6 +1459,7 @@ private struct PersonMediaGalleryView: View {
 }
 
 private struct PersonMediaGalleryTile: View {
+    let personID: Person.ID
     let item: MediaReference
 
     var body: some View {
@@ -1030,7 +1467,8 @@ private struct PersonMediaGalleryTile: View {
             PersonMediaVisual(item: item)
 
             Group {
-                if let caption = item.caption, !caption.isEmpty {
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(personID, mediaID: item.id, source: item.caption ?? "")
+                if !caption.isEmpty {
                     Text(captionWithDate(caption))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
@@ -1101,13 +1539,15 @@ private struct PersonMediaVisual: View {
 }
 
 private struct PersonMediaPagerView: View {
+    let personID: Person.ID
     let items: [MediaReference]
     let initialID: String
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndex: Int
 
-    init(items: [MediaReference], initialID: String) {
+    init(personID: Person.ID, items: [MediaReference], initialID: String) {
+        self.personID = personID
         self.items = items
         self.initialID = initialID
         _selectedIndex = State(initialValue: items.firstIndex { $0.id == initialID } ?? 0)
@@ -1120,7 +1560,7 @@ private struct PersonMediaPagerView: View {
             VStack(spacing: 0) {
                 TabView(selection: $selectedIndex) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        PersonMediaDetailContent(item: item)
+                        PersonMediaDetailContent(personID: personID, item: item)
                             .tag(index)
                     }
                 }
@@ -1188,11 +1628,11 @@ private struct PersonMediaPagerView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close media")
+            .accessibilityLabel(ArchiveCopy.text(english: "Close media", russian: "Закрыть медиа"))
 
             Spacer()
 
-            Text("Media")
+            Text(ArchiveCopy.text(english: "Media", russian: "Медиа"))
                 .font(ArchiveTypography.navigationTitle)
                 .lineLimit(1)
 
@@ -1208,6 +1648,7 @@ private struct PersonMediaPagerView: View {
 }
 
 private struct PersonMediaDetailContent: View {
+    let personID: Person.ID
     let item: MediaReference
 
     var body: some View {
@@ -1215,7 +1656,8 @@ private struct PersonMediaDetailContent: View {
             VStack(alignment: .leading, spacing: 16) {
                 PersonMediaLargeVisual(item: item)
 
-                if let caption = item.caption, !caption.isEmpty {
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(personID, mediaID: item.id, source: item.caption ?? "")
+                if !caption.isEmpty {
                     Text(mediaCaptionWithDate(caption, date: item.date))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
@@ -1518,7 +1960,7 @@ private struct LifeEventsManagerView: View {
                         Button { editingEvent = event } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(alignment: .firstTextBaseline) {
-                                    Text(event.title.isEmpty ? "Untitled event" : event.title)
+                                    Text(NarrativeLocalizationStore.shared.eventTitle(person.id, eventID: event.id, source: event.localizedTitle).isEmpty ? ArchiveCopy.text(english: "Untitled event", russian: "Событие без названия") : NarrativeLocalizationStore.shared.eventTitle(person.id, eventID: event.id, source: event.localizedTitle))
                                         .font(ArchiveTypography.contentTitle)
                                         .foregroundStyle(ArchiveTheme.ink)
                                     Spacer()
@@ -1531,8 +1973,9 @@ private struct LifeEventsManagerView: View {
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
-                                if !event.summary.isEmpty {
-                                    Text(event.summary)
+                                let summary = NarrativeLocalizationStore.shared.eventSummary(person.id, eventID: event.id, source: event.localizedSummary)
+                                if !summary.isEmpty {
+                                    Text(summary)
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.muted)
                                         .lineLimit(2)
@@ -1619,7 +2062,7 @@ private struct StoriesManagerView: View {
                         Button { editingStory = story } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(alignment: .firstTextBaseline) {
-                                    Text(story.title.isEmpty ? "Untitled story" : story.title)
+                                    Text(story.title.isEmpty ? "Untitled story" : NarrativeLocalizationStore.shared.storyTitle(person.id, storyID: story.id, source: story.title))
                                         .font(ArchiveTypography.contentTitle)
                                         .foregroundStyle(ArchiveTheme.ink)
                                     Spacer()
@@ -1632,7 +2075,7 @@ private struct StoriesManagerView: View {
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
-                                Text(story.summary ?? story.body)
+                                Text(NarrativeLocalizationStore.shared.storySummary(person.id, storyID: story.id, source: story.summary ?? story.body))
                                     .font(ArchiveTypography.metadata)
                                     .foregroundStyle(ArchiveTheme.muted)
                                     .lineLimit(2)

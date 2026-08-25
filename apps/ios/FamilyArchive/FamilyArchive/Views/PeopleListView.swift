@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 enum ArchiveFileResolver {
     static func image(for path: String) -> UIImage? {
@@ -41,7 +42,7 @@ struct PeopleListView: View {
             let matchesSearch = query.isEmpty ||
                 person.displayName.localizedCaseInsensitiveContains(query) ||
                 person.alternateNames.contains { $0.localizedCaseInsensitiveContains(query) } ||
-                person.summary.localizedCaseInsensitiveContains(query)
+                person.localizedSummary.localizedCaseInsensitiveContains(query)
             let matchesFamilyName = selectedFamilyNameKey == nil ||
                 normalizedFamilyNameKey(person.familyName) == selectedFamilyNameKey
             let matchesStories = !storiesOnly || person.hasStories
@@ -90,11 +91,25 @@ struct PeopleListView: View {
     }
 
     private func displayFamilyName(for key: String, variants: [String]) -> String {
+        // Use the same language-aware name data as the rows themselves. The
+        // filter still collapses married/feminine variants to one masculine
+        // key, but its visible label follows the selected app language.
+        if let localizedSurname = variants.compactMap({ NameLocalizationStore.shared.localizedFamilyName(for: $0) }).first {
+            return masculineFamilyName(localizedSurname)
+        }
+
+        if let localizedPerson = repository.people.first(where: {
+            variants.contains($0.familyName) && $0.displayName != $0.sourceDisplayName
+        }) {
+            let localizedSurname = localizedPerson.displayName.split(separator: " ").last.map(String.init) ?? localizedPerson.familyName
+            return masculineFamilyName(localizedSurname)
+        }
+
         let cyrillicVariant = variants.first { variant in
             cyrillicAlias(for: variant).unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
         }
         let source = cyrillicVariant ?? variants.first ?? key
-        return masculineFamilyName(source)
+        return masculineFamilyName(ArchiveCopy.familyName(source))
     }
 
     private func birthYearOrder(_ left: Person, _ right: Person) -> Bool {
@@ -114,7 +129,7 @@ struct PeopleListView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     archiveHeader
 
-                    SearchField(text: $searchText, placeholder: "Search family")
+                    SearchField(text: $searchText, placeholder: ArchiveCopy.text(english: "Search family", russian: "Поиск по семье"))
                         .padding(.top, 12)
                         .padding(.bottom, 10)
 
@@ -123,7 +138,7 @@ struct PeopleListView: View {
 
                     if filteredPeople.isEmpty {
                         ContentUnavailableView(
-                            searchText.isEmpty ? "No matching people" : "No results",
+                            searchText.isEmpty ? ArchiveCopy.text(english: "No matching people", russian: "Люди не найдены") : ArchiveCopy.text(english: "No results", russian: "Нет результатов"),
                             systemImage: "person.2"
                         )
                             .frame(maxWidth: .infinity)
@@ -180,7 +195,7 @@ struct PeopleListView: View {
                 Button {
                     selectedFamilyNameKey = nil
                 } label: {
-                    filterMenuLabel("All last names", isSelected: selectedFamilyNameKey == nil)
+                    filterMenuLabel(ArchiveCopy.text(english: "All last names", russian: "Все фамилии"), isSelected: selectedFamilyNameKey == nil)
                 }
 
                 Divider()
@@ -194,23 +209,23 @@ struct PeopleListView: View {
                 }
             } label: {
                 filterControlLabel(
-                    title: familyNameOptions.first(where: { $0.id == selectedFamilyNameKey })?.displayName ?? "Last name",
+                    title: familyNameOptions.first(where: { $0.id == selectedFamilyNameKey })?.displayName ?? ArchiveCopy.text(english: "Last name", russian: "Фамилия"),
                     systemImage: "textformat"
                 )
             }
-            .accessibilityLabel("Filter by last name")
+            .accessibilityLabel(ArchiveCopy.text(english: "Filter by last name", russian: "Фильтр по фамилии"))
 
             Button {
                 storiesOnly.toggle()
             } label: {
                 filterControlLabel(
-                    title: "Stories",
+                    title: ArchiveCopy.text(english: "Stories", russian: "Истории"),
                     systemImage: storiesOnly ? "book.pages.fill" : "book.pages",
                     isSelected: storiesOnly
                 )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(storiesOnly ? "Showing people with stories" : "Show only people with stories")
+            .accessibilityLabel(storiesOnly ? ArchiveCopy.text(english: "Showing people with stories", russian: "Показаны люди с историями") : ArchiveCopy.text(english: "Show only people with stories", russian: "Показать только людей с историями"))
 
             Spacer(minLength: 0)
         }
@@ -245,7 +260,7 @@ struct PeopleListView: View {
 
     private var archiveHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("FAMILY")
+            Text(ArchiveCopy.text(english: "FAMILY", russian: "СЕМЬЯ"))
                 .font(ArchiveTypography.sectionTitle)
                 .tracking(1.2)
                 .foregroundStyle(ArchiveTheme.ink)
@@ -303,12 +318,12 @@ struct FamilyMemberTile: View {
                             .fill(ArchiveTheme.accent)
                             .frame(width: 5, height: 5)
                             .accessibilityLabel("Living")
-                        Text("Living")
+                        Text(ArchiveCopy.text(english: "Living", russian: "Жив"))
                             .font(ArchiveTypography.metadata)
                             .foregroundStyle(ArchiveTheme.accent)
                             .lineLimit(1)
                     } else if repository?.hasUnknownDeathDate(person) == true {
-                        Text("Death date unknown")
+                        Text(ArchiveCopy.text(english: "Death date unknown", russian: "Дата смерти неизвестна"))
                             .font(ArchiveTypography.metadata)
                             .foregroundStyle(ArchiveTheme.metadata)
                             .lineLimit(1)
@@ -327,7 +342,7 @@ struct FamilyMemberTile: View {
 
 struct AccountHolderBadge: View {
     var body: some View {
-        Text("YOU")
+        Text(ArchiveCopy.text(english: "YOU", russian: "ВЫ"))
             .font(ArchiveTypography.sectionTitle)
             .tracking(0.8)
             .foregroundStyle(ArchiveTheme.action)
@@ -346,7 +361,7 @@ private struct ProfileContentBadge: View {
         HStack(spacing: 3) {
             Image(systemName: "book.pages")
                 .font(.system(size: 10, weight: .semibold))
-            Text("PROFILE")
+                Text(ArchiveCopy.text(english: "PROFILE", russian: "ПРОФИЛЬ"))
                 .font(ArchiveTypography.sectionTitle)
                 .tracking(0.5)
         }
@@ -434,12 +449,24 @@ extension Person {
 
         switch (birth, death) {
         case let (birth?, death?):
-            return "\(ArchiveDateFormatter.display(birth) ?? birth) – \(ArchiveDateFormatter.display(death) ?? death)"
+            return "\(localizedDate(birth)) – \(localizedDate(death))"
         case let (birth?, nil):
-            return ArchiveDateFormatter.display(birth) ?? birth
+            return localizedDate(birth)
         case (nil, _):
+            let normalized = lifespan.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized == "unknown" || normalized == "????" || normalized.isEmpty {
+                return ArchiveCopy.text(english: "Unknown", russian: "Неизвестно")
+            }
             return lifespan
         }
+    }
+
+    private func localizedDate(_ value: String) -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "unknown" || normalized == "????" || normalized.isEmpty {
+            return ArchiveCopy.text(english: "Unknown", russian: "Неизвестно")
+        }
+        return ArchiveDateFormatter.display(value) ?? value
     }
 }
 
@@ -525,6 +552,7 @@ struct MainTabView: View {
     @State private var familyResetID = UUID()
     @State private var shouldOpenInitialPerson = true
     @State private var personIDToOpen: Person.ID?
+    @State private var homePerson: PresentedPerson?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -532,13 +560,9 @@ struct MainTabView: View {
                 switch selectedTab {
                 case .home:
                     HomeView(repository: repository) { personID in
-                        // Profiles belong to Family, even when discovered from
-                        // the Home reminders. This keeps the selected tab and
-                        // the navigation stack consistent.
-                        personIDToOpen = personID
-                        shouldOpenInitialPerson = false
-                        familyResetID = UUID()
-                        selectedTab = .family
+                        // Present profiles from Home as a sheet so closing the
+                        // profile returns to the same Home context.
+                        homePerson = PresentedPerson(id: personID)
                     }
                 case .tree:
                     TreePlaceholderView()
@@ -564,12 +588,23 @@ struct MainTabView: View {
             }
         }
         .background(Color(uiColor: .systemBackground))
+        .sheet(item: $homePerson) { presented in
+            if let person = repository.person(id: presented.id) {
+                NavigationStack {
+                    PersonDetailView(person: person, repository: repository)
+                }
+            }
+        }
         .onAppear {
             if initialPersonID != nil {
                 selectedTab = .family
             }
         }
     }
+}
+
+private struct PresentedPerson: Identifiable {
+    let id: Person.ID
 }
 
 private struct ArchiveBottomNavigation: View {
@@ -622,10 +657,10 @@ enum MainTab: Hashable, CaseIterable {
 
     var title: String {
         switch self {
-        case .home: "Home"
-        case .tree: "Tree"
-        case .family: "Family"
-        case .memories: "Memories"
+        case .home: ArchiveCopy.text(english: "Home", russian: "Главная")
+        case .tree: ArchiveCopy.text(english: "Tree", russian: "Дерево")
+        case .family: ArchiveCopy.text(english: "Family", russian: "Семья")
+        case .memories: ArchiveCopy.text(english: "Archive", russian: "Архив")
         }
     }
 
@@ -702,12 +737,35 @@ private struct HomeView: View {
                     Text(greeting)
                         .font(.system(.largeTitle).weight(.bold))
 
-                    Text("Your family, stories, and memories in one place.")
+                    Text(ArchiveCopy.text(
+                        english: "Your family, stories, and memories in one place.",
+                        russian: "Ваша семья, истории и воспоминания — в одном месте."
+                    ))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .padding(.top, 6)
 
-                    detailSection("Upcoming dates to remember") {
+                    detailSection(ArchiveCopy.text(english: "Display", russian: "Отображение")) {
+                        VStack(spacing: 12) {
+                            HomePreferenceRow(
+                                title: ArchiveCopy.text(english: "App language", russian: "Язык приложения")
+                            ) {
+                                Picker("App language", selection: $repository.appLanguage) {
+                                    ForEach(ArchiveLanguage.allCases) { language in
+                                        Text(language.label).tag(language)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 150)
+                                .accessibilityLabel("App language")
+                            }
+
+                        }
+                        .padding(.vertical, 12)
+                    }
+                    .padding(.top, 24)
+
+                    detailSection(ArchiveCopy.text(english: "Upcoming dates to remember", russian: "Ближайшие важные даты")) {
                         ForEach(upcomingDates) { date in
                             Button {
                                 onOpenPerson(date.personID)
@@ -719,15 +777,28 @@ private struct HomeView: View {
                     }
                     .padding(.top, 28)
 
-                    detailSection("Archive at a glance") {
+                    detailSection(ArchiveCopy.text(english: "Archive at a glance", russian: "Архив вкратце")) {
                         HStack(spacing: 0) {
-                            HomeStat(value: "\(repository.people.count)", label: "People")
-                            HomeStat(value: "\(repository.people.filter { repository.isLiving($0) }.count)", label: "Living")
-                            HomeStat(value: "\(repository.people.filter { !repository.isLiving($0) }.count)", label: "Deceased")
-                            HomeStat(value: "\(repository.people.reduce(0) { $0 + $1.media.count })", label: "Memories")
+                            HomeStat(value: "\(repository.people.count)", label: ArchiveCopy.text(english: "People", russian: "Люди"))
+                            HomeStat(value: "\(repository.people.filter { repository.isLiving($0) }.count)", label: ArchiveCopy.text(english: "Living", russian: "Живые"))
+                            HomeStat(value: "\(repository.people.filter { !repository.isLiving($0) }.count)", label: ArchiveCopy.text(english: "Deceased", russian: "Ушедшие"))
+                            HomeStat(value: "\(repository.people.reduce(0) { $0 + $1.media.count })", label: ArchiveCopy.text(english: "Memories", russian: "Воспоминания"))
                         }
                         .padding(.vertical, 14)
                         .background(ArchiveTheme.accent.opacity(0.06))
+                    }
+                    .padding(.top, 28)
+
+                    detailSection(ArchiveCopy.text(english: "Family relationships", russian: "Родственные связи")) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(relationshipGroups) { group in
+                                HomeRelationshipGroupView(
+                                    group: group,
+                                    repository: repository,
+                                    onOpenPerson: onOpenPerson
+                                )
+                            }
+                        }
                     }
                     .padding(.top, 28)
                 }
@@ -760,11 +831,11 @@ private struct HomeView: View {
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
-        let name = accountHolder?.givenName ?? "Elena"
+        let name = accountHolder?.displayGivenName ?? "Elena"
         switch hour {
-        case 5..<12: return "Good morning, \(name)"
-        case 12..<18: return "Good afternoon, \(name)"
-        default: return "Good evening, \(name)"
+        case 5..<12: return ArchiveCopy.text(english: "Good morning, \(name)", russian: "Доброе утро, \(name)")
+        case 12..<18: return ArchiveCopy.text(english: "Good afternoon, \(name)", russian: "Добрый день, \(name)")
+        default: return ArchiveCopy.text(english: "Good evening, \(name)", russian: "Добрый вечер, \(name)")
         }
     }
 
@@ -772,26 +843,26 @@ private struct HomeView: View {
         var dates: [RememberedDate] = []
 
         for person in repository.people {
-            if let birth = person.birthFact,
-               let parts = calendarParts(from: birth.value) {
-                dates.append(RememberedDate(
-                    id: "birthday-\(person.id)",
-                    personID: person.id,
-                    date: shortMonthDay(month: parts.month, day: parts.day),
-                    title: "\(person.displayName)’s birthday",
-                    detail: [parts.year.map(String.init), birth.place].compactMap { $0 }.joined(separator: " · "),
-                    sortKey: upcomingSortKey(month: parts.month, day: parts.day)
-                ))
-            }
-
-            if let death = person.deathFact,
-               let parts = calendarParts(from: death.value) {
+            if repository.isLiving(person) {
+                if let birth = person.birthFact,
+                   let parts = calendarParts(from: birth.value) {
+                    dates.append(RememberedDate(
+                        id: "birthday-\(person.id)",
+                        personID: person.id,
+                        date: shortMonthDay(month: parts.month, day: parts.day),
+                        title: ArchiveCopy.text(english: "\(person.displayName)’s birthday", russian: "День рождения: \(person.displayName)"),
+                        detail: [fullDate(month: parts.month, day: parts.day, year: parts.year), birth.place.map(ArchiveCopy.place)].compactMap { $0 }.joined(separator: " · "),
+                        sortKey: upcomingSortKey(month: parts.month, day: parts.day)
+                    ))
+                }
+            } else if let death = person.deathFact,
+                      let parts = calendarParts(from: death.value) {
                 dates.append(RememberedDate(
                     id: "remembrance-\(person.id)",
                     personID: person.id,
                     date: shortMonthDay(month: parts.month, day: parts.day),
-                    title: "\(person.displayName)’s remembrance day",
-                    detail: [parts.year.map(String.init), death.place].compactMap { $0 }.joined(separator: " · "),
+                    title: ArchiveCopy.text(english: "\(person.displayName)’s remembrance day", russian: "День памяти: \(person.displayName)"),
+                    detail: [fullDate(month: parts.month, day: parts.day, year: parts.year), death.place.map(ArchiveCopy.place)].compactMap { $0 }.joined(separator: " · "),
                     sortKey: upcomingSortKey(month: parts.month, day: parts.day)
                 ))
             }
@@ -818,9 +889,18 @@ private struct HomeView: View {
 
     private func shortMonthDay(month: Int, day: Int) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d"
+        formatter.locale = Locale(identifier: repository.appLanguage == .russian ? "ru_RU" : "en_US_POSIX")
+        formatter.dateFormat = repository.appLanguage == .russian ? "d MMM" : "MMM d"
         return formatter.string(from: Calendar.current.date(from: DateComponents(year: 2000, month: month, day: day)) ?? Date())
+    }
+
+    private func fullDate(month: Int, day: Int, year: Int?) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: repository.appLanguage == .russian ? "ru_RU" : "en_US_POSIX")
+        formatter.dateFormat = year == nil
+            ? (repository.appLanguage == .russian ? "d MMMM" : "MMMM d")
+            : (repository.appLanguage == .russian ? "d MMMM yyyy" : "MMMM d, yyyy")
+        return formatter.string(from: Calendar.current.date(from: DateComponents(year: year ?? 2000, month: month, day: day)) ?? Date())
     }
 
     private func upcomingSortKey(month: Int, day: Int) -> Int {
@@ -831,6 +911,70 @@ private struct HomeView: View {
         let candidate = calendar.date(from: DateComponents(year: year, month: month, day: day)) ?? now
         let offset = candidate < today ? 10_000 : 0
         return offset + month * 100 + day
+    }
+
+    private var relationshipGroups: [HomeRelationshipGroup] {
+        guard let accountHolder else { return [] }
+
+        let graph = FamilyRelationshipGraph(repository: repository)
+        let directParents = graph.parents(of: accountHolder.id)
+        let directPartners = graph.partners(of: accountHolder.id)
+        let directSiblings = graph.siblings(of: accountHolder.id)
+        let directChildren = graph.children(of: accountHolder.id)
+        let grandparents = Set(directParents.flatMap { graph.parents(of: $0.id) })
+        let auntsAndUncles = Set(directParents.flatMap { graph.siblings(of: $0.id) })
+        let cousins = Set(auntsAndUncles.flatMap { graph.children(of: $0.id) })
+        let niecesAndNephews = Set(directSiblings.flatMap { graph.children(of: $0.id) })
+        let grandchildren = Set(directChildren.flatMap { graph.children(of: $0.id) })
+        let greatGrandparents = Set(grandparents.flatMap { graph.parents(of: $0.id) })
+        let greatAuntsAndUncles = Set(grandparents.flatMap { graph.siblings(of: $0.id) })
+        let firstCousinsOnceRemoved = Set(greatAuntsAndUncles.flatMap { graph.children(of: $0.id) })
+        let secondCousins = Set(firstCousinsOnceRemoved.flatMap { graph.children(of: $0.id) })
+        // In-laws are connected through the selected person's own marriage:
+        // the partner's immediate family, plus partners of the selected
+        // person's siblings and children. Parents' partners are not in-laws
+        // of the selected person and must not be included here.
+        let partnerFamily = directPartners.flatMap { partner in
+            graph.parents(of: partner.id) +
+                graph.siblings(of: partner.id) +
+                graph.children(of: partner.id)
+        }
+        let siblingAndChildPartners = (directSiblings + directChildren).flatMap { graph.partners(of: $0.id) }
+        let inLaws = Set((partnerFamily + siblingAndChildPartners).map(\.id))
+            .subtracting(Set(directParents.map(\.id)))
+            .subtracting(Set(directSiblings.map(\.id)))
+            .subtracting(Set(directChildren.map(\.id)))
+            .subtracting(Set(directPartners.map(\.id)))
+            .subtracting([accountHolder.id])
+
+        let groups: [(String, String, [Person])] = [
+            ("parents", ArchiveCopy.text(english: "Parents", russian: "Родители"), directParents),
+            ("grandparents", ArchiveCopy.text(english: "Grandparents", russian: "Бабушки и дедушки"), Array(grandparents)),
+            ("siblings", ArchiveCopy.text(english: "Siblings", russian: "Братья и сёстры"), directSiblings),
+            ("children", ArchiveCopy.text(english: "Children", russian: "Дети"), directChildren),
+            ("partners", ArchiveCopy.text(english: "Spouse and partners", russian: "Супруги и партнёры"), directPartners),
+            ("in-laws", ArchiveCopy.text(english: "In-laws", russian: "Связи через брак"), repository.people(ids: Array(inLaws))),
+            ("aunts-uncles", ArchiveCopy.text(english: "Aunts and uncles", russian: "Тёти и дяди"), Array(auntsAndUncles)),
+            ("first-cousins", ArchiveCopy.text(english: "First cousins", russian: "Двоюродные братья и сёстры"), Array(cousins)),
+            ("cousins-once-removed", ArchiveCopy.text(english: "First cousins once removed", russian: "Двоюродные родственники через поколение"), Array(firstCousinsOnceRemoved)),
+            ("second-cousins", ArchiveCopy.text(english: "Second cousins", russian: "Троюродные братья и сёстры"), Array(secondCousins)),
+            ("nieces-nephews", ArchiveCopy.text(english: "Nieces and nephews", russian: "Племянники и племянницы"), Array(niecesAndNephews)),
+            ("grandchildren", ArchiveCopy.text(english: "Grandchildren", russian: "Внуки"), Array(grandchildren)),
+            ("great-grandparents", ArchiveCopy.text(english: "Great-grandparents", russian: "Прадедушки и прабабушки"), Array(greatGrandparents)),
+            ("great-aunts-uncles", ArchiveCopy.text(english: "Great-aunts and great-uncles", russian: "Двоюродные бабушки и дедушки"), Array(greatAuntsAndUncles))
+        ]
+
+        return groups.compactMap { id, title, people in
+            let uniquePeople = people
+                .filter { $0.id != accountHolder.id }
+                .reduce(into: [Person.ID: Person]()) { result, person in result[person.id] = person }
+                .values
+                .sorted { left, right in
+                    left.displayName.localizedStandardCompare(right.displayName) == .orderedAscending
+                }
+            guard !uniquePeople.isEmpty else { return nil }
+            return HomeRelationshipGroup(id: id, title: title, people: Array(uniquePeople))
+        }
     }
 
     @ViewBuilder
@@ -882,6 +1026,152 @@ private struct RememberedDateRow: View {
     }
 }
 
+private struct HomeRelationshipGroup: Identifiable {
+    let id: String
+    let title: String
+    let people: [Person]
+}
+
+private struct HomeRelationshipGroupView: View {
+    let group: HomeRelationshipGroup
+    let repository: FamilyRepository
+    let onOpenPerson: (Person.ID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(group.title)
+                .font(ArchiveTypography.contentTitle)
+                .foregroundStyle(ArchiveTheme.ink)
+                .padding(.top, 12)
+
+            ForEach(group.people) { person in
+                Button {
+                    onOpenPerson(person.id)
+                } label: {
+                    HStack(spacing: 10) {
+                        UserProfilePhotoView(person: person, repository: repository, size: 34)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(person.displayName)
+                                .font(ArchiveTypography.supportingEmphasis)
+                                .foregroundStyle(ArchiveTheme.ink)
+                                .lineLimit(1)
+
+                            if !person.lifespan.isEmpty {
+                                Text(person.lifespan)
+                                    .font(ArchiveTypography.metadata)
+                                    .foregroundStyle(ArchiveTheme.metadata)
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(ArchiveTheme.metadata)
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 7)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(person.displayName)")
+            }
+        }
+    }
+}
+
+/// A small read-only relationship index used to build person-centered views.
+/// It combines explicit links with their inverse links so one-sided GEDCOM
+/// relationships still appear in the Home relationship hub.
+private struct FamilyRelationshipGraph {
+    private let repository: FamilyRepository
+    private var parentsByChild: [Person.ID: Set<Person.ID>] = [:]
+    private var childrenByParent: [Person.ID: Set<Person.ID>] = [:]
+    private var partnersByPerson: [Person.ID: Set<Person.ID>] = [:]
+    private var siblingsByPerson: [Person.ID: Set<Person.ID>] = [:]
+
+    init(repository: FamilyRepository) {
+        self.repository = repository
+
+        for person in repository.people {
+            let personID = person.id
+            for parentID in person.immediateFamily.parents {
+                parentsByChild[personID, default: []].insert(parentID)
+                childrenByParent[parentID, default: []].insert(personID)
+            }
+            for childID in person.immediateFamily.children {
+                childrenByParent[personID, default: []].insert(childID)
+                parentsByChild[childID, default: []].insert(personID)
+            }
+            for partnerID in person.immediateFamily.partners {
+                partnersByPerson[personID, default: []].insert(partnerID)
+                partnersByPerson[partnerID, default: []].insert(personID)
+            }
+            for siblingID in person.immediateFamily.siblings {
+                siblingsByPerson[personID, default: []].insert(siblingID)
+                siblingsByPerson[siblingID, default: []].insert(personID)
+            }
+        }
+
+        // Shared parents are also sibling evidence, even if the GEDCOM file
+        // only recorded the parent links.
+        for siblingGroup in parentsByChild.keys {
+            let parents = parentsByChild[siblingGroup] ?? []
+            for otherPerson in repository.people where otherPerson.id != siblingGroup {
+                let otherParents = parentsByChild[otherPerson.id] ?? []
+                if !parents.isDisjoint(with: otherParents) {
+                    siblingsByPerson[siblingGroup, default: []].insert(otherPerson.id)
+                    siblingsByPerson[otherPerson.id, default: []].insert(siblingGroup)
+                }
+            }
+        }
+    }
+
+    func parents(of personID: Person.ID) -> [Person] {
+        people(for: parentsByChild[personID] ?? [])
+    }
+
+    func children(of personID: Person.ID) -> [Person] {
+        people(for: childrenByParent[personID] ?? [])
+    }
+
+    func partners(of personID: Person.ID) -> [Person] {
+        people(for: partnersByPerson[personID] ?? [])
+    }
+
+    func siblings(of personID: Person.ID) -> [Person] {
+        people(for: siblingsByPerson[personID] ?? [])
+    }
+
+    private func people(for ids: Set<Person.ID>) -> [Person] {
+        repository.people(ids: Array(ids)).sorted { left, right in
+            left.displayName.localizedStandardCompare(right.displayName) == .orderedAscending
+        }
+    }
+}
+
+private struct HomePreferenceRow<Control: View>: View {
+    let title: String
+    let control: () -> Control
+
+    init(title: String, @ViewBuilder control: @escaping () -> Control) {
+        self.title = title
+        self.control = control
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(ArchiveTypography.supportingEmphasis)
+                .foregroundStyle(ArchiveTheme.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            control()
+        }
+    }
+}
+
 private struct UserProfilePhotoView: View {
     let person: Person?
     let repository: FamilyRepository?
@@ -930,6 +1220,12 @@ private struct SettingsView: View {
     let person: Person?
     let repository: FamilyRepository?
     @Environment(\.dismiss) private var dismiss
+    @State private var transferDocument = ArchiveTransferDocument(data: Data())
+    @State private var showingExporter = false
+    @State private var showingImporter = false
+    @State private var importConfirmation: ImportConfirmation?
+    @State private var transferMessage: TransferMessage?
+    @State private var transferInProgress = false
 
     var body: some View {
         ScrollView {
@@ -939,21 +1235,77 @@ private struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(person?.displayName ?? "Elena")
                             .font(.title2.weight(.bold))
-                        Text("Account profile")
+                        Text(ArchiveCopy.text(english: "Account profile", russian: "Профиль аккаунта"))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.bottom, 26)
 
-                Text("ACCOUNT")
+                Text(ArchiveCopy.text(english: "ACCOUNT", russian: "АККАУНТ"))
                     .font(.caption.weight(.semibold))
                     .tracking(1.2)
                     .foregroundStyle(ArchiveTheme.accent)
 
-                AccountRow(title: "Profile photo", detail: "Add or change your photo")
-                AccountRow(title: "Your relationship view", detail: "Choose how family relationships are described")
-                AccountRow(title: "Privacy", detail: "Control what is visible to other family members")
+                // These account controls are intentionally read-only until their
+                // editors are implemented. They must not look like tappable rows.
+                AccountRow(title: ArchiveCopy.text(english: "Profile photo", russian: "Фото профиля"), detail: ArchiveCopy.text(english: "Coming soon", russian: "Скоро будет доступно"))
+                AccountRow(title: ArchiveCopy.text(english: "Your relationship view", russian: "Связи с родственниками"), detail: ArchiveCopy.text(english: "Coming soon", russian: "Скоро будет доступно"))
+                AccountRow(title: ArchiveCopy.text(english: "Privacy", russian: "Приватность"), detail: ArchiveCopy.text(english: "Coming soon", russian: "Скоро будет доступно"))
+
+                Text(ArchiveCopy.text(english: "PRIVATE DATA", russian: "ПРИВАТНЫЕ ДАННЫЕ"))
+                    .font(.caption.weight(.semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(ArchiveTheme.accent)
+                    .padding(.top, 28)
+
+                if transferInProgress {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(ArchiveTheme.action)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ArchiveCopy.text(
+                                english: "Preparing private archive…",
+                                russian: "Подготовка приватного архива…"
+                            ))
+                                .font(ArchiveTypography.metadata)
+                                .foregroundStyle(ArchiveTheme.ink)
+                            Text(ArchiveCopy.text(
+                                english: "Keep this screen open. The save dialog will appear when it is ready.",
+                                russian: "Оставьте этот экран открытым. Диалог сохранения появится после подготовки."
+                            ))
+                                .font(ArchiveTypography.metadata)
+                                .foregroundStyle(ArchiveTheme.metadata)
+                        }
+                    }
+                    .padding(.vertical, 12)
+                }
+
+                Button {
+                    exportPrivateArchive()
+                } label: {
+                    ArchiveTransferRow(
+                        title: ArchiveCopy.text(english: "Export private archive", russian: "Экспортировать приватный архив"),
+                        detail: ArchiveCopy.text(english: "Save people, relationships, stories, and media", russian: "Сохранить людей, связи, истории и медиа"),
+                        systemImage: "square.and.arrow.up"
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(transferInProgress)
+                .opacity(transferInProgress ? 0.5 : 1)
+
+                Button {
+                    showingImporter = true
+                } label: {
+                    ArchiveTransferRow(
+                        title: ArchiveCopy.text(english: "Import private archive", russian: "Импортировать приватный архив"),
+                        detail: ArchiveCopy.text(english: "Replace the current private data after review", russian: "Заменить текущие приватные данные после проверки"),
+                        systemImage: "square.and.arrow.down"
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(transferInProgress)
+                .opacity(transferInProgress ? 0.5 : 1)
             }
             .padding(.horizontal, ArchiveLayout.pageHorizontal)
             .padding(.top, ArchiveLayout.pageTop)
@@ -961,7 +1313,7 @@ private struct SettingsView: View {
         }
         .scrollIndicators(.hidden)
         .background(Color(uiColor: .systemBackground))
-        .navigationTitle("Settings")
+        .navigationTitle(ArchiveCopy.text(english: "Settings", russian: "Настройки"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -971,10 +1323,162 @@ private struct SettingsView: View {
                     Image(systemName: "xmark")
                         .font(.body.weight(.semibold))
                 }
-                .accessibilityLabel("Close settings")
+                .disabled(transferInProgress)
+                .opacity(transferInProgress ? 0.35 : 1)
+                .accessibilityLabel(ArchiveCopy.text(english: "Close settings", russian: "Закрыть настройки"))
+            }
+        }
+        .interactiveDismissDisabled(transferInProgress)
+        .fileExporter(
+            isPresented: $showingExporter,
+            document: transferDocument,
+            contentType: .familyArchive,
+            defaultFilename: "family-archive-private.familyarchive"
+        ) { result in
+            if case .failure(let error) = result {
+                transferMessage = TransferMessage(message: error.localizedDescription)
+            }
+        }
+        .fileImporter(
+            isPresented: $showingImporter,
+            allowedContentTypes: [.familyArchive]
+        ) { result in
+            switch result {
+            case .success(let url):
+                importPrivateArchive(from: url)
+            case .failure(let error):
+                transferMessage = TransferMessage(message: error.localizedDescription)
+            }
+        }
+        .alert(item: $importConfirmation) { confirmation in
+            Alert(
+                title: Text(ArchiveCopy.text(english: "Replace private archive?", russian: "Заменить приватный архив?")),
+                message: Text(ArchiveCopy.text(
+                    english: "This package contains \(confirmation.summary.personCount) people and \(confirmation.summary.relationshipCount) relationship links.",
+                    russian: "В этом пакете \(confirmation.summary.personCount) людей и \(confirmation.summary.relationshipCount) родственных связей."
+                )),
+                primaryButton: .destructive(Text(ArchiveCopy.text(english: "Replace", russian: "Заменить"))) {
+                    guard let repository else { return }
+                    transferInProgress = true
+                    let data = confirmation.data
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        do {
+                            _ = try repository.importPrivateArchive(data)
+                            DispatchQueue.main.async {
+                                transferInProgress = false
+                                transferMessage = TransferMessage(message: ArchiveCopy.text(english: "Private archive imported.", russian: "Приватный архив импортирован."))
+                            }
+                        } catch {
+                            DispatchQueue.main.async {
+                                transferInProgress = false
+                                transferMessage = TransferMessage(message: error.localizedDescription)
+                            }
+                        }
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        .alert(item: $transferMessage) { message in
+            Alert(title: Text(message.message), dismissButton: .default(Text(ArchiveCopy.text(english: "OK", russian: "ОК"))))
+        }
+    }
+
+    private func exportPrivateArchive() {
+        guard let repository else { return }
+        transferInProgress = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let data = try repository.exportPrivateArchive()
+                DispatchQueue.main.async {
+                    transferDocument = ArchiveTransferDocument(data: data)
+                    transferInProgress = false
+                    showingExporter = true
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    transferInProgress = false
+                    transferMessage = TransferMessage(message: error.localizedDescription)
+                }
             }
         }
     }
+
+    private func importPrivateArchive(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        transferInProgress = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let summary = try FamilyRepository.previewPrivateArchive(data)
+                DispatchQueue.main.async {
+                    transferInProgress = false
+                    importConfirmation = ImportConfirmation(data: data, summary: summary)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    transferInProgress = false
+                    transferMessage = TransferMessage(message: error.localizedDescription)
+                }
+            }
+        }
+    }
+}
+
+private struct ArchiveTransferRow: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(ArchiveTheme.action)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(ArchiveTheme.ink)
+                Text(detail).font(.caption).foregroundStyle(ArchiveTheme.metadata)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ArchiveTheme.metadata)
+        }
+        .padding(.vertical, 14)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+private struct ImportConfirmation: Identifiable {
+    let id = UUID()
+    let data: Data
+    let summary: ArchivePackageSummary
+}
+
+private struct TransferMessage: Identifiable {
+    let id = UUID()
+    let message: String
+}
+
+struct ArchiveTransferDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.familyArchive] }
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+extension UTType {
+    static let familyArchive = UTType(filenameExtension: "familyarchive", conformingTo: .data) ?? .data
 }
 
 private struct AccountRow: View {
@@ -991,9 +1495,6 @@ private struct AccountRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 15)
         .overlay(alignment: .bottom) { Divider() }
@@ -1021,13 +1522,13 @@ private struct TreePlaceholderView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                Text("TREE")
+                Text(ArchiveCopy.text(english: "TREE", russian: "ДЕРЕВО"))
                     .font(ArchiveTypography.sectionTitle)
                     .tracking(1.2)
                     .foregroundStyle(ArchiveTheme.ink)
-                Text("Family tree")
+                Text(ArchiveCopy.text(english: "Family tree", russian: "Семейное дерево"))
                     .font(ArchiveTypography.pageTitle)
-                Text("The tree viewer is coming soon. Profiles and family links are available from the Family tab.")
+                Text(ArchiveCopy.text(english: "The tree viewer is coming soon. Profiles and family links are available from the Family tab.", russian: "Просмотр дерева скоро появится. Профили и семейные связи доступны на вкладке «Семья»."))
                     .font(ArchiveTypography.paragraph)
                     .foregroundStyle(ArchiveTheme.muted)
                     .lineSpacing(3)
@@ -1064,7 +1565,7 @@ private struct MemoriesView: View {
             let matchesType = filter.matches(memory.media.kind)
             let searchableText = [
                 memory.media.title,
-                memory.media.caption ?? "",
+                NarrativeLocalizationStore.shared.mediaCaption(memory.person.id, mediaID: memory.media.id, source: memory.media.caption ?? ""),
                 memory.media.collection ?? "",
                 memory.person.displayName,
                 (memory.media.tags ?? []).joined(separator: " ")
@@ -1095,36 +1596,23 @@ private struct MemoriesView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     memoriesHeader
 
-                    SearchField(text: $searchText, placeholder: "Search \(filter.searchPlaceholder)")
+                    SearchField(text: $searchText, placeholder: ArchiveCopy.text(english: "Search \(filter.searchPlaceholder)", russian: "Поиск: \(filter.searchPlaceholderRussian)"))
                         .padding(.top, 12)
                         .padding(.bottom, 20)
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
-                            ForEach(MemoryFilter.allCases) { option in
-                                Button {
+                            ForEach(Array(MemoryFilter.allCases)) { option in
+                                MemoryFilterButton(option: option, isSelected: filter == option) {
                                     filter = option
-                                } label: {
-                                    Text(option.title)
-                                        .font(ArchiveTypography.metadataEmphasis)
-                                        .foregroundStyle(filter == option ? .white : ArchiveTheme.ink)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 9)
-                                        .background(filter == option ? ArchiveTheme.accent : Color(uiColor: .secondarySystemBackground))
-                                        .clipShape(ArchiveShape.control)
-                                        .overlay(
-                                            ArchiveShape.control
-                                                .stroke(Color(uiColor: .separator), lineWidth: filter == option ? 0 : 1)
-                                        )
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
                     .padding(.vertical, 12)
 
                     HStack {
-                        Text("\(visibleMemories.count) \(filter.countLabel)")
+                        Text("\(visibleMemories.count) \(filter.localizedCountLabel)")
                             .font(ArchiveTypography.metadataEmphasis)
                             .foregroundStyle(ArchiveTheme.metadata)
 
@@ -1136,7 +1624,7 @@ private struct MemoriesView: View {
                                     sort = option
                                 } label: {
                                     HStack {
-                                        Text(option.title)
+                                        Text(option.localizedTitle)
                                         if sort == option {
                                             Image(systemName: "checkmark")
                                         }
@@ -1146,7 +1634,7 @@ private struct MemoriesView: View {
                         } label: {
                             HStack(spacing: 5) {
                                 Image(systemName: "arrow.up.arrow.down")
-                                Text(sort.title)
+                                Text(sort.localizedTitle)
                             }
                             .font(ArchiveTypography.metadataEmphasis)
                             .foregroundStyle(ArchiveTheme.accent)
@@ -1193,7 +1681,7 @@ private struct MemoriesView: View {
     }
 
     private var memoriesHeader: some View {
-        Text("MEMORIES")
+        Text(ArchiveCopy.text(english: "MEMORIES", russian: "ВОСПОМИНАНИЯ"))
             .font(ArchiveTypography.sectionTitle)
             .tracking(1.2)
             .foregroundStyle(ArchiveTheme.ink)
@@ -1212,6 +1700,29 @@ private struct MemoryItem: Identifiable {
     }
 }
 
+private struct MemoryFilterButton: View {
+    let option: MemoryFilter
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(option.localizedTitle)
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(isSelected ? .white : ArchiveTheme.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(isSelected ? ArchiveTheme.accent : Color(uiColor: .secondarySystemBackground))
+                .clipShape(ArchiveShape.control)
+                .overlay(
+                    ArchiveShape.control
+                        .stroke(Color(uiColor: .separator), lineWidth: isSelected ? 0 : 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private enum MemoryFilter: String, CaseIterable, Identifiable {
     case photo
     case document
@@ -1222,12 +1733,14 @@ private enum MemoryFilter: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .photo: "Photos"
-        case .document: "Documents"
-        case .audio: "Audio"
-        case .video: "Video"
+        case .photo: ArchiveCopy.text(english: "Photos", russian: "Фото")
+        case .document: ArchiveCopy.text(english: "Documents", russian: "Документы")
+        case .audio: ArchiveCopy.text(english: "Audio", russian: "Аудио")
+        case .video: ArchiveCopy.text(english: "Video", russian: "Видео")
         }
     }
+
+    var localizedTitle: String { title }
 
     var countLabel: String {
         switch self {
@@ -1238,12 +1751,30 @@ private enum MemoryFilter: String, CaseIterable, Identifiable {
         }
     }
 
+    var localizedCountLabel: String {
+        switch self {
+        case .photo: ArchiveCopy.text(english: "photos", russian: "фото")
+        case .document: ArchiveCopy.text(english: "documents", russian: "документов")
+        case .audio: ArchiveCopy.text(english: "audio recordings", russian: "аудиозаписей")
+        case .video: ArchiveCopy.text(english: "videos", russian: "видео")
+        }
+    }
+
     var searchPlaceholder: String {
         switch self {
         case .photo: "photos"
         case .document: "documents"
         case .audio: "audio recordings"
         case .video: "videos"
+        }
+    }
+
+    var searchPlaceholderRussian: String {
+        switch self {
+        case .photo: "фото"
+        case .document: "документам"
+        case .audio: "аудиозаписям"
+        case .video: "видео"
         }
     }
 
@@ -1268,6 +1799,15 @@ private enum MemorySort: String, CaseIterable, Identifiable {
         case .person: "Person"
         }
     }
+
+    var localizedTitle: String {
+        switch self {
+        case .newest: ArchiveCopy.text(english: "Newest", russian: "Сначала новые")
+        case .oldest: ArchiveCopy.text(english: "Oldest", russian: "Сначала старые")
+        case .title: ArchiveCopy.text(english: "Title", russian: "Название")
+        case .person: ArchiveCopy.text(english: "Person", russian: "Человек")
+        }
+    }
 }
 
 private struct GalleryMemoryTile: View {
@@ -1278,7 +1818,8 @@ private struct GalleryMemoryTile: View {
             GalleryMediaVisual(memory: memory)
 
             Group {
-                if let caption = memory.media.caption, !caption.isEmpty {
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(memory.person.id, mediaID: memory.media.id, source: memory.media.caption ?? "")
+                if !caption.isEmpty {
                     Text(memoryCaptionWithDate(caption, date: memory.media.date))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
@@ -1358,7 +1899,8 @@ private struct MemoryDetailView: View {
             VStack(alignment: .leading, spacing: 18) {
                 GalleryMediaVisual(memory: memory)
 
-                if let caption = memory.media.caption, !caption.isEmpty {
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(memory.person.id, mediaID: memory.media.id, source: memory.media.caption ?? "")
+                if !caption.isEmpty {
                     Text(memoryCaptionWithDate(caption, date: memory.media.date))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
@@ -1374,22 +1916,28 @@ private struct MemoryDetailView: View {
                     .foregroundStyle(ArchiveTheme.metadata)
 
                 if let collection = memory.media.collection, !collection.isEmpty {
-                    MemoryDetailRow(label: "Collection", value: collection)
+                    MemoryDetailRow(label: ArchiveCopy.text(english: "Collection", russian: "Коллекция"), value: collection)
                 }
 
                 if let tags = memory.media.tags, !tags.isEmpty {
-                    MemoryDetailRow(label: "Tags", value: tags.joined(separator: " · "))
+                    MemoryDetailRow(label: ArchiveCopy.text(english: "Tags", russian: "Метки"), value: tags.joined(separator: " · "))
                 }
 
                 if memory.media.isApproximate == true {
-                    MemoryDetailRow(label: "Date", value: "Approximate")
+                    MemoryDetailRow(
+                        label: ArchiveCopy.text(english: "Date", russian: "Дата"),
+                        value: ArchiveCopy.text(english: "Approximate", russian: "Примерно")
+                    )
                 }
 
                 NavigationLink {
                     PersonDetailView(person: memory.person, repository: repository)
                 } label: {
                     HStack {
-                        Text("Open \(memory.person.displayName)’s profile")
+                        Text(ArchiveCopy.text(
+                            english: "Open \(memory.person.displayName)’s profile",
+                            russian: "Открыть профиль: \(memory.person.displayName)"
+                        ))
                             .font(ArchiveTypography.action)
                         Spacer()
                         Image(systemName: "arrow.right")
@@ -1406,7 +1954,7 @@ private struct MemoryDetailView: View {
         }
         .scrollIndicators(.hidden)
         .background(Color(uiColor: .systemBackground))
-        .navigationTitle("Memory")
+        .navigationTitle(ArchiveCopy.text(english: "Memory", russian: "Воспоминание"))
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -1510,7 +2058,7 @@ private struct MemoriesPagerView: View {
 
             Spacer()
 
-            Text("Memories")
+            Text(ArchiveCopy.text(english: "Memories", russian: "Воспоминания"))
                 .font(ArchiveTypography.navigationTitle)
                 .lineLimit(1)
 
