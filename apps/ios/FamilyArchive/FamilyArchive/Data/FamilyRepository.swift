@@ -239,16 +239,18 @@ private enum PrivateArchiveFile {
             try output.write(contentsOf: uint64Data(fileSize))
             try output.write(contentsOf: pathData)
 
-            let input = try FileHandle(forReadingFrom: fileURL)
-            defer { try? input.close() }
-            var remaining = fileSize
-            while remaining > 0 {
-                let requested = Int(min(UInt64(chunkSize), remaining))
-                guard let data = try input.read(upToCount: requested), !data.isEmpty else {
-                    throw ArchivePackageError.invalidZip
+            do {
+                let input = try FileHandle(forReadingFrom: fileURL)
+                defer { try? input.close() }
+                var remaining = fileSize
+                while remaining > 0 {
+                    let requested = Int(min(UInt64(chunkSize), remaining))
+                    guard let data = try input.read(upToCount: requested), !data.isEmpty else {
+                        throw ArchivePackageError.invalidZip
+                    }
+                    try output.write(contentsOf: data)
+                    remaining -= UInt64(data.count)
                 }
-                try output.write(contentsOf: data)
-                remaining -= UInt64(data.count)
             }
         }
     }
@@ -289,16 +291,18 @@ private enum PrivateArchiveFile {
             let outputURL = destinationURL.appendingPathComponent(relativePath)
             try fileManager.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             fileManager.createFile(atPath: outputURL.path, contents: nil)
-            let output = try FileHandle(forWritingTo: outputURL)
-            defer { try? output.close() }
-            var remaining = fileSize
-            while remaining > 0 {
-                let requested = Int(min(UInt64(chunkSize), remaining))
-                guard let data = try input.read(upToCount: requested), !data.isEmpty else {
-                    throw ArchivePackageError.invalidZip
+            do {
+                let output = try FileHandle(forWritingTo: outputURL)
+                defer { try? output.close() }
+                var remaining = fileSize
+                while remaining > 0 {
+                    let requested = Int(min(UInt64(chunkSize), remaining))
+                    guard let data = try input.read(upToCount: requested), !data.isEmpty else {
+                        throw ArchivePackageError.invalidZip
+                    }
+                    try output.write(contentsOf: data)
+                    remaining -= UInt64(data.count)
                 }
-                try output.write(contentsOf: data)
-                remaining -= UInt64(data.count)
             }
         }
     }

@@ -1446,7 +1446,7 @@ private struct SettingsView: View {
         transferInProgress = true
         DispatchQueue.global(qos: .userInitiated).async {
             let localURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("FamilyArchiveImport-(UUID().uuidString)", isDirectory: false)
+                .appendingPathComponent("FamilyArchiveImport-\(UUID().uuidString)", isDirectory: false)
                 .appendingPathExtension("familyarchive")
             do {
                 guard let repository else { throw ArchivePackageError.documentsUnavailable }
