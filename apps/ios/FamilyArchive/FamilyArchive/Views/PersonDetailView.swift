@@ -16,8 +16,10 @@ struct PersonDetailView: View {
     @State private var showingAllMedia = false
     @State private var showingEditor = false
     @State private var showingMediaEditor = false
+    @State private var showingProfilePhotoEditor = false
     @State private var showingEventsManager = false
     @State private var showingStoriesManager = false
+    @State private var selectedMedia: MediaReference?
 
     init(person: Person, repository: FamilyRepository) {
         initialPerson = person
@@ -30,12 +32,13 @@ struct PersonDetailView: View {
             VStack(spacing: 0) {
                 detailTopBar
                 ScrollView {
-                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                         profileHeader
                         profileMediaPreview
 
                         Section {
                             tabContent
+                                .id(repository.appLanguage)
                                 .padding(.horizontal, 20)
                                 .padding(.top, 22)
                                 .padding(.bottom, 32)
@@ -63,13 +66,19 @@ struct PersonDetailView: View {
         .background(Color(uiColor: .systemBackground))
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingAllMedia) {
-            PersonMediaGalleryView(person: person)
+            PersonMediaGalleryView(person: person, items: browsableMedia, repository: repository)
+        }
+        .sheet(item: $selectedMedia) { item in
+            PersonMediaPagerView(personID: person.id, items: browsableMedia, initialID: item.id, repository: repository)
         }
         .sheet(isPresented: $showingEditor) {
             ProfileEditorView(person: person, repository: repository)
         }
         .sheet(isPresented: $showingMediaEditor) {
             PersonMediaEditorView(person: person, repository: repository)
+        }
+        .sheet(isPresented: $showingProfilePhotoEditor) {
+            ProfilePhotoSelectionView(person: person, repository: repository)
         }
         .sheet(isPresented: $showingEventsManager) {
             LifeEventsManagerView(person: person, repository: repository)
@@ -84,6 +93,10 @@ struct PersonDetailView: View {
             profileAction(ArchiveCopy.text(english: "Edit profile", russian: "Изменить профиль"), systemImage: "person.crop.circle") {
                 showingActions = false
                 showingEditor = true
+            }
+            profileAction(ArchiveCopy.text(english: "Change profile image", russian: "Изменить фото профиля"), systemImage: "person.crop.square") {
+                showingActions = false
+                showingProfilePhotoEditor = true
             }
             profileAction(ArchiveCopy.text(english: "Edit media", russian: "Изменить медиа"), systemImage: "photo") {
                 showingActions = false
@@ -135,7 +148,7 @@ struct PersonDetailView: View {
             Spacer()
 
             HStack(spacing: 7) {
-                Text(person.relationshipToMe.map(ArchiveCopy.relationshipLabel) ?? ArchiveCopy.text(english: "Family member", russian: "Член семьи"))
+                Text(person.relationshipToMe.map { ArchiveCopy.relationshipLabel($0, gender: person.archiveGender) } ?? ArchiveCopy.text(english: "Family member", russian: "Член семьи"))
                     .font(ArchiveTypography.navigationTitle)
                     .lineLimit(1)
 
@@ -178,13 +191,20 @@ struct PersonDetailView: View {
     private var profileHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
-                ProfilePhotoView(person: person, size: 72, repository: repository)
+                Button {
+                    guard let profileMediaItem else { return }
+                    selectedMedia = profileMediaItem
+                } label: {
+                    ProfilePhotoView(person: person, size: 72, repository: repository)
                     // Align the photo with the visible cap-height of the name,
                     // not the font's invisible line-box top.
                     .padding(.top, ArchiveTypography.profileNameOpticalTopInset)
+                }
+                .buttonStyle(.plain)
+                .disabled(profileMediaItem == nil)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    HStack(alignment: .center, spacing: 10) {
                         Text(person.displayName)
                             .font(ArchiveTypography.profileName)
                             .fixedSize(horizontal: false, vertical: true)
@@ -192,24 +212,6 @@ struct PersonDetailView: View {
                         if repository.document.accountHolderID == person.id {
                             AccountHolderBadge()
                         }
-                    }
-
-                    if person.originalDisplayName != person.displayName {
-                        Text(person.originalDisplayName)
-                            .font(ArchiveTypography.metadata)
-                            .foregroundStyle(ArchiveTheme.metadata)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if !person.alternateNames.isEmpty {
-                        (
-                            Text(ArchiveCopy.text(english: "Also known as ", russian: "Также известен как "))
-                            + Text(person.alternateNames.joined(separator: " · "))
-                        )
-                            .font(ArchiveTypography.metadata)
-                            .foregroundStyle(ArchiveTheme.metadata)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.bottom, 6)
                     }
 
                     if let lifeSummary = profileLifeSummary {
@@ -231,15 +233,32 @@ struct PersonDetailView: View {
                 if let death = person.deathFact {
                     ProfileDateLine(label: ArchiveCopy.text(english: "Death", russian: "Смерть"), fact: death)
                 }
+
             }
 
-            if !person.localizedSummary.isEmpty {
-                ArchiveParagraph(person.localizedSummary)
+            if !profileSummaryText.isEmpty {
+                ArchiveParagraph(profileSummaryText)
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var profileSummaryText: String {
+        let summary = person.localizedSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let aliases = person.alternateNames
+            .map { NameLocalizationStore.shared.localizeEmbeddedNames(in: $0) }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let aliasText = aliases.isEmpty
+            ? ""
+            : ArchiveCopy.text(
+                english: "Also known as " + aliases.joined(separator: " · ") + ".",
+                russian: "Также известен как " + aliases.joined(separator: " · ") + "."
+            )
+        return [summary, aliasText]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
     }
 
     private var profileLifeSummary: String? {
@@ -263,7 +282,14 @@ struct PersonDetailView: View {
             let yearsAgo = yearsAgo(from: deathDate, year: deathYear, calendar: calendar)
             if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
                 let unit = yearsAgo == 1 ? "год" : yearsAgo < 5 ? "года" : "лет"
-                return "Умер(ла) в возрасте \(age) · \(yearsAgo) \(unit) назад"
+                switch person.archiveGender {
+                case .female:
+                    return "Умерла в возрасте \(age) · \(yearsAgo) \(unit) назад"
+                case .male:
+                    return "Умер в возрасте \(age) · \(yearsAgo) \(unit) назад"
+                case .unknown:
+                    return "Смерть в возрасте \(age) · \(yearsAgo) \(unit) назад"
+                }
             }
             return "Died at age \(age) · \(yearsAgo) \(yearsAgo == 1 ? "year" : "years") ago"
         }
@@ -364,7 +390,13 @@ struct PersonDetailView: View {
                     spacing: 6
                 ) {
                     ForEach(previewMedia.prefix(5)) { item in
-                        ProfileMediaPreviewTile(item: item)
+                        Button {
+                            selectedMedia = item
+                        } label: {
+                            ProfileMediaPreviewTile(item: item)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(ArchiveCopy.text(english: "Open media", russian: "Открыть медиа"))
                     }
                 }
             }
@@ -375,6 +407,33 @@ struct PersonDetailView: View {
 
     private var profileMediaPath: String? {
         repository.photoPath(for: person.id)
+    }
+
+    private var profileMediaItem: MediaReference? {
+        guard let path = profileMediaPath else { return nil }
+        if let existing = person.media.first(where: { $0.path == path }) {
+            return existing
+        }
+        return MediaReference(
+            id: "profile-\(person.id)",
+            kind: .photo,
+            title: "",
+            date: nil,
+            path: path,
+            caption: nil,
+            tags: nil,
+            collection: nil,
+            isApproximate: nil,
+            personIDs: [person.id]
+        )
+    }
+
+    private var browsableMedia: [MediaReference] {
+        guard let profileMediaItem,
+              !person.media.contains(where: { $0.path == profileMediaItem.path }) else {
+            return person.media
+        }
+        return [profileMediaItem] + person.media
     }
 
     @ViewBuilder
@@ -408,6 +467,29 @@ struct PersonDetailView: View {
               let account = repository.person(id: accountID),
               let path = connectionPath(from: account.id, to: person.id) else {
             return nil
+        }
+
+        if account.id == person.id {
+            let step = ConnectionPathStepModel(
+                person: account,
+                relationship: nil,
+                contextPeople: [],
+                isAccount: true,
+                isTarget: true
+            )
+            return ConnectionPathPreviewModel(
+                accountName: account.displayName,
+                targetName: person.displayName,
+                relationshipSummary: ArchiveCopy.text(
+                    english: "This is your account profile.",
+                    russian: "Это ваш профиль."
+                ),
+                distanceSummary: ArchiveCopy.text(
+                    english: "Account holder",
+                    russian: "Владелец аккаунта"
+                ),
+                steps: [step]
+            )
         }
 
         let pathIDs = Set(path.map(\.id))
@@ -546,7 +628,7 @@ struct PersonDetailView: View {
             switch connectionGender(of: person) {
             case .female: ArchiveCopy.text(english: "wife", russian: "жена")
             case .male: ArchiveCopy.text(english: "husband", russian: "муж")
-            case .unknown: ArchiveCopy.text(english: "spouse", russian: "супруг(а)")
+            case .unknown: ArchiveCopy.text(english: "spouse", russian: "партнёр")
             }
         case .sibling:
             switch connectionGender(of: person) {
@@ -591,7 +673,14 @@ struct PersonDetailView: View {
             return (summary, "Связей: \(kinds.count)")
         }
 
-        var phrase = ArchiveCopy.text(english: "your \(first)", russian: "ваш(а) \(first)")
+        let firstGender = destinations.first.map(connectionGender(of:)) ?? .unknown
+        let russianPossessive: String
+        switch firstGender {
+        case .female: russianPossessive = "ваша"
+        case .male: russianPossessive = "ваш"
+        case .unknown: russianPossessive = "ваш родственник"
+        }
+        var phrase = ArchiveCopy.text(english: "your \(first)", russian: "\(russianPossessive) \(first)")
         for word in words.dropFirst() {
             phrase += ArchiveCopy.text(english: "’s \(word)", russian: " — \(word)")
         }
@@ -642,23 +731,11 @@ struct PersonDetailView: View {
     }
 
     private func connectionGender(of person: Person) -> ConnectionGender {
-        let name = person.givenName
-            .lowercased()
-            .replacingOccurrences(of: "ё", with: "е")
-
-        let femaleNames: Set<String> = [
-            "анна", "антонина", "александра", "галина", "елена", "евгения", "ирина",
-            "лидия", "мария", "ольга", "татьяна", "валентина", "раиса", "нина",
-            "тамара", "надежда", "вера", "зинаида", "людмила", "екатерина", "наталья"
-        ]
-        let maleNames: Set<String> = [
-            "иван", "владимир", "михаил", "константин", "яков", "сергей", "николай",
-            "евгений", "антон", "алексей", "виктор", "степан", "илья", "юрий"
-        ]
-
-        if femaleNames.contains(name) || name.hasSuffix("а") || name.hasSuffix("я") { return .female }
-        if maleNames.contains(name) { return .male }
-        return .unknown
+        switch person.archiveGender {
+        case .female: return .female
+        case .male: return .male
+        case .unknown: return .unknown
+        }
     }
 
     private var timelineContent: some View {
@@ -677,13 +754,14 @@ struct PersonDetailView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 0) {
-                    if !timelineEvents.isEmpty {
-                        ForEach(Array(timelineEvents.enumerated()), id: \.element.id) { index, event in
-                            LifeEventRow(personID: person.id, event: event, isLast: index == timelineEvents.count - 1)
-                        }
-                    } else if !supportingFacts.isEmpty {
-                        ForEach(Array(supportingFacts.enumerated()), id: \.element.id) { index, fact in
-                            TimelineRow(fact: fact, isLast: index == supportingFacts.count - 1)
+                    if !timelineEntries.isEmpty {
+                        ForEach(Array(timelineEntries.enumerated()), id: \.element.id) { index, entry in
+                            switch entry {
+                            case .fact(let fact):
+                                TimelineRow(fact: fact, isLast: index == timelineEntries.count - 1)
+                            case .event(let event):
+                                LifeEventRow(personID: person.id, event: event, isLast: index == timelineEntries.count - 1)
+                            }
                         }
                     } else {
                         Text(ArchiveCopy.text(english: "No additional dated events recorded.", russian: "Дополнительные события с датами не записаны."))
@@ -793,17 +871,21 @@ struct PersonDetailView: View {
         "\(person.media.filter { $0.kind == kind }.count)"
     }
 
-    private var supportingFacts: [PersonFact] {
-        person.facts.filter {
-            !$0.label.localizedCaseInsensitiveContains("born") &&
-                !$0.label.localizedCaseInsensitiveContains("birth") &&
-                !$0.label.localizedCaseInsensitiveContains("died") &&
-                !$0.label.localizedCaseInsensitiveContains("death")
-        }
-    }
-
     private var timelineEvents: [LifeEvent] {
         person.orderedEvents.filter { $0.category != "birth" && $0.category != "death" }
+    }
+
+    private var timelineEntries: [TimelineEntry] {
+        let facts = person.facts
+            .filter { !$0.value.trimmed.isEmpty }
+            .map(TimelineEntry.fact)
+        let events = timelineEvents.map(TimelineEntry.event)
+        return (facts + events).sorted { left, right in
+            if left.sortValue != right.sortValue {
+                return left.sortValue > right.sortValue
+            }
+            return left.id < right.id
+        }
     }
 
     private var hasFamily: Bool {
@@ -816,10 +898,18 @@ struct PersonDetailView: View {
     private var familySection: some View {
         detailSection(ArchiveCopy.text(english: "Family", russian: "Семья")) {
             familyGroup(title: ArchiveCopy.text(english: "Parents", russian: "Родители"), ids: person.immediateFamily.parents)
-            familyGroup(title: ArchiveCopy.text(english: "Spouse", russian: "Супруг(а)"), ids: person.immediateFamily.partners)
+            familyGroup(title: spouseGroupTitle, ids: person.immediateFamily.partners)
             familyGroup(title: ArchiveCopy.text(english: "Children", russian: "Дети"), ids: person.immediateFamily.children)
             familyGroup(title: ArchiveCopy.text(english: "Siblings", russian: "Братья и сёстры"), ids: person.immediateFamily.siblings)
         }
+    }
+
+    private var spouseGroupTitle: String {
+        let partners = repository.people(ids: person.immediateFamily.partners)
+        guard partners.count == 1, let partner = partners.first else {
+            return ArchiveCopy.spouseLabel(gender: .unknown)
+        }
+        return ArchiveCopy.spouseLabel(gender: partner.archiveGender)
     }
 
     @ViewBuilder
@@ -895,7 +985,7 @@ private struct ArchiveContentDate: View {
     }
 
     var body: some View {
-        Text(ArchiveDateFormatter.display(value) ?? value)
+        Text(ArchiveDateFormatter.displayRange(value) ?? value)
             .font(ArchiveTypography.metadataEmphasis)
             .foregroundStyle(ArchiveTheme.metadata)
     }
@@ -1026,21 +1116,20 @@ private struct ProfileDateLine: View {
     let fact: PersonFact
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("\(label):")
+        (
+            Text("\(label): ")
                 .font(ArchiveTypography.metadataEmphasis)
                 .foregroundStyle(ArchiveTheme.ink)
-                .frame(width: 54, alignment: .leading)
-            Text(dateAndPlace)
+            + Text(dateAndPlace)
                 .font(ArchiveTypography.metadata)
                 .foregroundStyle(ArchiveTheme.metadata)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        )
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var dateAndPlace: String {
         let rawDate = fact.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let date = ArchiveDateFormatter.display(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate)
+        let date = ArchiveDateFormatter.displayRange(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate)
         guard let place = fact.place, !place.isEmpty else { return date }
         return "\(date), \(ArchiveCopy.place(place))"
     }
@@ -1061,8 +1150,16 @@ private struct ProfilePhotoView: View {
         Group {
             if let image = loadedImage {
                 Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(CGFloat(person.profileImageScale ?? 1))
+                        // Crop offsets are authored in the 300-point editor;
+                        // scale them for the actual avatar size so a saved
+                        // adjustment remains visible in every context.
+                        .offset(
+                            x: CGFloat(person.profileImageOffsetX ?? 0) * size / 300,
+                            y: CGFloat(person.profileImageOffsetY ?? 0) * size / 300
+                        )
                     .grayscale((repository?.isLiving(person) ?? person.isLiving) ? 0 : 1)
             } else {
                 ZStack(alignment: .bottomLeading) {
@@ -1220,7 +1317,9 @@ private struct ConnectionPathPreview: View {
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    NavigationLink(value: step.person.id) {
+                    NavigationLink {
+                        PersonDetailView(person: step.person, repository: repository)
+                    } label: {
                         Text(step.person.displayName)
                             .font(ArchiveTypography.contentTitle)
                             .foregroundStyle(step.isTarget || step.isAccount ? ArchiveTheme.action : ArchiveTheme.ink)
@@ -1242,7 +1341,9 @@ private struct ConnectionPathPreview: View {
                                     .foregroundStyle(ArchiveTheme.metadata)
                             }
 
-                            NavigationLink(value: contextPerson.id) {
+                            NavigationLink {
+                                PersonDetailView(person: contextPerson, repository: repository)
+                            } label: {
                                 Text(contextPerson.displayName)
                                     .font(ArchiveTypography.metadata)
                                     .foregroundStyle(ArchiveTheme.metadata)
@@ -1283,6 +1384,25 @@ private struct FactRow: View {
     }
 }
 
+private enum TimelineEntry: Identifiable {
+    case fact(PersonFact)
+    case event(LifeEvent)
+
+    var id: String {
+        switch self {
+        case .fact(let fact): return "fact-\(fact.id)"
+        case .event(let event): return "event-\(event.id)"
+        }
+    }
+
+    var sortValue: Int {
+        switch self {
+        case .fact(let fact): return editorSortKey(fact.value) ?? 0
+        case .event(let event): return event.sortKey ?? editorSortKey(event.date) ?? 0
+        }
+    }
+}
+
 private struct TimelineRow: View {
     let fact: PersonFact
     let isLast: Bool
@@ -1306,7 +1426,7 @@ private struct TimelineRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ArchiveContentTitle(fact.localizedLabel)
                 let rawDate = fact.localizedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                ArchiveParagraph(ArchiveDateFormatter.display(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate))
+                ArchiveParagraph(ArchiveDateFormatter.displayRange(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate))
                 if let place = fact.place {
                     Text(ArchiveCopy.place(place))
                         .font(ArchiveTypography.metadata)
@@ -1392,9 +1512,23 @@ private struct ProfileMediaPreviewTile: View {
 
 private struct PersonMediaGalleryView: View {
     let person: Person
+    let items: [MediaReference]
+    let repository: FamilyRepository?
+    let selectionMode: Bool
+    let onSelect: ((MediaReference) -> Void)?
+    let onCancel: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMedia: MediaReference?
+
+    init(person: Person, items: [MediaReference]? = nil, repository: FamilyRepository? = nil, selectionMode: Bool = false, onSelect: ((MediaReference) -> Void)? = nil, onCancel: (() -> Void)? = nil) {
+        self.person = person
+        self.items = items ?? person.media
+        self.repository = repository
+        self.selectionMode = selectionMode
+        self.onSelect = onSelect
+        self.onCancel = onCancel
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1405,11 +1539,15 @@ private struct PersonMediaGalleryView: View {
                     columns: [GridItem(.flexible()), GridItem(.flexible())],
                     spacing: 14
                 ) {
-                    ForEach(person.media) { item in
+                    ForEach(items) { item in
                         PersonMediaGalleryTile(personID: person.id, item: item)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                            selectedMedia = item
+                            if selectionMode {
+                                onSelect?(item)
+                            } else {
+                                selectedMedia = item
+                            }
                         }
                     }
                 }
@@ -1423,14 +1561,18 @@ private struct PersonMediaGalleryView: View {
         .foregroundStyle(ArchiveTheme.ink)
         .background(Color(uiColor: .systemBackground))
         .sheet(item: $selectedMedia) { item in
-            PersonMediaPagerView(personID: person.id, items: person.media, initialID: item.id)
+            PersonMediaPagerView(personID: person.id, items: items, initialID: item.id, repository: repository)
         }
     }
 
     private var mediaTopBar: some View {
         HStack {
             Button {
-                dismiss()
+                if let onCancel {
+                    onCancel()
+                } else {
+                    dismiss()
+                }
             } label: {
                 Image(systemName: "xmark")
                     .font(ArchiveTypography.icon)
@@ -1444,7 +1586,9 @@ private struct PersonMediaGalleryView: View {
 
             Spacer()
 
-            Text(ArchiveCopy.text(english: "Media", russian: "Медиа"))
+            Text(selectionMode
+                ? ArchiveCopy.text(english: "Choose profile image", russian: "Выберите фото профиля")
+                : ArchiveCopy.text(english: "Media", russian: "Медиа"))
                 .font(ArchiveTypography.navigationTitle)
                 .lineLimit(1)
 
@@ -1476,7 +1620,7 @@ private struct PersonMediaGalleryTile: View {
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(2)
                 } else if let date = item.date {
-                    Text(ArchiveDateFormatter.display(date) ?? date)
+                    Text(ArchiveDateFormatter.displayRange(date) ?? date)
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(2)
@@ -1490,8 +1634,7 @@ private struct PersonMediaGalleryTile: View {
     }
 
     private func captionWithDate(_ caption: String) -> String {
-        guard let date = item.date, !date.isEmpty else { return caption }
-        return "\(caption) · \(ArchiveDateFormatter.display(date) ?? date)"
+        caption
     }
 }
 
@@ -1544,15 +1687,31 @@ private struct PersonMediaPagerView: View {
     let personID: Person.ID
     let items: [MediaReference]
     let initialID: String
+    let repository: FamilyRepository?
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndex: Int
 
-    init(personID: Person.ID, items: [MediaReference], initialID: String) {
+    init(personID: Person.ID, items: [MediaReference], initialID: String, repository: FamilyRepository? = nil) {
         self.personID = personID
         self.items = items
         self.initialID = initialID
-        _selectedIndex = State(initialValue: items.firstIndex { $0.id == initialID } ?? 0)
+        self.repository = repository
+        // The first and last pages are duplicated as invisible wrap points,
+        // so a swipe can continue from the end back to the beginning.
+        let initialPage = items.firstIndex { $0.id == initialID } ?? 0
+        _selectedIndex = State(initialValue: items.count > 1 ? initialPage + 1 : 0)
+    }
+
+    private var pageItems: [MediaReference] {
+        guard let first = items.first, let last = items.last, items.count > 1 else { return items }
+        return [last] + items + [first]
+    }
+
+    private var displayIndex: Int {
+        guard !items.isEmpty else { return 0 }
+        if items.count == 1 { return 1 }
+        return min(max(selectedIndex, 1), items.count)
     }
 
     var body: some View {
@@ -1561,16 +1720,33 @@ private struct PersonMediaPagerView: View {
 
             VStack(spacing: 0) {
                 TabView(selection: $selectedIndex) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(pageItems.enumerated()), id: \.offset) { index, item in
                         PersonMediaDetailContent(personID: personID, item: item)
                             .tag(index)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .automatic))
+                .onChange(of: selectedIndex) { _, newValue in
+                    guard items.count > 1 else { return }
+                    if newValue == 0 {
+                        DispatchQueue.main.async {
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) { selectedIndex = items.count }
+                        }
+                    } else if newValue == items.count + 1 {
+                        DispatchQueue.main.async {
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) { selectedIndex = 1 }
+                        }
+                    }
+                }
 
                 HStack {
                     Button {
-                        selectedIndex = max(0, selectedIndex - 1)
+                        guard items.count > 1 else { return }
+                        selectedIndex = selectedIndex == 1 ? items.count : selectedIndex - 1
                     } label: {
                         Image(systemName: "chevron.left")
                             .font(ArchiveTypography.icon)
@@ -1580,20 +1756,21 @@ private struct PersonMediaPagerView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(selectedIndex == 0)
-                    .opacity(selectedIndex == 0 ? 0.35 : 1)
+                    .disabled(items.count < 2)
+                    .opacity(items.count < 2 ? 0.35 : 1)
                     .accessibilityLabel("Previous photo")
 
                     Spacer()
 
-                    Text("\(selectedIndex + 1) of \(items.count)")
+                    Text("\(displayIndex) of \(items.count)")
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
 
                     Spacer()
 
                     Button {
-                        selectedIndex = min(items.count - 1, selectedIndex + 1)
+                        guard items.count > 1 else { return }
+                        selectedIndex = selectedIndex == items.count ? 1 : selectedIndex + 1
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(ArchiveTypography.icon)
@@ -1603,8 +1780,8 @@ private struct PersonMediaPagerView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(selectedIndex == items.count - 1)
-                    .opacity(selectedIndex == items.count - 1 ? 0.35 : 1)
+                    .disabled(items.count < 2)
+                    .opacity(items.count < 2 ? 0.35 : 1)
                     .accessibilityLabel("Next photo")
                 }
                 .padding(.horizontal, 20)
@@ -1665,18 +1842,11 @@ private struct PersonMediaDetailContent: View {
                         .foregroundStyle(ArchiveTheme.metadata)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let date = item.date {
-                    Text(ArchiveDateFormatter.display(date) ?? date)
+                    Text(ArchiveDateFormatter.displayRange(date) ?? date)
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
 
-                if let collection = item.collection, !collection.isEmpty {
-                    GalleryMetadataRow(label: "Collection", value: collection)
-                }
-
-                if let tags = item.tags, !tags.isEmpty {
-                    GalleryMetadataRow(label: "Tags", value: tags.joined(separator: " · "))
-                }
             }
             .padding(.horizontal, ArchiveLayout.pageHorizontal)
             .padding(.top, ArchiveLayout.pageTop)
@@ -1687,8 +1857,7 @@ private struct PersonMediaDetailContent: View {
 }
 
 private func mediaCaptionWithDate(_ caption: String, date: String?) -> String {
-    guard let date, !date.isEmpty else { return caption }
-    return "\(caption) · \(ArchiveDateFormatter.display(date) ?? date)"
+    caption
 }
 
 private struct PersonMediaLargeVisual: View {
@@ -1754,7 +1923,7 @@ private struct MediaTile: View {
                 .lineLimit(2)
 
             if let date = item.date {
-                Text(ArchiveDateFormatter.display(date) ?? date)
+                Text(ArchiveDateFormatter.displayRange(date) ?? date)
                     .font(ArchiveTypography.metadata)
                     .foregroundStyle(ArchiveTheme.metadata)
             }
@@ -1832,106 +2001,737 @@ private struct MediaStat: View {
 
 // MARK: - Private editors
 
+private struct ProfileEditorField: View {
+    let label: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.muted)
+
+                TextField("", text: $text, axis: .vertical)
+                    .font(ArchiveTypography.body)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .lineLimit(1...4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 5)
+        }
+    }
+}
+
 private struct ProfileEditorView: View {
+    private struct EditorValues {
+        var givenName: String
+        var familyName: String
+        var birthDate: String
+        var birthPlace: String
+        var deathDate: String
+        var deathPlace: String
+    }
+
     let repository: FamilyRepository
+    let initialPerson: Person
     @Environment(\.dismiss) private var dismiss
     @State private var draft: Person
+    @State private var editedGivenName: String
+    @State private var editedFamilyName: String
     @State private var birthDate: String
     @State private var birthPlace: String
     @State private var deathDate: String
     @State private var deathPlace: String
-    @State private var profileImagePath: String
+    @State private var languageError: String?
+    @State private var showingLanguageReviewConfirmation = false
+    @State private var valuesByLanguage: [ArchiveLanguage: EditorValues] = [:]
 
     init(person: Person, repository: FamilyRepository) {
         self.repository = repository
+        self.initialPerson = person
         _draft = State(initialValue: person)
-        _birthDate = State(initialValue: person.birthFact?.value ?? "")
-        _birthPlace = State(initialValue: person.birthFact?.place ?? "")
-        _deathDate = State(initialValue: person.deathFact?.value ?? "")
-        _deathPlace = State(initialValue: person.deathFact?.place ?? "")
-        _profileImagePath = State(initialValue: person.profileImagePath ?? "")
+        let displayParts = person.displayName.split(separator: " ", maxSplits: 1).map(String.init)
+        _editedGivenName = State(initialValue: displayParts.first ?? person.givenName)
+        _editedFamilyName = State(initialValue: displayParts.count > 1 ? displayParts[1] : person.familyName)
+        _birthDate = State(initialValue: ArchiveDateFormatter.display(person.birthFact?.value, language: repository.appLanguage) ?? person.birthFact?.value ?? "")
+        _birthPlace = State(initialValue: person.birthFact?.place.map(ArchiveCopy.place) ?? "")
+        _deathDate = State(initialValue: ArchiveDateFormatter.display(person.deathFact?.value, language: repository.appLanguage) ?? person.deathFact?.value ?? "")
+        _deathPlace = State(initialValue: person.deathFact?.place.map(ArchiveCopy.place) ?? "")
+        _languageError = State(initialValue: nil)
     }
 
-    private var photoOptions: [String] {
-        draft.media.filter { $0.kind == .photo }.compactMap(\.path)
+    private func copy(_ english: String, _ russian: String) -> String {
+        repository.appLanguage == .russian ? russian : english
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Profile") {
-                    TextField("First name", text: $draft.givenName)
-                    TextField("Last name", text: $draft.familyName)
-                    TextField("Also known as", text: Binding(
-                        get: { draft.alternateNames.joined(separator: ", ") },
-                        set: { draft.alternateNames = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
-                    ))
+            VStack(spacing: 0) {
+                editorTopBar
 
-                    Picker("Profile image", selection: $profileImagePath) {
-                        Text("Use initials").tag("")
-                        ForEach(photoOptions, id: \.self) { path in
-                            Text(URL(fileURLWithPath: path).lastPathComponent)
-                                .lineLimit(1)
-                                .tag(path)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                    editorSection(copy("PROFILE", "ПРОФИЛЬ")) {
+                        ProfileEditorField(label: copy("First name", "Имя"), text: $editedGivenName)
+                        ProfileEditorField(label: copy("Last name", "Фамилия"), text: $editedFamilyName)
+                    }
+
+                        editorSection(copy("BIRTH", "РОЖДЕНИЕ")) {
+                            ProfileEditorField(label: copy("Full date", "Полная дата"), text: $birthDate)
+                            ProfileEditorField(label: copy("Place", "Место"), text: $birthPlace)
+                        }
+
+                        editorSection(copy("DEATH", "СМЕРТЬ")) {
+                            ProfileEditorField(label: copy("Full date", "Полная дата"), text: $deathDate)
+                            ProfileEditorField(label: copy("Place", "Место"), text: $deathPlace)
                         }
                     }
+                    .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                    .padding(.top, 12)
+                    .padding(.bottom, ArchiveLayout.pageBottom)
                 }
-
-                Section("Birth") {
-                    TextField("Full date", text: $birthDate)
-                    TextField("Place", text: $birthPlace)
-                }
-
-                Section("Death") {
-                    TextField("Full date", text: $deathDate)
-                    TextField("Place", text: $deathPlace)
-                }
-
+                .scrollIndicators(.hidden)
             }
-            .navigationTitle("Edit profile")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+            .background(Color(uiColor: .systemBackground))
+            .toolbar(.hidden, for: .navigationBar)
+            .alert(copy("Language check", "Проверка языка"), isPresented: Binding(
+                get: { languageError != nil },
+                set: { if !$0 { languageError = nil } }
+            )) {
+                Button(copy("OK", "Хорошо")) { languageError = nil }
+            } message: {
+                Text(languageError ?? "")
+            }
+            .alert(copy("Check other language", "Проверьте другой язык"), isPresented: $showingLanguageReviewConfirmation) {
+                Button(copy("Review other language", "Проверить другой язык")) {
+                    switchEditorLanguage()
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                Button(copy("I checked — save", "Я проверил(а) — сохранить")) {
+                    persistSave(counterpart: suggestedCounterpartForCurrentName())
                 }
+                Button(copy("Cancel", "Отмена"), role: .cancel) { }
+            } message: {
+                Text(copy(
+                    "Please review the other language before saving this change.",
+                    "Перед сохранением проверьте изменения на другом языке."
+                ))
+            }
+        }
+    }
+
+    private var editorTopBar: some View {
+        HStack {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(copy("Cancel", "Отмена"))
+
+            Spacer()
+
+            HStack(spacing: 7) {
+                Text(copy("Edit profile", "Изменить профиль"))
+                    .font(ArchiveTypography.navigationTitle)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .lineLimit(1)
+
+                Button {
+                    switchEditorLanguage()
+                } label: {
+                    Text(repository.appLanguage == .english ? "EN" : "RU")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .background(ArchiveTheme.actionBackground)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(repository.appLanguage == .english
+                    ? "Switch edit language to Russian"
+                    : "Переключить язык редактирования на английский")
+            }
+
+            Spacer()
+
+            Button {
+                save()
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(copy("Save", "Сохранить"))
+        }
+        .padding(.horizontal, ArchiveLayout.pageHorizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(Color(uiColor: .systemBackground))
+    }
+
+    private func switchEditorLanguage() {
+        if let issue = currentLanguageIssue() {
+            languageError = issue
+            return
+        }
+
+        let currentLanguage = repository.appLanguage
+        valuesByLanguage[currentLanguage] = EditorValues(
+            givenName: editedGivenName,
+            familyName: editedFamilyName,
+            birthDate: birthDate,
+            birthPlace: birthPlace,
+            deathDate: deathDate,
+            deathPlace: deathPlace
+        )
+
+        if hasEditorChanges {
+            persistSave(counterpart: suggestedCounterpartForCurrentName(), dismissAfterSave: false)
+        }
+
+        let nextLanguage: ArchiveLanguage = currentLanguage == .english ? .russian : .english
+        repository.appLanguage = nextLanguage
+
+        if let values = valuesByLanguage[nextLanguage] {
+            apply(values)
+        } else {
+            applyValues(for: nextLanguage)
+        }
+    }
+
+    private func apply(_ values: EditorValues) {
+        editedGivenName = values.givenName
+        editedFamilyName = values.familyName
+        birthDate = values.birthDate
+        birthPlace = values.birthPlace
+        deathDate = values.deathDate
+        deathPlace = values.deathPlace
+    }
+
+    private func applyValues(for language: ArchiveLanguage) {
+        let localizedName = NameLocalizationStore.shared.displayName(
+            for: initialPerson.id,
+            fallback: draft.sourceDisplayName,
+            language: language
+        )
+        let displayParts = localizedName.split(separator: " ", maxSplits: 1).map(String.init)
+        editedGivenName = displayParts.first ?? draft.givenName
+        editedFamilyName = displayParts.count > 1 ? displayParts[1] : draft.familyName
+        birthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: language)
+            ?? draft.birthFact?.value
+            ?? ""
+        birthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
+        deathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: language)
+            ?? draft.deathFact?.value
+            ?? ""
+        deathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
+    }
+
+    @ViewBuilder
+    private func editorSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(1.2)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            VStack(alignment: .leading, spacing: 6) {
+                content()
             }
         }
     }
 
     private func save() {
+        if let issue = currentLanguageIssue() {
+            languageError = issue
+            return
+        }
+
+        if hasEditorChanges {
+            showingLanguageReviewConfirmation = true
+            return
+        }
+
+        persistSave(counterpart: nil)
+    }
+
+    private var hasEditorChanges: Bool {
+        let localizedName = NameLocalizationStore.shared.displayName(
+            for: initialPerson.id,
+            fallback: draft.sourceDisplayName,
+            language: repository.appLanguage
+        )
+        let originalDisplayParts = localizedName.split(separator: " ", maxSplits: 1).map(String.init)
+        let originalGivenName = originalDisplayParts.first ?? draft.givenName
+        let originalFamilyName = originalDisplayParts.count > 1 ? originalDisplayParts[1] : draft.familyName
+        let originalBirthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: repository.appLanguage) ?? draft.birthFact?.value ?? ""
+        let originalBirthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
+        let originalDeathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: repository.appLanguage) ?? draft.deathFact?.value ?? ""
+        let originalDeathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
+
+        return editedGivenName.trimmed != originalGivenName.trimmed ||
+            editedFamilyName.trimmed != originalFamilyName.trimmed ||
+            birthDate.trimmed != originalBirthDate.trimmed ||
+            birthPlace.trimmed != originalBirthPlace.trimmed ||
+            deathDate.trimmed != originalDeathDate.trimmed ||
+            deathPlace.trimmed != originalDeathPlace.trimmed
+    }
+
+    private func currentLanguageIssue() -> String? {
+        let originalDisplayParts = initialPerson.displayName.split(separator: " ", maxSplits: 1).map(String.init)
+        let originalBirthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: repository.appLanguage) ?? draft.birthFact?.value ?? ""
+        let originalBirthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
+        let originalDeathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: repository.appLanguage) ?? draft.deathFact?.value ?? ""
+        let originalDeathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
+        let originalFields: [String: String] = [
+            "First name": originalDisplayParts.first ?? initialPerson.givenName,
+            "Last name": originalDisplayParts.count > 1 ? originalDisplayParts[1] : draft.familyName,
+            "Birth date": originalBirthDate,
+            "Birth place": originalBirthPlace,
+            "Death date": originalDeathDate,
+            "Death place": originalDeathPlace
+        ]
+        if let issue = ArchiveLanguageValidator.issue(
+            language: repository.appLanguage,
+            fields: [
+                ("First name", editedGivenName),
+                ("Last name", editedFamilyName),
+                ("Birth date", birthDate),
+                ("Birth place", birthPlace),
+                ("Death date", deathDate),
+                ("Death place", deathPlace)
+            ],
+            unchanged: originalFields
+        ) {
+            return issue
+        }
+        return nil
+    }
+
+    private func suggestedCounterpartForCurrentName() -> String? {
+        let localizedName = [editedGivenName.trimmed, editedFamilyName.trimmed]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let suggestedCounterpart = NameLocalizationStore.shared.suggestedCounterpart(
+            for: localizedName,
+            language: repository.appLanguage
+        )
+        return suggestedCounterpart.isEmpty ? nil : suggestedCounterpart
+    }
+
+    private func persistSave(counterpart: String?, dismissAfterSave: Bool = true) {
+        let originalBirthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: repository.appLanguage) ?? draft.birthFact?.value ?? ""
+        let originalBirthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
+        let originalDeathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: repository.appLanguage) ?? draft.deathFact?.value ?? ""
+        let originalDeathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
+
         var updated = draft
+        if repository.appLanguage == .russian {
+            // Russian is the source/original locale in the private archive.
+            updated.givenName = editedGivenName.trimmed
+            updated.familyName = editedFamilyName.trimmed
+        }
         let oldBirthID = draft.birthFact?.id
         let oldDeathID = draft.deathFact?.id
         var facts = draft.facts.filter { $0.id != oldBirthID && $0.id != oldDeathID }
+        let birthDateValue = birthDate == originalBirthDate ? (draft.birthFact?.value ?? birthDate.trimmed) : birthDate.trimmed
+        let birthPlaceValue = birthPlace == originalBirthPlace ? draft.birthFact?.place : (birthPlace.trimmed.isEmpty ? nil : birthPlace.trimmed)
+        let deathDateValue = deathDate == originalDeathDate ? (draft.deathFact?.value ?? deathDate.trimmed) : deathDate.trimmed
+        let deathPlaceValue = deathPlace == originalDeathPlace ? draft.deathFact?.place : (deathPlace.trimmed.isEmpty ? nil : deathPlace.trimmed)
 
-        if !birthDate.trimmed.isEmpty {
+        if !birthDateValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             facts.append(PersonFact(
                 id: oldBirthID ?? UUID().uuidString,
                 label: draft.birthFact?.label ?? "Born",
-                value: birthDate.trimmed,
-                place: birthPlace.trimmed.isEmpty ? nil : birthPlace.trimmed,
+                value: birthDateValue,
+                place: birthPlaceValue,
                 isApproximate: draft.birthFact?.isApproximate,
                 sourceIDs: draft.birthFact?.sourceIDs
             ))
         }
-        if !deathDate.trimmed.isEmpty {
+        if !deathDateValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             facts.append(PersonFact(
                 id: oldDeathID ?? UUID().uuidString,
                 label: draft.deathFact?.label ?? "Died",
-                value: deathDate.trimmed,
-                place: deathPlace.trimmed.isEmpty ? nil : deathPlace.trimmed,
+                value: deathDateValue,
+                place: deathPlaceValue,
                 isApproximate: draft.deathFact?.isApproximate,
                 sourceIDs: draft.deathFact?.sourceIDs
             ))
         }
 
         updated.facts = facts
-        updated.profileImagePath = profileImagePath.trimmed.isEmpty ? nil : profileImagePath
+        let localizedName = [editedGivenName.trimmed, editedFamilyName.trimmed]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        do {
+            try NameLocalizationStore.shared.update(
+                personID: initialPerson.id,
+                original: updated.sourceDisplayName,
+                localizedName: localizedName,
+                language: repository.appLanguage,
+                counterpart: counterpart
+            )
+        } catch {
+            languageError = copy(
+                "The name could not be saved to the private name data.",
+                "Не удалось сохранить имя в личных данных."
+            )
+            return
+        }
         repository.updatePerson(updated)
-        dismiss()
+        draft = updated
+        if dismissAfterSave {
+            dismiss()
+        }
+    }
+}
+
+private struct ProfilePhotoChoiceRow: View {
+    let paths: [String]
+    let onSelect: (String) -> Void
+    @Binding var selectedPath: String
+    @Binding var scale: Double
+    @Binding var offsetX: Double
+    @Binding var offsetY: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(ArchiveCopy.text(english: "Choose an image", russian: "Выберите изображение"))
+                .font(ArchiveTypography.supportingEmphasis)
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    Button {
+                        selectedPath = ""
+                        resetAdjustment()
+                    } label: {
+                        Rectangle()
+                            .fill(ArchiveTheme.controlBackground)
+                            .overlay(Image(systemName: "person.crop.circle")
+                                .font(.system(size: 24))
+                                .foregroundStyle(ArchiveTheme.metadata))
+                            .aspectRatio(1, contentMode: .fit)
+                            .overlay(Rectangle().stroke(selectedPath.isEmpty ? ArchiveTheme.accent : .clear, lineWidth: 2))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Use initials")
+
+                    ForEach(paths, id: \.self) { path in
+                        Button {
+                            selectedPath = path
+                            resetAdjustment()
+                            onSelect(path)
+                        } label: {
+                            Group {
+                                if let image = ArchiveFileResolver.image(for: path) {
+                                    Image(uiImage: image)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    Rectangle()
+                                        .fill(ArchiveTheme.controlBackground)
+                                        .overlay(Image(systemName: "photo"))
+                                }
+                            }
+                            .aspectRatio(1, contentMode: .fit)
+                            .clipped()
+                            .overlay(Rectangle().stroke(selectedPath == path ? ArchiveTheme.accent : .clear, lineWidth: 2))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Photo")
+                    }
+            }
+
+            if paths.isEmpty {
+                Text(ArchiveCopy.text(
+                    english: "No photo media is available for this profile yet.",
+                    russian: "Для этого профиля пока нет фотографий."
+                ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
+        }
+    }
+
+    private func resetAdjustment() {
+        scale = 1
+        offsetX = 0
+        offsetY = 0
+    }
+}
+
+private struct ProfilePhotoAdjustmentView: View {
+    let path: String
+    var previewSize: CGFloat = 220
+    @Binding var scale: Double
+    @Binding var offsetX: Double
+    @Binding var offsetY: Double
+
+    @State private var dragOrigin: CGSize = .zero
+    @State private var magnificationOrigin: Double = 1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(ArchiveCopy.text(english: "Adjust display", russian: "Настройте отображение"))
+                .font(ArchiveTypography.supportingEmphasis)
+
+            ZStack {
+                Rectangle()
+                    .fill(ArchiveTheme.ink.opacity(0.08))
+
+                if let image = ArchiveFileResolver.image(for: path) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: previewSize, height: previewSize)
+                        .scaleEffect(scale)
+                        .offset(x: offsetX, y: offsetY)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 30))
+                        .foregroundStyle(ArchiveTheme.metadata)
+                }
+            }
+            .frame(width: previewSize, height: previewSize)
+            .clipped()
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        offsetX = dragOrigin.width + value.translation.width
+                        offsetY = dragOrigin.height + value.translation.height
+                    }
+                    .onEnded { _ in
+                        dragOrigin = CGSize(width: offsetX, height: offsetY)
+                    }
+            )
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        scale = min(max(magnificationOrigin * value, 1), 3)
+                    }
+                    .onEnded { _ in
+                        magnificationOrigin = scale
+                    }
+            )
+
+            Slider(value: $scale, in: 1...3, step: 0.05) {
+                Text(ArchiveCopy.text(english: "Zoom", russian: "Масштаб"))
+            }
+
+            HStack {
+                Text(ArchiveCopy.text(
+                    english: "Drag to reposition · pinch or use the slider to zoom",
+                    russian: "Перетаскивайте изображение · масштабируйте жестом или ползунком"
+                ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+                Spacer()
+                Button(ArchiveCopy.text(english: "Reset", russian: "Сбросить")) {
+                    scale = 1
+                    offsetX = 0
+                    offsetY = 0
+                    dragOrigin = .zero
+                    magnificationOrigin = 1
+                }
+                .font(ArchiveTypography.action)
+                .foregroundStyle(ArchiveTheme.action)
+            }
+        }
+    }
+}
+
+private struct ProfilePhotoAdjustmentScreen: View {
+    let path: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+    let onChooseDifferent: () -> Void
+    @Binding var scale: Double
+    @Binding var offsetX: Double
+    @Binding var offsetY: Double
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                ProfilePhotoAdjustmentView(
+                    path: path,
+                    previewSize: 300,
+                    scale: $scale,
+                    offsetX: $offsetX,
+                    offsetY: $offsetY
+                )
+                .padding(20)
+
+                Button {
+                    onChooseDifferent()
+                } label: {
+                    HStack {
+                        Image(systemName: "photo.on.rectangle")
+                        Text(ArchiveCopy.text(
+                            english: "Choose a different image",
+                            russian: "Выбрать другое изображение"
+                        ))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.action)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle(ArchiveCopy.text(english: "Adjust image", russian: "Настроить изображение"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        onCancel()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(ArchiveTypography.icon)
+                    }
+                    .accessibilityLabel(ArchiveCopy.text(english: "Cancel", russian: "Отмена"))
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        onSave()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(ArchiveTypography.icon)
+                    }
+                    .accessibilityLabel(ArchiveCopy.text(english: "Save", russian: "Сохранить"))
+                }
+            }
+        }
+    }
+}
+
+private struct ProfilePhotoSelectionView: View {
+    let initialPerson: Person
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPath: String
+    @State private var scale: Double
+    @State private var offsetX: Double
+    @State private var offsetY: Double
+    @State private var selectedPhotoForAdjustment: MediaReference?
+    @State private var returnToAdjustmentPhoto: MediaReference?
+
+    init(person: Person, repository: FamilyRepository) {
+        initialPerson = person
+        _repository = ObservedObject(wrappedValue: repository)
+        _selectedPath = State(initialValue: person.profileImagePath ?? "")
+        _scale = State(initialValue: person.profileImageScale ?? 1)
+        _offsetX = State(initialValue: person.profileImageOffsetX ?? 0)
+        _offsetY = State(initialValue: person.profileImageOffsetY ?? 0)
+
+        let currentPath = person.profileImagePath?.trimmed ?? ""
+        if !currentPath.isEmpty {
+            let existing = repository.media(for: person.id).first {
+                $0.kind == .photo && $0.path?.trimmed == currentPath
+            }
+            _selectedPhotoForAdjustment = State(initialValue: existing ?? MediaReference(
+                id: "profile-\(person.id)",
+                kind: .photo,
+                title: "",
+                date: nil,
+                path: currentPath,
+                caption: nil,
+                tags: nil,
+                collection: nil,
+                isApproximate: nil,
+                personIDs: [person.id]
+            ))
+            _returnToAdjustmentPhoto = State(initialValue: _selectedPhotoForAdjustment.wrappedValue)
+        } else {
+            _selectedPhotoForAdjustment = State(initialValue: nil)
+            _returnToAdjustmentPhoto = State(initialValue: nil)
+        }
+    }
+
+    private var person: Person { repository.person(id: initialPerson.id) ?? initialPerson }
+
+    private var photoOptions: [MediaReference] {
+        repository.media(for: person.id)
+            .filter { $0.kind == .photo }
+            .filter { $0.path?.trimmed.isEmpty == false }
+    }
+
+    var body: some View {
+        Group {
+            if let item = selectedPhotoForAdjustment {
+                ProfilePhotoAdjustmentScreen(
+                    path: item.path?.trimmed ?? selectedPath,
+                    onSave: {
+                        save()
+                    },
+                    onCancel: {
+                    },
+                    onChooseDifferent: {
+                        returnToAdjustmentPhoto = selectedPhotoForAdjustment
+                        selectedPhotoForAdjustment = nil
+                    },
+                    scale: $scale,
+                    offsetX: $offsetX,
+                    offsetY: $offsetY
+                )
+            } else {
+                PersonMediaGalleryView(
+                    person: person,
+                    items: photoOptions,
+                    selectionMode: true,
+                    onSelect: { item in
+                        selectedPath = item.path?.trimmed ?? ""
+                        scale = 1
+                        offsetX = 0
+                        offsetY = 0
+                        returnToAdjustmentPhoto = item
+                        selectedPhotoForAdjustment = item
+                    },
+                    onCancel: {
+                        if let returnToAdjustmentPhoto {
+                            selectedPhotoForAdjustment = returnToAdjustmentPhoto
+                        } else {
+                            dismiss()
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private func save() {
+        // Keep the currently displayed photo path when only the crop/zoom was
+        // changed. This also covers the synthetic adjustment item used for an
+        // existing profile photo.
+        let path = selectedPath.trimmed.isEmpty
+            ? (selectedPhotoForAdjustment?.path?.trimmed ?? person.profileImagePath?.trimmed ?? "")
+            : selectedPath.trimmed
+        guard !path.isEmpty else { return }
+
+        var updated = person
+        updated.profileImagePath = path
+        updated.profileImageScale = min(max(scale, 1), 3)
+        updated.profileImageOffsetX = offsetX
+        updated.profileImageOffsetY = offsetY
+        selectedPath = path
+        repository.updatePerson(updated)
     }
 }
 
@@ -1971,7 +2771,7 @@ private struct LifeEventsManagerView: View {
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
                                 if !event.date.isEmpty {
-                                    Text(ArchiveDateFormatter.display(event.date) ?? event.date)
+                                    Text(ArchiveDateFormatter.displayRange(event.date) ?? event.date)
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
@@ -2009,14 +2809,14 @@ private struct LifeEventsManagerView: View {
                 }
             }
             .sheet(isPresented: $addingEvent) {
-                EventEditorView(event: nil) { event in
+                EventEditorView(event: nil, language: repository.appLanguage) { event in
                     var updated = person
                     updated.events = (updated.events ?? []) + [event]
                     repository.updatePerson(updated)
                 }
             }
             .sheet(item: $editingEvent) { event in
-                EventEditorView(event: event) { updatedEvent in
+                EventEditorView(event: event, language: repository.appLanguage) { updatedEvent in
                     var updated = person
                     var events = updated.events ?? []
                     if let index = events.firstIndex(where: { $0.id == updatedEvent.id }) {
@@ -2073,7 +2873,7 @@ private struct StoriesManagerView: View {
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
                                 if let dateRange = story.dateRange, !dateRange.isEmpty {
-                                    Text(dateRange)
+                                    Text(ArchiveDateFormatter.displayRange(dateRange) ?? dateRange)
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
@@ -2108,14 +2908,14 @@ private struct StoriesManagerView: View {
                 }
             }
             .sheet(isPresented: $addingStory) {
-                StoryEditorView(story: nil) { story in
+                StoryEditorView(story: nil, language: repository.appLanguage) { story in
                     var updated = person
                     updated.storyChapters = (updated.storyChapters ?? []) + [story]
                     repository.updatePerson(updated)
                 }
             }
             .sheet(item: $editingStory) { story in
-                StoryEditorView(story: story) { updatedStory in
+                StoryEditorView(story: story, language: repository.appLanguage) { updatedStory in
                     var updated = person
                     var stories = updated.storyChapters ?? []
                     if let index = stories.firstIndex(where: { $0.id == updatedStory.id }) {
@@ -2139,9 +2939,12 @@ private struct StoriesManagerView: View {
 private struct EventEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: LifeEvent
+    @State private var languageError: String?
+    let language: ArchiveLanguage
     let onSave: (LifeEvent) -> Void
 
-    init(event: LifeEvent?, onSave: @escaping (LifeEvent) -> Void) {
+    init(event: LifeEvent?, language: ArchiveLanguage, onSave: @escaping (LifeEvent) -> Void) {
+        self.language = language
         self.onSave = onSave
         _draft = State(initialValue: event ?? LifeEvent(
             id: UUID().uuidString,
@@ -2154,6 +2957,7 @@ private struct EventEditorView: View {
             isApproximate: nil,
             sourceIDs: nil
         ))
+        _languageError = State(initialValue: nil)
     }
 
     var body: some View {
@@ -2181,6 +2985,13 @@ private struct EventEditorView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        if let issue = ArchiveLanguageValidator.issue(
+                            language: language,
+                            fields: [("Title", draft.title), ("Description", draft.summary), ("Place", draft.place ?? "")]
+                        ) {
+                            languageError = issue
+                            return
+                        }
                         var saved = draft
                         saved.sortKey = editorSortKey(saved.date)
                         onSave(saved)
@@ -2189,6 +3000,14 @@ private struct EventEditorView: View {
                     .disabled(draft.title.trimmed.isEmpty && draft.summary.trimmed.isEmpty)
                 }
             }
+            .alert(language == .russian ? "Проверка языка" : "Language check", isPresented: Binding(
+                get: { languageError != nil },
+                set: { if !$0 { languageError = nil } }
+            )) {
+                Button(language == .russian ? "Хорошо" : "OK") { languageError = nil }
+            } message: {
+                Text(languageError ?? "")
+            }
         }
     }
 }
@@ -2196,9 +3015,12 @@ private struct EventEditorView: View {
 private struct StoryEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: StoryChapter
+    @State private var languageError: String?
+    let language: ArchiveLanguage
     let onSave: (StoryChapter) -> Void
 
-    init(story: StoryChapter?, onSave: @escaping (StoryChapter) -> Void) {
+    init(story: StoryChapter?, language: ArchiveLanguage, onSave: @escaping (StoryChapter) -> Void) {
+        self.language = language
         self.onSave = onSave
         _draft = State(initialValue: story ?? StoryChapter(
             id: UUID().uuidString,
@@ -2207,6 +3029,7 @@ private struct StoryEditorView: View {
             summary: nil,
             body: ""
         ))
+        _languageError = State(initialValue: nil)
     }
 
     var body: some View {
@@ -2233,11 +3056,26 @@ private struct StoryEditorView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        if let issue = ArchiveLanguageValidator.issue(
+                            language: language,
+                            fields: [("Title", draft.title), ("Highlighted introduction", draft.summary ?? ""), ("Story", draft.body)]
+                        ) {
+                            languageError = issue
+                            return
+                        }
                         onSave(draft)
                         dismiss()
                     }
                     .disabled(draft.title.trimmed.isEmpty && draft.body.trimmed.isEmpty)
                 }
+            }
+            .alert(language == .russian ? "Проверка языка" : "Language check", isPresented: Binding(
+                get: { languageError != nil },
+                set: { if !$0 { languageError = nil } }
+            )) {
+                Button(language == .russian ? "Хорошо" : "OK") { languageError = nil }
+            } message: {
+                Text(languageError ?? "")
             }
         }
     }
@@ -2275,7 +3113,7 @@ private struct PersonMediaEditorView: View {
                                     Text(item.caption?.trimmed.isEmpty == false ? item.caption! : item.kind.rawValue.capitalized)
                                         .foregroundStyle(ArchiveTheme.ink)
                                     if let date = item.date, !date.isEmpty {
-                                        Text(ArchiveDateFormatter.display(date) ?? date)
+                                        Text(ArchiveDateFormatter.displayRange(date) ?? date)
                                             .font(ArchiveTypography.metadata)
                                             .foregroundStyle(ArchiveTheme.metadata)
                                     }
@@ -2314,7 +3152,7 @@ private struct PersonMediaEditorView: View {
     }
 }
 
-private struct MediaMetadataEditor: View {
+struct MediaMetadataEditor: View {
     let item: MediaReference
     let ownerID: Person.ID
     @ObservedObject var repository: FamilyRepository
@@ -2322,26 +3160,56 @@ private struct MediaMetadataEditor: View {
     @State private var caption: String
     @State private var date: String
     @State private var relatedIDs: Set<Person.ID>
+    @State private var languageError: String?
+    @State private var saveError: String?
 
     init(item: MediaReference, ownerID: Person.ID, repository: FamilyRepository) {
         self.item = item
         self.ownerID = ownerID
         _repository = ObservedObject(wrappedValue: repository)
-        _caption = State(initialValue: item.caption ?? "")
+        let sourceCaption = item.caption ?? ""
+        let englishCaption = NarrativeLocalizationStore.shared.storedMediaCaption(
+            ownerID,
+            mediaID: item.id
+        ) ?? (sourceCaption.range(of: "[А-Яа-яЁё]", options: .regularExpression) == nil ? sourceCaption : "")
+        _caption = State(initialValue: repository.appLanguage == .english ? englishCaption : sourceCaption)
         _date = State(initialValue: item.date ?? "")
         _relatedIDs = State(initialValue: Set(item.personIDs ?? [ownerID]))
+        _languageError = State(initialValue: nil)
+        _saveError = State(initialValue: nil)
+    }
+
+    private var isEnglish: Bool { repository.appLanguage == .english }
+
+    private var captionLabel: String {
+        ArchiveCopy.text(english: "Caption", russian: "Подпись")
+    }
+
+    private var dateLabel: String {
+        ArchiveCopy.text(english: "Date", russian: "Дата")
+    }
+
+    private var relatedPeopleLabel: String {
+        ArchiveCopy.text(english: "People shown", russian: "Люди на фото")
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Caption") {
-                    TextField("Caption", text: $caption, axis: .vertical)
+                Section(captionLabel) {
+                    TextField(captionLabel, text: $caption, axis: .vertical)
                         .lineLimit(2...5)
-                    TextField("Date", text: $date)
+                    TextField(dateLabel, text: $date)
                 }
 
-                Section("Related people") {
+                Section {
+                    Text(ArchiveCopy.text(
+                        english: "Select everyone shown. The photo will appear on each selected profile.",
+                        russian: "Выберите всех, кто изображён. Фото появится в профиле каждого выбранного человека."
+                    ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
                     ForEach(repository.people) { person in
                         Toggle(isOn: Binding(
                             get: { relatedIDs.contains(person.id) },
@@ -2353,22 +3221,75 @@ private struct MediaMetadataEditor: View {
                             Text(person.displayName)
                         }
                     }
+                } header: {
+                    Text(relatedPeopleLabel)
                 }
             }
-            .navigationTitle("Edit media")
+            .navigationTitle(ArchiveCopy.text(english: "Edit media", russian: "Изменить медиа"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена")) { dismiss() }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(ArchiveCopy.text(english: "Save", russian: "Сохранить")) {
+                        if let issue = ArchiveLanguageValidator.issue(
+                            language: repository.appLanguage,
+                            fields: [(captionLabel, caption)]
+                        ) {
+                            languageError = issue
+                            return
+                        }
                         var updated = item
-                        updated.caption = caption.trimmed.isEmpty ? nil : caption.trimmed
                         updated.date = date.trimmed.isEmpty ? nil : date.trimmed
                         updated.personIDs = Array(relatedIDs.union([ownerID])).sorted()
+
+                        if isEnglish {
+                            // English captions live in the private localization
+                            // sidecar. Write them for every tagged profile so
+                            // a shared photograph never falls back to “pending”.
+                            do {
+                                for personID in updated.personIDs ?? [ownerID] {
+                                    try NarrativeLocalizationStore.shared.updateMediaCaption(
+                                        personID: personID,
+                                        mediaID: item.id,
+                                        caption: caption
+                                    )
+                                }
+                            } catch {
+                                saveError = error.localizedDescription
+                                return
+                            }
+                        } else {
+                            // Russian is the source caption stored with the
+                            // media record itself.
+                            updated.caption = caption.trimmed.isEmpty ? nil : caption.trimmed
+                        }
+
                         repository.updateMedia(updated, for: ownerID)
+                        NarrativeLocalizationStore.shared.reload()
                         dismiss()
                     }
                 }
+            }
+            .alert(repository.appLanguage == .russian ? "Проверка языка" : "Language check", isPresented: Binding(
+                get: { languageError != nil },
+                set: { if !$0 { languageError = nil } }
+            )) {
+                Button(repository.appLanguage == .russian ? "Хорошо" : "OK") { languageError = nil }
+            } message: {
+                Text(languageError ?? "")
+            }
+            .alert(
+                ArchiveCopy.text(english: "Could not save media", russian: "Не удалось сохранить медиа"),
+                isPresented: Binding(
+                    get: { saveError != nil },
+                    set: { if !$0 { saveError = nil } }
+                )
+            ) {
+                Button(ArchiveCopy.text(english: "OK", russian: "Хорошо")) { saveError = nil }
+            } message: {
+                Text(saveError ?? "")
             }
         }
     }

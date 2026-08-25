@@ -1,6 +1,6 @@
 import Foundation
 
-enum ArchiveLanguage: String, CaseIterable, Identifiable {
+enum ArchiveLanguage: String, CaseIterable, Identifiable, Hashable {
     case english = "en"
     case russian = "ru"
 
@@ -12,44 +12,48 @@ enum ArchiveLanguage: String, CaseIterable, Identifiable {
         case .russian: "Русский"
         }
     }
+
+    static var current: ArchiveLanguage {
+        ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
+    }
 }
 
-private struct NameLocalizationDocument: Decodable {
+private struct NameLocalizationDocument: Codable {
     let approvedNames: [NameLocalization]
 }
 
-private struct NameLocalization: Decodable {
+private struct NameLocalization: Codable {
     let personID: String
     let original: String
     let localizedNames: [String: String]
 }
 
-private struct NarrativeLocalizationDocument: Decodable {
-    let people: [String: NarrativePersonLocalization]
+private struct NarrativeLocalizationDocument: Codable {
+    var people: [String: NarrativePersonLocalization]
 }
 
-private struct NarrativePersonLocalization: Decodable {
-    let summary: String?
-    let biography: String?
-    let stories: [String: NarrativeStoryLocalization]?
-    let events: [String: NarrativeEventLocalization]?
-    let media: [String: NarrativeMediaLocalization]?
+private struct NarrativePersonLocalization: Codable {
+    var summary: String?
+    var biography: String?
+    var stories: [String: NarrativeStoryLocalization]?
+    var events: [String: NarrativeEventLocalization]?
+    var media: [String: NarrativeMediaLocalization]?
 }
 
-private struct NarrativeStoryLocalization: Decodable {
-    let title: String?
-    let summary: String?
-    let body: String?
+private struct NarrativeStoryLocalization: Codable {
+    var title: String?
+    var summary: String?
+    var body: String?
 }
 
-private struct NarrativeEventLocalization: Decodable {
-    let title: String?
-    let summary: String?
+private struct NarrativeEventLocalization: Codable {
+    var title: String?
+    var summary: String?
 }
 
-private struct NarrativeMediaLocalization: Decodable {
-    let title: String?
-    let caption: String?
+private struct NarrativeMediaLocalization: Codable {
+    var title: String?
+    var caption: String?
 }
 
 /// Reads approved English narrative translations from the private app data
@@ -65,11 +69,16 @@ final class NarrativeLocalizationStore {
 
     func reload(fileManager: FileManager = .default, bundle: Bundle = .main) {
         let candidateURLs: [URL] = [
-            bundle.url(forResource: "narrative-translations.private", withExtension: "json"),
+            // The persistent private store is authoritative. Earlier builds
+            // also left a legacy copy at Documents/; prefer the store so a
+            // caption edit cannot be masked by that stale sidecar.
+            fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("FamilyArchiveStore/PrivateData/narrative-translations.private.json"),
             fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("narrative-translations.private.json"),
             fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("PrivateData/narrative-translations.private.json")
+                .appendingPathComponent("PrivateData/narrative-translations.private.json"),
+            bundle.url(forResource: "narrative-translations.private", withExtension: "json")
         ].compactMap { $0 }
 
         for url in candidateURLs {
@@ -120,6 +129,45 @@ final class NarrativeLocalizationStore {
         localized(source: source, translation: people[personID]?.media?[mediaID]?.caption, pending: "English caption pending")
     }
 
+    func storedMediaCaption(_ personID: String, mediaID: String) -> String? {
+        people[personID]?.media?[mediaID]?.caption
+    }
+
+    /// Persists an English media caption in the private localization sidecar.
+    /// Russian/source captions stay in the person record and are handled by
+    /// FamilyRepository.updateMedia(_:for:).
+    func updateMediaCaption(
+        personID: String,
+        mediaID: String,
+        caption: String,
+        fileManager: FileManager = .default
+    ) throws {
+        let value = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        var person = people[personID] ?? NarrativePersonLocalization(
+            summary: nil,
+            biography: nil,
+            stories: nil,
+            events: nil,
+            media: nil
+        )
+        var media = person.media ?? [:]
+        var record = media[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil)
+        record.caption = value.isEmpty ? nil : value
+        media[mediaID] = record
+        person.media = media
+        people[personID] = person
+
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let destination = documentsURL
+            .appendingPathComponent("FamilyArchiveStore", isDirectory: true)
+            .appendingPathComponent("PrivateData", isDirectory: true)
+            .appendingPathComponent("narrative-translations.private.json")
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(NarrativeLocalizationDocument(people: people))
+        try data.write(to: destination, options: Data.WritingOptions.atomic)
+    }
+
     private func localized(source: String, translation: String?, pending: String) -> String {
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         guard language == .english else { return source }
@@ -146,11 +194,13 @@ final class NameLocalizationStore {
 
     func reload(fileManager: FileManager = .default, bundle: Bundle = .main) {
         let candidateURLs: [URL] = [
-            bundle.url(forResource: "name-localizations.private", withExtension: "json"),
+            fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("FamilyArchiveStore/PrivateData/name-localizations.private.json"),
+            fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("PrivateData/name-localizations.private.json"),
             fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("name-localizations.private.json"),
-            fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("PrivateData/name-localizations.private.json")
+            bundle.url(forResource: "name-localizations.private", withExtension: "json")
         ].compactMap { $0 }
 
         for url in candidateURLs {
@@ -165,12 +215,114 @@ final class NameLocalizationStore {
         namesByID = [:]
     }
 
-    func displayName(for personID: String, fallback: String) -> String {
+    /// Updates only the selected locale in the private name sidecar. The
+    /// source/original name remains unchanged unless the Russian/source
+    /// locale is being edited.
+    func update(
+        personID: String,
+        original: String,
+        localizedName: String,
+        language: ArchiveLanguage,
+        counterpart: String? = nil,
+        fileManager: FileManager = .default
+    ) throws {
+        let trimmedName = localizedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        let existing = namesByID[personID]
+        var localizedNames = existing?.localizedNames ?? [:]
+        localizedNames[language.rawValue] = trimmedName
+        if let counterpart {
+            let trimmedCounterpart = counterpart.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedCounterpart.isEmpty {
+                let counterpartLanguage: ArchiveLanguage = language == .russian ? .english : .russian
+                localizedNames[counterpartLanguage.rawValue] = trimmedCounterpart
+            }
+        }
+        let sourceName = language == .russian ? trimmedName : (existing?.original ?? original)
+        let updated = NameLocalization(personID: personID, original: sourceName, localizedNames: localizedNames)
+        namesByID[personID] = updated
+
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let destination = documentsURL
+            .appendingPathComponent("FamilyArchiveStore", isDirectory: true)
+            .appendingPathComponent("PrivateData", isDirectory: true)
+            .appendingPathComponent("name-localizations.private.json")
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let data = try JSONEncoder().encode(NameLocalizationDocument(
+            approvedNames: namesByID.values.sorted { $0.personID < $1.personID }
+        ))
+        try data.write(to: destination, options: .atomic)
+    }
+
+    func localizedName(for personID: String, language: ArchiveLanguage) -> String? {
+        namesByID[personID]?.localizedNames[language.rawValue]
+    }
+
+    func suggestedCounterpart(for name: String, language: ArchiveLanguage) -> String {
+        language == .russian ? Self.transliterate(name) : Self.reverseTransliterate(name)
+    }
+
+    private static func transliterate(_ value: String) -> String {
+        let map: [Character: String] = [
+            "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+            "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+            "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+            "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+            "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya"
+        ]
+
+        return value.map { character in
+            let lower = String(character).lowercased()
+            guard let replacement = map[Character(lower)] else { return String(character) }
+            return character.isUppercase ? replacement.capitalized : replacement
+        }.joined()
+    }
+
+    private static func reverseTransliterate(_ value: String) -> String {
+        let digraphs: [(String, String)] = [
+            ("shch", "щ"), ("sch", "щ"), ("yo", "ё"), ("zh", "ж"), ("kh", "х"),
+            ("ts", "ц"), ("ch", "ч"), ("sh", "ш"), ("yu", "ю"), ("ya", "я")
+        ]
+        let singles: [Character: String] = [
+            "a": "а", "b": "б", "c": "к", "d": "д", "e": "е", "f": "ф", "g": "г",
+            "h": "х", "i": "и", "j": "й", "k": "к", "l": "л", "m": "м", "n": "н",
+            "o": "о", "p": "п", "q": "к", "r": "р", "s": "с", "t": "т", "u": "у",
+            "v": "в", "w": "в", "x": "кс", "y": "й", "z": "з"
+        ]
+
+        var result = ""
+        var index = value.startIndex
+        while index < value.endIndex {
+            let remaining = value[index...].lowercased()
+            if let match = digraphs.first(where: { remaining.hasPrefix($0.0) }) {
+                let end = value.index(index, offsetBy: match.0.count)
+                let source = value[index..<end]
+                result += source.first?.isUppercase == true ? match.1.capitalized : match.1
+                index = end
+                continue
+            }
+
+            let character = value[index]
+            let lower = Character(String(character).lowercased())
+            if let replacement = singles[lower] {
+                result += character.isUppercase ? replacement.capitalized : replacement
+            } else {
+                result.append(character)
+            }
+            index = value.index(after: index)
+        }
+        return result
+    }
+
+    func displayName(for personID: String, fallback: String, language: ArchiveLanguage? = nil) -> String {
         if namesByID.isEmpty {
             reload()
         }
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-        guard let localized = namesByID[personID]?.localizedNames[language.rawValue],
+        let selectedLanguage = language ?? ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
+        guard let localized = namesByID[personID]?.localizedNames[selectedLanguage.rawValue],
               !localized.isEmpty else {
             return fallback
         }
@@ -229,24 +381,90 @@ final class NameLocalizationStore {
     }
 }
 
+enum ArchiveGender {
+    case female
+    case male
+    case unknown
+}
+
+enum ArchiveLanguageValidator {
+    static func issue(language: ArchiveLanguage, fields: [(label: String, value: String)], unchanged: [String: String] = [:]) -> String? {
+        for field in fields {
+            let value = field.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, value != unchanged[field.label] else { continue }
+            let hasCyrillic = value.range(of: "[А-Яа-яЁё]", options: .regularExpression) != nil
+            let hasLatin = value.range(of: "[A-Za-z]", options: .regularExpression) != nil
+
+            if language == .russian, hasLatin {
+                return "Поле «\(messageLabel(field.label, language: language))» должно быть на русском языке."
+            }
+            if language == .english, hasCyrillic {
+                return "The “\(messageLabel(field.label, language: language))” field must be in English."
+            }
+        }
+        return nil
+    }
+
+    private static func messageLabel(_ label: String, language: ArchiveLanguage) -> String {
+        guard language == .russian else { return label }
+        switch label {
+        case "First name": return "Имя"
+        case "Last name": return "Фамилия"
+        case "Also known as": return "Другие имена"
+        case "Full date": return "Полная дата"
+        case "Birth date": return "Дата рождения"
+        case "Birth place": return "Место рождения"
+        case "Death date": return "Дата смерти"
+        case "Death place": return "Место смерти"
+        case "Place": return "Место"
+        case "Title": return "Заголовок"
+        case "Description": return "Описание"
+        case "Caption": return "Подпись"
+        case "Highlight": return "Выделение"
+        case "Body": return "Текст"
+        default: return label
+        }
+    }
+}
+
 enum ArchiveCopy {
     static func text(english: String, russian: String) -> String {
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return language == .russian ? russian : english
     }
 
-    static func relationshipLabel(_ value: String) -> String {
+    static func relationshipLabel(_ value: String, gender: ArchiveGender = .unknown) -> String {
         switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "me", "you": return text(english: "You", russian: "Вы")
-        case "parent": return text(english: "Parent", russian: "Родитель")
-        case "child": return text(english: "Child", russian: "Ребёнок")
+        case "parent": return gendered(englishMale: "Father", englishFemale: "Mother", englishNeutral: "Parent", russianMale: "Отец", russianFemale: "Мать", russianNeutral: "Родитель", gender: gender)
+        case "child": return gendered(englishMale: "Son", englishFemale: "Daughter", englishNeutral: "Child", russianMale: "Сын", russianFemale: "Дочь", russianNeutral: "Ребёнок", gender: gender)
         case "grandfather": return text(english: "Grandfather", russian: "Дедушка")
         case "grandmother": return text(english: "Grandmother", russian: "Бабушка")
         case "grandparent": return text(english: "Grandparent", russian: "Бабушка или дедушка")
         case "sibling": return text(english: "Sibling", russian: "Брат или сестра")
-        case "spouse": return text(english: "Spouse", russian: "Супруг(а)")
+        case "spouse": return gendered(englishMale: "Husband", englishFemale: "Wife", englishNeutral: "Spouse", russianMale: "Супруг", russianFemale: "Супруга", russianNeutral: "Партнёр", gender: gender)
         default: return value
         }
+    }
+
+    static func gendered(englishMale: String, englishFemale: String, englishNeutral: String, russianMale: String, russianFemale: String, russianNeutral: String, gender: ArchiveGender) -> String {
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
+        switch (language, gender) {
+        case (.english, .male): return englishMale
+        case (.english, .female): return englishFemale
+        case (.russian, .male): return russianMale
+        case (.russian, .female): return russianFemale
+        case (.english, .unknown): return englishNeutral
+        case (.russian, .unknown): return russianNeutral
+        }
+    }
+
+    static func spouseLabel(gender: ArchiveGender) -> String {
+        gendered(englishMale: "Husband", englishFemale: "Wife", englishNeutral: "Spouse", russianMale: "Супруг", russianFemale: "Супруга", russianNeutral: "Супруги", gender: gender)
+    }
+
+    static func livingLabel(gender: ArchiveGender) -> String {
+        gendered(englishMale: "Living", englishFemale: "Living", englishNeutral: "Living", russianMale: "Жив", russianFemale: "Жива", russianNeutral: "Жив", gender: gender)
     }
 
     static func factLabel(_ value: String) -> String {
@@ -257,104 +475,25 @@ enum ArchiveCopy {
         case "occupation": return text(english: "Occupation", russian: "Род занятий")
         case "residence": return text(english: "Residence", russian: "Место жительства")
         case "languages": return text(english: "Languages", russian: "Языки")
-        case "known for": return text(english: "Known for", russian: "Известен(на) благодаря")
+        case "known for": return text(english: "Known for", russian: "Известен благодаря")
         case "archive status": return text(english: "Archive status", russian: "Статус архива")
         default: return value
         }
     }
 
     /// Displays place names in the selected app language without changing the
-    /// original place stored in the archive. Russian remains the source form;
-    /// English uses the approved spellings used throughout this family data.
+    /// original place stored in the archive. The approved mappings live in
+    /// Resources/archive-locales.json so new locales do not require view code.
     static func place(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return trimmed }
 
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-        let exact: [String: String] = [
-            "Бежецк по документам | село Едрово по факту": "Bezhetsk by documents | Edrovo village in fact",
-            "Бежецк по документам | село Едрово по факту, Россия": "Bezhetsk by documents | Edrovo village in fact, Russia",
-            "Витебск, Россия": "Vitebsk, Russia",
-            "Вольск, Россия": "Volsk, Russia",
-            "Вольск, Саратовкой обл.": "Volsk, Saratov region",
-            "Вольск, Саратовкой обл., Россия": "Volsk, Saratov region, Russia",
-            "Вольск; Saint-Petersbourg": "Volsk; Saint Petersburg",
-            "Воронеж": "Voronezh",
-            "Воронеж, Россия": "Voronezh, Russia",
-            "Гомель": "Gomel",
-            "Гомель, Беларусь": "Gomel, Belarus",
-            "Едрово": "Edrovo",
-            "Едрово, Россия": "Edrovo, Russia",
-            "Едрово - село в Валдайском районе Новгородской области России": "Edrovo — a village in Valdai district, Novgorod region, Russia",
-            "Едрово, Валдайский р-н, Новгородской области": "Edrovo, Valdai district, Novgorod region",
-            "Едрово, Валдайский р-н, Новгородской области, Россия": "Edrovo, Valdai district, Novgorod region, Russia",
-            "Каменец-Подольск": "Kamianets-Podilskyi",
-            "Каменец-Подольск, Украина": "Kamianets-Podilskyi, Ukraine",
-            "Киев": "Kyiv",
-            "Киев, Украина": "Kyiv, Ukraine",
-            "Лемболово": "Lembolovo",
-            "Ленинград": "Leningrad",
-            "Ленинград, Россия": "Leningrad, Russia",
-            "Луга, Россия": "Luga, Russia",
-            "Луга, Санкт-Петербургская губерния": "Luga, Saint Petersburg Governorate",
-            "Луга, Санкт-Петербургская губерния, Россия": "Luga, Saint Petersburg Governorate, Russia",
-            "Москва": "Moscow",
-            "Москва, Россия": "Moscow, Russia",
-            "Орша, Витебская обл": "Orsha, Vitebsk region",
-            "Орша, Витебская обл., Беларусь": "Orsha, Vitebsk region, Belarus",
-            "Пензенская обл., Мокшанский р-н, с. Нечаевка": "Penza region, Mokshan district, Nechaevka village",
-            "Пензенская обл., Мокшанский р-н, с. Нечаевка, Россия": "Penza region, Mokshan district, Nechaevka village, Russia",
-            "Петровск, Аткарской губернии": "Petrovsk, Atkarsk Governorate",
-            "Петровск, Аткарской губернии, Россия": "Petrovsk, Atkarsk Governorate, Russia",
-            "Полтава, Россия": "Poltava, Russia",
-            "Санкт-Петербург": "Saint Petersburg",
-            "Санкт-Петербург, Россия": "Saint Petersburg, Russia",
-            "Сасово, Рязанская область": "Sasovo, Ryazan region",
-            "Сасово, Рязанская область, Россия": "Sasovo, Ryazan region, Russia",
-            "Тбилиси": "Tbilisi",
-            "Тбилиси, Грузия": "Tbilisi, Georgia",
-            "Чита": "Chita",
-            "Чита, Россия": "Chita, Russia",
-            "г Балашово, Саратовской обл": "Balashov, Saratov region",
-            "г Балашово, Саратовской обл., Россия": "Balashov, Saratov region, Russia",
-            "г. Куйбышев (теперь Самара)": "Kuibyshev (now Samara)",
-            "г. Куйбышев (теперь Самара), Россия": "Kuibyshev (now Samara), Russia",
-            "дер. Середея Владайского района Новгородской обл": "Seredeya village, Valdai district, Novgorod region",
-            "дер. Середея Владайского района Новгородской обл., Россия": "Seredeya village, Valdai district, Novgorod region, Russia",
-            "деревня Раменье, Бежецкий район Калининской области": "Ramenye village, Bezhetsk district, Kalinin region",
-            "деревня Раменье, Бежецкий район Калининской области, Россия": "Ramenye village, Bezhetsk district, Kalinin region, Russia",
-            "погиб под Ленинградом": "Killed near Leningrad",
-            "умер в детстве": "Died in childhood",
-            "умер в раннем детстве": "Died in early childhood",
-            "умерла в детстве": "Died in childhood",
-            "Веденковский Cemetery, Saint Petersburg": "Vedenkovsky Cemetery, Saint Petersburg"
-        ]
-
-        if language == .russian {
-            // A few migrated records contain an English place even though
-            // Russian is the source/display language. Reverse the approved
-            // place map so those records still render in Russian without
-            // mutating the private source text.
-            if let original = exact.first(where: {
-                $0.value.caseInsensitiveCompare(trimmed) == .orderedSame
-            })?.key {
-                return original
-            }
-            return trimmed
-        }
-
-        if let translated = exact[trimmed] {
+        if let translated = ArchiveLocalizationStore.shared.place(trimmed, language: language) {
             return translated
         }
 
-        return trimmed
-            .replacingOccurrences(of: "Россия", with: "Russia")
-            .replacingOccurrences(of: "Беларусь", with: "Belarus")
-            .replacingOccurrences(of: "области", with: "region")
-            .replacingOccurrences(of: "обл.", with: "region")
-            .replacingOccurrences(of: "района", with: "district")
-            .replacingOccurrences(of: "р-н", with: "district")
-            .replacingOccurrences(of: "с.", with: "village")
+        return ArchiveLocalizationStore.shared.replacePlaceFragments(in: trimmed, language: language)
     }
 
     static func familyName(_ value: String) -> String {
@@ -378,48 +517,28 @@ enum ArchiveCopy {
     static func eventTitle(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercased = trimmed.lowercased()
-        let translatedTitles: [String: (String, String)] = [
-            "aviation research career": ("Aviation research career", "Карьера в авиационных исследованиях"),
-            "beekeeping at lembolovo": ("Beekeeping at Lembolovo", "Пчеловодство в Лемболово"),
-            "birth of daughter galina": ("Birth of daughter Galina", "Рождение дочери Галины"),
-            "birth of daughter irina": ("Birth of daughter Irina", "Рождение дочери Ирины"),
-            "birth of son sergei": ("Birth of son Sergei", "Рождение сына Сергея"),
-            "bought a dacha in lembolovo": ("Bought a dacha in Lembolovo", "Покупка дачи в Лемболово"),
-            "buried at vedenkovsky cemetery": ("Buried at Vedenkovsky Cemetery", "Похороны на Введенском кладбище"),
-            "completed an ms in cs": ("Completed an MS in CS", "Окончание магистратуры по информатике"),
-            "completed school": ("Completed school", "Окончание школы"),
-            "death of father andrey nosov": ("Death of father Andrey Nosov", "Смерть отца Андрея Носова"),
-            "death of mother elena feofarova": ("Death of mother Elena Feofarova", "Смерть матери Елены Феофаровой"),
-            "entered the mozhaisky academy": ("Entered the Mozhaisky Academy", "Поступление в академию Можайского"),
-            "family life begins": ("Family life begins", "Начало семейной жизни"),
-            "garden observatory": ("Garden observatory", "Обсерватория в саду"),
-            "graduated from the mozhaisky academy": ("Graduated from the Mozhaisky Academy", "Окончание академии Можайского"),
-            "graduated in engineering": ("Graduated in engineering", "Окончание инженерного факультета"),
-            "health and retirement": ("Health and retirement", "Здоровье и выход на пенсию"),
-            "moved to study in saint petersburg": ("Moved to study in Saint Petersburg", "Переезд на учёбу в Санкт-Петербург"),
-            "moved to the united states": ("Moved to the United States", "Переезд в Соединённые Штаты"),
-            "railway engineering": ("Railway engineering", "Железнодорожная инженерия"),
-            "recorded neighborhood memories": ("Recorded neighborhood memories", "Записи воспоминаний соседей"),
-            "research and invention": ("Research and invention", "Исследования и изобретения"),
-            "school years": ("School years", "Школьные годы"),
-            "technical training": ("Technical training", "Техническая подготовка"),
-            "wartime instructor": ("Wartime instructor", "Военный инструктор")
-        ]
-        if let pair = translatedTitles[lowercased] {
-            return text(english: pair.0, russian: pair.1)
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
+
+        if let translated = ArchiveLocalizationStore.shared.eventTitle(trimmed, language: language) {
+            return localizeNames(translated)
         }
         if lowercased == "born" || lowercased == "birth" {
-            return text(english: "Born", russian: "Рождение")
+            return ArchiveLocalizationStore.shared.eventTitle("birth", language: language)
+                ?? text(english: "Born", russian: "Рождение")
         }
         if lowercased == "died" || lowercased == "death" {
-            return text(english: "Died", russian: "Смерть")
+            return ArchiveLocalizationStore.shared.eventTitle("death", language: language)
+                ?? text(english: "Died", russian: "Смерть")
         }
         if lowercased.hasPrefix("married ") {
             let name = String(trimmed.dropFirst("Married ".count))
-            return localizeNames(text(english: "Married", russian: "Брак") + " " + name)
+            let marriageLabel = ArchiveLocalizationStore.shared.eventTitle("married", language: language)
+                ?? text(english: "Married", russian: "Брак")
+            return localizeNames(marriageLabel + " " + name)
         }
         if lowercased == "married" {
-            return text(english: "Married", russian: "Брак")
+            return ArchiveLocalizationStore.shared.eventTitle("married", language: language)
+                ?? text(english: "Married", russian: "Брак")
         }
         return trimmed
     }
@@ -445,7 +564,7 @@ enum ArchiveCopy {
         if let range = trimmed.range(of: " married ", options: .caseInsensitive) {
             let subject = String(trimmed[..<range.lowerBound])
             let spouse = String(trimmed[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            return subject + " вступил(а) в брак с " + spouse
+            return subject + (feminineSubject(subject) ? " вступила в брак с " : " вступил в брак с ") + spouse
         }
 
         return trimmed
@@ -481,7 +600,7 @@ enum ArchiveDateFormatter {
         return formatter
     }()
 
-    static func display(_ value: String?) -> String? {
+    static func display(_ value: String?, language: ArchiveLanguage? = nil) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -490,25 +609,52 @@ enum ArchiveDateFormatter {
             return "????"
         }
 
-        let inputFormatter = DateFormatter()
-        inputFormatter.locale = Locale(identifier: "en_US_POSIX")
-
-        for format in inputFormats {
-            inputFormatter.dateFormat = format
-            if let date = inputFormatter.date(from: trimmed) {
-                let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-                let localizedFormatter = DateFormatter()
-                localizedFormatter.locale = Locale(identifier: language == .russian ? "ru_RU" : "en_US_POSIX")
-                if format == "MMMM yyyy" || format == "MMM yyyy" {
-                    localizedFormatter.dateFormat = language == .russian ? "LLLL yyyy" : "MMM yyyy"
-                } else {
-                    localizedFormatter.dateFormat = language == .russian ? "d MMMM yyyy" : "MMM d, yyyy"
+        let selectedLanguage = language ?? (ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian)
+        for localeIdentifier in ["en_US_POSIX", "ru_RU"] {
+            let inputFormatter = DateFormatter()
+            inputFormatter.locale = Locale(identifier: localeIdentifier)
+            for format in inputFormats {
+                inputFormatter.dateFormat = format
+                if let date = inputFormatter.date(from: trimmed) {
+                    let localizedFormatter = DateFormatter()
+                    localizedFormatter.locale = Locale(identifier: selectedLanguage == .russian ? "ru_RU" : "en_US_POSIX")
+                    if format == "MMMM yyyy" || format == "MMM yyyy" {
+                        localizedFormatter.dateFormat = selectedLanguage == .russian ? "LLLL yyyy" : "MMM yyyy"
+                    } else {
+                        localizedFormatter.dateFormat = selectedLanguage == .russian ? "d MMMM yyyy" : "MMM d, yyyy"
+                    }
+                    return localizedFormatter.string(from: date)
                 }
-                return localizedFormatter.string(from: date)
             }
         }
 
         return trimmed
+    }
+
+    /// Normalizes date ranges everywhere they are shown. Source data has
+    /// historically used em dashes, en dashes, and inconsistent spacing;
+    /// presentation always uses `start - end`.
+    static func displayRange(_ value: String?, language: ArchiveLanguage? = nil) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if ["unknown", "????"].contains(trimmed.lowercased()) {
+            return "????"
+        }
+
+        let normalized = trimmed.replacingOccurrences(of: #"\s*[–—-]\s*"#, with: " - ", options: .regularExpression)
+        let parts = normalized.components(separatedBy: " - ")
+        guard parts.count == 2 else {
+            return display(trimmed, language: language) ?? normalized
+        }
+
+        let start = display(parts[0], language: language) ?? parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let endValue = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        // A trailing separator denotes an open-ended lifespan; the family
+        // row supplies the separate Living status, so keep only the start.
+        guard !endValue.isEmpty else { return start }
+        let end = display(endValue, language: language) ?? endValue
+        return "\(start) - \(end)"
     }
 }
 
@@ -530,6 +676,9 @@ struct Person: Codable, Identifiable, Hashable {
     var privacy: PrivacyLevel
     var relationshipToMe: String?
     var profileImagePath: String?
+    var profileImageScale: Double? = nil
+    var profileImageOffsetX: Double? = nil
+    var profileImageOffsetY: Double? = nil
     var facts: [PersonFact]
     var events: [LifeEvent]?
     var storyChapters: [StoryChapter]?
@@ -541,6 +690,41 @@ struct Person: Codable, Identifiable, Hashable {
         [givenName, familyName]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// Best-effort grammatical gender for Russian labels. The normalized
+    /// archive keeps names rather than a separate gender field, so this uses
+    /// approved given-name patterns first and surname endings as a fallback.
+    var archiveGender: ArchiveGender {
+        let normalizedGivenName = givenName
+            .lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+        let normalizedFamilyName = familyName
+            .lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+
+        let femaleNames: Set<String> = [
+            "анна", "антонина", "александра", "галина", "елена", "евгения", "ирина",
+            "лидия", "мария", "ольга", "татьяна", "валентина", "раиса", "нина",
+            "тамара", "надежда", "вера", "зинаида", "людмила", "екатерина", "наталья",
+            "светлана", "камиля", "берта", "виктория", "макси", "alice"
+        ]
+        let maleNames: Set<String> = [
+            "иван", "владимир", "михаил", "константин", "яков", "сергей", "николай",
+            "евгений", "антон", "алексей", "виктор", "степан", "илья", "юрий",
+            "дмитрий", "исаак", "моисей", "андрей", "игнатий", "александр"
+        ]
+
+        if femaleNames.contains(normalizedGivenName) || normalizedGivenName.hasSuffix("а") || normalizedGivenName.hasSuffix("я") {
+            return .female
+        }
+        if maleNames.contains(normalizedGivenName) || normalizedFamilyName.hasSuffix("ов") || normalizedFamilyName.hasSuffix("ев") {
+            return .male
+        }
+        if normalizedFamilyName.hasSuffix("ова") || normalizedFamilyName.hasSuffix("ева") || normalizedFamilyName.hasSuffix("ина") {
+            return .female
+        }
+        return .unknown
     }
 
     var displayName: String {
@@ -579,7 +763,7 @@ struct Person: Codable, Identifiable, Hashable {
 
     var lifeStatusLabel: String {
         isLiving
-            ? ArchiveCopy.text(english: "Living", russian: "Жив")
+            ? ArchiveCopy.livingLabel(gender: archiveGender)
             : ArchiveCopy.text(english: "Deceased", russian: "Ушедший")
     }
 

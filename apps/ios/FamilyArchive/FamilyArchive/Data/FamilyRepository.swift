@@ -356,6 +356,11 @@ final class FamilyRepository: ObservableObject {
     @Published var appLanguage: ArchiveLanguage {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: NameLocalizationStore.appLanguageKey)
+            // Refresh private sidecars when the locale changes. This keeps
+            // names and narrative translations in sync immediately, rather
+            // than waiting for a relaunch or an import cycle.
+            NameLocalizationStore.shared.reload()
+            NarrativeLocalizationStore.shared.reload()
         }
     }
 
@@ -472,10 +477,31 @@ final class FamilyRepository: ObservableObject {
         return result
     }
 
+    /// Finds the person record that physically owns a media item. Shared
+    /// items can be shown from any tagged profile, but edits must be applied
+    /// through the record that actually stores the item.
+    func mediaOwnerID(for item: MediaReference, preferredID: Person.ID? = nil) -> Person.ID? {
+        if let preferredID,
+           peopleByID[preferredID]?.media.contains(where: { $0.id == item.id }) == true {
+            return preferredID
+        }
+        return document.people.first(where: { person in
+            person.media.contains(where: { $0.id == item.id })
+        })?.id
+    }
+
     func photoPath(for personID: Person.ID) -> String? {
         guard let person = person(id: personID) else { return nil }
         if let cachedPath = profilePhotoPathCache[personID] {
             return cachedPath
+        }
+        // An explicitly selected profile image takes precedence over the
+        // automatic colored/recency choice. The editor can therefore select
+        // any existing private media item and keep that choice stable.
+        if let selectedPath = person.profileImagePath,
+           resolvedFileURL(for: selectedPath) != nil {
+            profilePhotoPathCache[personID] = selectedPath
+            return selectedPath
         }
         // Prefer the person's own portrait/media. Shared tagged photos are a
         // fallback, so a family group photograph cannot replace the profile
@@ -623,14 +649,15 @@ final class FamilyRepository: ObservableObject {
 
     func updateMedia(_ item: MediaReference, for ownerID: Person.ID) {
         var people = document.people
-        guard let ownerIndex = people.firstIndex(where: { $0.id == ownerID }),
+        guard let resolvedOwnerID = mediaOwnerID(for: item, preferredID: ownerID),
+              let ownerIndex = people.firstIndex(where: { $0.id == resolvedOwnerID }),
               let mediaIndex = people[ownerIndex].media.firstIndex(where: { $0.id == item.id }) else { return }
 
-        let previousIDs = Set(people[ownerIndex].media[mediaIndex].personIDs ?? [ownerID])
-        let updatedIDs = Set(item.personIDs ?? [ownerID]).union([ownerID])
+        let previousIDs = Set(people[ownerIndex].media[mediaIndex].personIDs ?? [resolvedOwnerID])
+        let updatedIDs = Set(item.personIDs ?? [resolvedOwnerID]).union([resolvedOwnerID])
         people[ownerIndex].media[mediaIndex] = item
 
-        for index in people.indices where people[index].id != ownerID {
+        for index in people.indices where people[index].id != resolvedOwnerID {
             if updatedIDs.contains(people[index].id) {
                 if let existingIndex = people[index].media.firstIndex(where: { $0.id == item.id }) {
                     people[index].media[existingIndex] = item
@@ -646,13 +673,57 @@ final class FamilyRepository: ObservableObject {
 
     func removeMedia(_ item: MediaReference, from ownerID: Person.ID) {
         var people = document.people
-        guard let ownerIndex = people.firstIndex(where: { $0.id == ownerID }) else { return }
-        let relatedIDs = Set(item.personIDs ?? [ownerID])
+        // A shared image may be opened from any tagged profile. Resolve the
+        // record that actually owns the media before removing it, otherwise a
+        // delete from a linked profile would silently do nothing.
+        guard let resolvedOwnerID = mediaOwnerID(for: item, preferredID: ownerID),
+              let ownerIndex = people.firstIndex(where: { $0.id == resolvedOwnerID }) else { return }
+        let relatedIDs = Set(item.personIDs ?? [resolvedOwnerID])
         people[ownerIndex].media.removeAll { $0.id == item.id }
-        for index in people.indices where relatedIDs.contains(people[index].id) {
+        for index in people.indices where relatedIDs.contains(people[index].id) || people[index].id == resolvedOwnerID {
             people[index].media.removeAll { $0.id == item.id }
         }
-        replaceDocument(people: people, changedPersonIDs: relatedIDs.union([ownerID]))
+
+        var changedPersonIDs = relatedIDs.union([resolvedOwnerID])
+
+        // Removing a media record also removes any profile-photo selection
+        // that points at that same asset. Do this for every person because a
+        // shared photo can be selected as the profile image from any profile.
+        if let path = item.path {
+            for index in people.indices where people[index].profileImagePath == path {
+                people[index].profileImagePath = nil
+                people[index].profileImageScale = nil
+                people[index].profileImageOffsetX = nil
+                people[index].profileImageOffsetY = nil
+                changedPersonIDs.insert(people[index].id)
+            }
+        }
+
+        let stillReferenced = people.contains { person in
+            person.media.contains { $0.path == item.path } || person.profileImagePath == item.path
+        }
+        replaceDocument(people: people, changedPersonIDs: changedPersonIDs)
+
+        // Only delete the canonical normalized-store asset. Absolute paths
+        // and legacy Documents/ or bundled copies are deliberately left
+        // alone, so the original archive remains untouched and recoverable.
+        if !stillReferenced {
+            removePrivateAsset(at: item.path)
+        }
+    }
+
+    private func removePrivateAsset(at path: String?) {
+        guard let path,
+              !path.isEmpty,
+              !path.hasPrefix("/"),
+              !path.split(separator: "/").contains(".."),
+              (path.hasPrefix("media/") || path.hasPrefix("documents/")) else { return }
+
+        let root = privateStore.rootURL.standardizedFileURL
+        let assetURL = root.appendingPathComponent(path).standardizedFileURL
+        guard assetURL.path.hasPrefix(root.path + "/"),
+              privateStore.fileManager.fileExists(atPath: assetURL.path) else { return }
+        try? privateStore.fileManager.removeItem(at: assetURL)
     }
 
     private func replaceDocument(people: [Person], changedPersonIDs: Set<Person.ID> = []) {
