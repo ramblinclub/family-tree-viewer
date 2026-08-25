@@ -1231,6 +1231,7 @@ private struct SettingsView: View {
     @State private var importConfirmation: ImportConfirmation?
     @State private var transferMessage: TransferMessage?
     @State private var transferInProgress = false
+    @State private var diagnosticRunning = false
 
     var body: some View {
         ScrollView {
@@ -1289,6 +1290,27 @@ private struct SettingsView: View {
                 .buttonStyle(.plain)
                 .disabled(transferInProgress)
                 .opacity(transferInProgress ? 0.5 : 1)
+
+                #if DEBUG
+                Text("IMPORT DIAGNOSTICS")
+                    .font(.caption.weight(.semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(ArchiveTheme.accent)
+                    .padding(.top, 28)
+
+                Button {
+                    runBuiltInImportDiagnostic()
+                } label: {
+                    ArchiveTransferRow(
+                        title: "Test importer · build 4ea1e79",
+                        detail: "Validate a synthetic archive without private data",
+                        systemImage: "checkmark.seal"
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(transferInProgress || diagnosticRunning)
+                .opacity(diagnosticRunning ? 0.5 : 1)
+                #endif
             }
             .padding(.horizontal, ArchiveLayout.pageHorizontal)
             .padding(.top, ArchiveLayout.pageTop)
@@ -1457,6 +1479,28 @@ private struct SettingsView: View {
               url.lastPathComponent.hasPrefix("FamilyArchiveImport-") else { return }
         try? FileManager.default.removeItem(at: url)
     }
+
+    #if DEBUG
+    private func runBuiltInImportDiagnostic() {
+        guard let repository else { return }
+        diagnosticRunning = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let summary = try repository.validateBuiltInPrivateArchive()
+                let summaryText = "\(summary.personCount) person, \(summary.fileCount) files."
+                DispatchQueue.main.async {
+                    diagnosticRunning = false
+                    transferMessage = TransferMessage(message: "Importer test passed (build 4ea1e79): \(summaryText)")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    diagnosticRunning = false
+                    transferMessage = TransferMessage(message: "Importer test failed (build 4ea1e79): \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    #endif
 }
 
 private struct ArchiveTransferRow: View {

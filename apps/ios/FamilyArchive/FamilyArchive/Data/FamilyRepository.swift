@@ -682,6 +682,56 @@ final class FamilyRepository: ObservableObject {
         try privateStore.exportArchive(to: destinationURL)
     }
 
+    /// Builds and reads a tiny synthetic archive without touching the user's
+    /// private store. This is exposed only for the temporary DEBUG importer
+    /// diagnostic in Settings.
+    func validateBuiltInPrivateArchive(fileManager: FileManager = .default) throws -> ArchivePackageSummary {
+        let rootURL = fileManager.temporaryDirectory.appendingPathComponent("FamilyArchiveSynthetic-(UUID().uuidString)", isDirectory: true)
+        let archiveURL = fileManager.temporaryDirectory.appendingPathComponent("FamilyArchiveSynthetic-(UUID().uuidString).familyarchive")
+        let copiedURL = fileManager.temporaryDirectory.appendingPathComponent("FamilyArchiveSyntheticCopy-(UUID().uuidString).familyarchive")
+        defer {
+            try? fileManager.removeItem(at: rootURL)
+            try? fileManager.removeItem(at: archiveURL)
+            try? fileManager.removeItem(at: copiedURL)
+        }
+
+        let person = Person(
+            id: "TEST-001",
+            givenName: "Test",
+            familyName: "Person",
+            alternateNames: [],
+            lifespan: "2000–",
+            summary: "Synthetic importer test record.",
+            biography: "",
+            privacy: .sample,
+            relationshipToMe: nil,
+            profileImagePath: nil,
+            facts: [],
+            events: [],
+            storyChapters: [],
+            immediateFamily: ImmediateFamily(parents: [], partners: [], siblings: [], children: []),
+            media: [],
+            sources: []
+        )
+        let manifest = PrivateDocumentStore.Manifest(
+            format: "family-archive-private-store",
+            version: 1,
+            schemaVersion: 1,
+            title: "Synthetic importer test",
+            accountHolderID: person.id,
+            personIDs: [person.id],
+            updatedAt: "2026-01-01T00:00:00Z"
+        )
+        let peopleURL = rootURL.appendingPathComponent("people", isDirectory: true)
+        try fileManager.createDirectory(at: peopleURL, withIntermediateDirectories: true)
+        try JSONEncoder.archive.encode(manifest).write(to: rootURL.appendingPathComponent("manifest.json"), options: .atomic)
+        try JSONEncoder.archive.encode(person).write(to: peopleURL.appendingPathComponent("TEST-001.json"), options: .atomic)
+
+        try PrivateArchiveFile.write(directory: rootURL, to: archiveURL, fileManager: fileManager)
+        try fileManager.copyItem(at: archiveURL, to: copiedURL)
+        return try previewPrivateArchive(at: copiedURL, fileManager: fileManager)
+    }
+
     func previewPrivateArchive(at url: URL, fileManager: FileManager = .default) throws -> ArchivePackageSummary {
         if PrivateArchiveFile.isArchive(at: url) {
             let stagingURL = fileManager.temporaryDirectory.appendingPathComponent("FamilyArchivePreview-\(UUID().uuidString)", isDirectory: true)
