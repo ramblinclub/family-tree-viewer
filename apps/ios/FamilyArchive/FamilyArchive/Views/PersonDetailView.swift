@@ -1039,7 +1039,8 @@ private struct ProfileDateLine: View {
     }
 
     private var dateAndPlace: String {
-        let date = ArchiveDateFormatter.display(fact.value) ?? fact.value
+        let rawDate = fact.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let date = ArchiveDateFormatter.display(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate)
         guard let place = fact.place, !place.isEmpty else { return date }
         return "\(date), \(ArchiveCopy.place(place))"
     }
@@ -1304,7 +1305,8 @@ private struct TimelineRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 ArchiveContentTitle(fact.localizedLabel)
-                ArchiveParagraph(ArchiveDateFormatter.display(fact.localizedValue) ?? fact.localizedValue)
+                let rawDate = fact.localizedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                ArchiveParagraph(ArchiveDateFormatter.display(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate))
                 if let place = fact.place {
                     Text(ArchiveCopy.place(place))
                         .font(ArchiveTypography.metadata)
