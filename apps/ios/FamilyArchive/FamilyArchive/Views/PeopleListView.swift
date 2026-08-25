@@ -1,21 +1,113 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import ImageIO
 
 enum ArchiveFileResolver {
-    static func image(for path: String) -> UIImage? {
-        if let image = UIImage(contentsOfFile: path) {
-            return image
+    nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        // Keep frequently viewed images warm without retaining the entire
+        // archive in memory. This also prevents SwiftUI body refreshes from
+        // reopening and decoding the same file repeatedly.
+        cache.countLimit = 48
+        cache.totalCostLimit = 96 * 1024 * 1024
+        return cache
+    }()
+
+    static func cachedImage(for path: String, maxPixelSize: Int? = nil) -> UIImage? {
+        cache.object(forKey: cacheKey(path: path, maxPixelSize: maxPixelSize))
+    }
+
+    static func image(for path: String, maxPixelSize: Int? = nil) -> UIImage? {
+        let key = cacheKey(path: path, maxPixelSize: maxPixelSize)
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+
+        let image: UIImage?
+        if let url = fileURL(for: path),
+           let maxPixelSize,
+           maxPixelSize > 0,
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceShouldCache: false,
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+                ] as CFDictionary
+           ) {
+            image = UIImage(cgImage: thumbnail)
+        } else if let url = fileURL(for: path) {
+            image = UIImage(contentsOfFile: url.path)
+        } else {
+            image = UIImage(named: path)
+        }
+
+        if let image {
+            let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+            cache.setObject(image, forKey: key, cost: cost)
+        }
+        return image
+    }
+
+    private static func cacheKey(path: String, maxPixelSize: Int?) -> NSString {
+        "\(path)|\(maxPixelSize ?? 0)" as NSString
+    }
+
+    private static func fileURL(for path: String) -> URL? {
+        if path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
         }
 
         if let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let storeURL = documentsURL
+                .appendingPathComponent("FamilyArchiveStore", isDirectory: true)
+                .appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: storeURL.path) {
+                return storeURL
+            }
+
             let localURL = documentsURL.appendingPathComponent(path)
-            if let image = UIImage(contentsOfFile: localURL.path) {
-                return image
+            if FileManager.default.fileExists(atPath: localURL.path) {
+                return localURL
             }
         }
 
-        return UIImage(named: path)
+        return Bundle.main.url(forResource: path, withExtension: nil)
+    }
+}
+
+/// Loads local archive images away from the main thread. Media galleries can
+/// contain many large originals, so a placeholder is rendered immediately and
+/// the decoded image is published only when ready.
+@MainActor
+final class ArchiveImageLoader: ObservableObject {
+    @Published private(set) var image: UIImage?
+    private var loadedKey: String?
+
+    func load(path: String?, maxPixelSize: Int) {
+        let key = path.map { "\($0)|\(maxPixelSize)" }
+        guard key != loadedKey else { return }
+        loadedKey = key
+        image = nil
+        guard let path else { return }
+
+        if let cached = ArchiveFileResolver.cachedImage(for: path, maxPixelSize: maxPixelSize) {
+            image = cached
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let decoded = ArchiveFileResolver.image(for: path, maxPixelSize: maxPixelSize)
+            DispatchQueue.main.async {
+                guard let self, self.loadedKey == key else { return }
+                self.image = decoded
+            }
+        }
     }
 }
 
@@ -288,6 +380,14 @@ struct FamilyMemberTile: View {
         self.isAccountHolder = isAccountHolder
     }
 
+    private var isLiving: Bool {
+        repository?.isLiving(person) ?? person.isLiving
+    }
+
+    private var hasUnknownDeathDate: Bool {
+        repository?.hasUnknownDeathDate(person) ?? (!isLiving && person.deathFact == nil)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             FamilyMemberPhotoView(person: person, size: 40, repository: repository)
@@ -300,6 +400,7 @@ struct FamilyMemberTile: View {
                             language: .current
                         ))
                         .font(ArchiveTypography.contentTitle)
+                        .foregroundStyle(isLiving ? ArchiveTheme.ink : ArchiveTheme.metadata)
 
                     if isAccountHolder {
                         AccountHolderBadge()
@@ -311,13 +412,16 @@ struct FamilyMemberTile: View {
                 }
 
                 HStack(spacing: 5) {
-                        Text(person.lifeDateLine(language: .current))
+                        Text(person.lifeDateLine(
+                            language: .current,
+                            includeUnknownDeathDate: hasUnknownDeathDate
+                        ))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
                         .layoutPriority(1)
-                    if repository?.isLiving(person) ?? person.isLiving {
+                    if isLiving {
                         Circle()
                             .fill(ArchiveTheme.accent)
                             .frame(width: 5, height: 5)
@@ -326,12 +430,6 @@ struct FamilyMemberTile: View {
                             .font(ArchiveTypography.metadata)
                             .foregroundStyle(ArchiveTheme.accent)
                             .lineLimit(1)
-                    } else if repository?.hasUnknownDeathDate(person) == true {
-                        Text("????")
-                            .font(ArchiveTypography.metadata)
-                            .foregroundStyle(ArchiveTheme.metadata)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.78)
                     }
                 }
             }
@@ -456,7 +554,10 @@ extension Person {
         lifeDateLine(language: nil)
     }
 
-    func lifeDateLine(language: ArchiveLanguage?) -> String {
+    func lifeDateLine(
+        language: ArchiveLanguage?,
+        includeUnknownDeathDate: Bool = false
+    ) -> String {
         let birth = birthFact?.value
         let death = deathFact?.value
 
@@ -465,13 +566,32 @@ extension Person {
             let range = "\(localizedDate(birth, language: language)) - \(localizedDate(death, language: language))"
             return ArchiveDateFormatter.displayRange(range, language: language) ?? range
         case let (birth?, nil):
-            return localizedDate(birth, language: language)
-        case (nil, _):
+            let displayedBirth = localizedDate(birth, language: language)
+            return includeUnknownDeathDate ? "\(displayedBirth) - ????" : displayedBirth
+        case let (nil, death?):
+            return "???? - \(localizedDate(death, language: language))"
+        case (nil, nil):
             let normalized = lifespan.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if normalized == "unknown" || normalized == "????" || normalized.isEmpty {
-                return "????"
+                return includeUnknownDeathDate ? "???? - ????" : "????"
             }
-            return ArchiveDateFormatter.displayRange(lifespan, language: language) ?? lifespan
+
+            if let range = ArchiveDateFormatter.displayRange(lifespan, language: language), range.contains(" - ") {
+                return range
+            }
+
+            // A few imported records use two whitespace-separated endpoints
+            // (for example, "1858 ????"). Keep the list's range format stable.
+            let endpoints = normalized.split(whereSeparator: { $0.isWhitespace })
+            if endpoints.count == 2,
+               endpoints.allSatisfy({ $0 == "????" || ($0.count == 4 && $0.allSatisfy(\.isNumber)) }) {
+                let start = localizedDate(String(endpoints[0]), language: language)
+                let end = localizedDate(String(endpoints[1]), language: language)
+                return "\(start) - \(end)"
+            }
+
+            let displayed = localizedDate(normalized, language: language)
+            return includeUnknownDeathDate ? "\(displayed) - ????" : displayed
         }
     }
 
@@ -480,7 +600,9 @@ extension Person {
         if normalized == "unknown" || normalized == "????" || normalized.isEmpty {
             return "????"
         }
-        return ArchiveDateFormatter.displayRange(value, language: language) ?? value
+        // This is a single fact, not a range. Keeping the single-date path
+        // explicit preserves a complete day/month/year whenever it exists.
+        return ArchiveDateFormatter.display(value, language: language) ?? value
     }
 }
 
@@ -2027,13 +2149,20 @@ private func memoryCaptionWithDate(_ caption: String, date: String?) -> String {
 
 private struct GalleryMediaVisual: View {
     let memory: MemoryItem
+    let isActive: Bool
+    @StateObject private var imageLoader = ArchiveImageLoader()
+
+    init(memory: MemoryItem, isActive: Bool = true) {
+        self.memory = memory
+        self.isActive = isActive
+    }
 
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
             .overlay {
                 ZStack(alignment: .bottomLeading) {
-                    if let image = loadedImage {
+                    if let image = imageLoader.image {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
@@ -2067,12 +2196,14 @@ private struct GalleryMediaVisual: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .task(id: "\(memory.media.path ?? "")|\(isActive)") {
+                guard isActive else { return }
+                imageLoader.load(
+                    path: memory.media.kind == .photo ? memory.media.path : nil,
+                    maxPixelSize: 900
+                )
+            }
         .clipped()
-    }
-
-    private var loadedImage: UIImage? {
-        guard memory.media.kind == .photo, let path = memory.media.path else { return nil }
-        return ArchiveFileResolver.image(for: path)
     }
 }
 
@@ -2159,6 +2290,7 @@ private struct CaptionPeopleText: View {
 private struct MemoryDetailView: View {
     let memory: MemoryItem
     @ObservedObject var repository: FamilyRepository
+    let isActive: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var selectedPerson: Person?
     @State private var isEditingCaption = false
@@ -2172,14 +2304,23 @@ private struct MemoryDetailView: View {
     @State private var saveError: String?
     @State private var showingRemoveConfirmation = false
 
+    init(memory: MemoryItem, repository: FamilyRepository, isActive: Bool = true) {
+        self.memory = memory
+        self.repository = repository
+        self.isActive = isActive
+    }
+
     private var currentMedia: MediaReference {
-        repository.media(for: memory.person.id).first { $0.id == memory.media.id } ?? memory.media
+        repository.mediaItem(withID: memory.media.id, preferredPersonID: memory.person.id) ?? memory.media
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                GalleryMediaVisual(memory: MemoryItem(person: memory.person, media: currentMedia))
+                GalleryMediaVisual(
+                    memory: MemoryItem(person: memory.person, media: currentMedia),
+                    isActive: isActive
+                )
                     .overlay(alignment: .bottomTrailing) {
                         Button(role: .destructive) {
                             showingRemoveConfirmation = true
@@ -2559,6 +2700,7 @@ private struct MemoriesPagerView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndex: Int
+    @State private var selectedSlot = 1
 
     init(items: [MemoryItem], initialID: String, repository: FamilyRepository) {
         self.items = items
@@ -2567,22 +2709,55 @@ private struct MemoriesPagerView: View {
         _selectedIndex = State(initialValue: items.firstIndex { $0.id == initialID } ?? 0)
     }
 
+    /// Keep the pager's view tree bounded. The archive can contain hundreds
+    /// of memories; constructing one full page for every item made opening a
+    /// single image wait on all of them. Only the previous, current, and next
+    /// records are kept in the SwiftUI pager.
+    private var visibleMemoryIndices: [Int] {
+        guard !items.isEmpty else { return [] }
+        guard items.count > 1 else { return [0] }
+        let previous = (selectedIndex + items.count - 1) % items.count
+        let next = (selectedIndex + 1) % items.count
+        return [previous, selectedIndex, next]
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 memoriesTopBar
 
-                TabView(selection: $selectedIndex) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, memory in
-                        MemoryDetailView(memory: memory, repository: repository)
-                            .tag(index)
+                TabView(selection: $selectedSlot) {
+                    ForEach(Array(visibleMemoryIndices.enumerated()), id: \.offset) { slot, index in
+                        MemoryDetailView(
+                            memory: items[index],
+                            repository: repository,
+                            isActive: slot == 1
+                        )
+                            .tag(slot)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .automatic))
+                .onChange(of: selectedSlot) { _, newSlot in
+                    guard items.count > 1 else { return }
+                    switch newSlot {
+                    case 0:
+                        selectedIndex = (selectedIndex + items.count - 1) % items.count
+                    case 2:
+                        selectedIndex = (selectedIndex + 1) % items.count
+                    default:
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) { selectedSlot = 1 }
+                    }
+                }
 
                 HStack {
                     Button {
-                        selectedIndex = max(0, selectedIndex - 1)
+                        guard !items.isEmpty else { return }
+                        selectedIndex = (selectedIndex + items.count - 1) % items.count
                     } label: {
                         Image(systemName: "chevron.left")
                             .font(ArchiveTypography.icon)
@@ -2592,8 +2767,6 @@ private struct MemoriesPagerView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(selectedIndex == 0)
-                    .opacity(selectedIndex == 0 ? 0.35 : 1)
                     .accessibilityLabel("Previous memory")
 
                     Spacer()
@@ -2605,7 +2778,8 @@ private struct MemoriesPagerView: View {
                     Spacer()
 
                     Button {
-                        selectedIndex = min(items.count - 1, selectedIndex + 1)
+                        guard !items.isEmpty else { return }
+                        selectedIndex = (selectedIndex + 1) % items.count
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(ArchiveTypography.icon)
@@ -2615,8 +2789,6 @@ private struct MemoriesPagerView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(selectedIndex == items.count - 1)
-                    .opacity(selectedIndex == items.count - 1 ? 0.35 : 1)
                     .accessibilityLabel("Next memory")
                 }
                 .padding(.horizontal, 20)

@@ -477,6 +477,25 @@ final class FamilyRepository: ObservableObject {
         return result
     }
 
+    /// Resolves one media record without rebuilding the complete shared-media
+    /// list. Detail views call this during every SwiftUI refresh while an
+    /// image is loading, so keeping the lookup narrow avoids repeated scans
+    /// of every person's media collection.
+    func mediaItem(withID mediaID: MediaReference.ID, preferredPersonID: Person.ID? = nil) -> MediaReference? {
+        if let preferredPersonID,
+           let preferred = peopleByID[preferredPersonID],
+           let item = preferred.media.first(where: { $0.id == mediaID }) {
+            return item
+        }
+
+        for person in document.people {
+            if let item = person.media.first(where: { $0.id == mediaID }) {
+                return item
+            }
+        }
+        return nil
+    }
+
     /// Finds the person record that physically owns a media item. Shared
     /// items can be shown from any tagged profile, but edits must be applied
     /// through the record that actually stores the item.

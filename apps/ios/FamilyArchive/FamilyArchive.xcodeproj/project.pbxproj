@@ -241,7 +241,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FamilyArchive/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Family Archive";
+				INFOPLIST_KEY_CFBundleDisplayName = FamSpam;
 				INFOPLIST_KEY_CFBundleIconFiles = "AppIcon-1024.png";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -265,7 +265,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FamilyArchive/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Family Archive";
+				INFOPLIST_KEY_CFBundleDisplayName = FamSpam;
 				INFOPLIST_KEY_CFBundleIconFiles = "AppIcon-1024.png";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

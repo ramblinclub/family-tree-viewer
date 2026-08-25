@@ -602,10 +602,12 @@ enum ArchiveDateFormatter {
 
     static func display(_ value: String?, language: ArchiveLanguage? = nil) -> String? {
         guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s*[-–—]\s*$"#, with: "", options: .regularExpression)
         guard !trimmed.isEmpty else { return nil }
 
-        if ["unknown", "????"].contains(trimmed.lowercased()) {
+        if isUnknownDate(trimmed) {
             return "????"
         }
 
@@ -638,8 +640,17 @@ enum ArchiveDateFormatter {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if ["unknown", "????"].contains(trimmed.lowercased()) {
+        if isUnknownDate(trimmed) {
             return "????"
+        }
+
+        // Some imported lifespan values contain two bare years separated by
+        // whitespace rather than a dash. Treat that as a range, while leaving
+        // full dates such as "16 Feb 1912" untouched.
+        let yearParts = trimmed.split(whereSeparator: { $0.isWhitespace })
+        if yearParts.count == 2,
+           yearParts.allSatisfy({ $0.count == 4 && $0.allSatisfy(\.isNumber) }) {
+            return "\(yearParts[0]) - \(yearParts[1])"
         }
 
         let normalized = trimmed.replacingOccurrences(of: #"\s*[–—-]\s*"#, with: " - ", options: .regularExpression)
@@ -655,6 +666,19 @@ enum ArchiveDateFormatter {
         guard !endValue.isEmpty else { return start }
         let end = display(endValue, language: language) ?? endValue
         return "\(start) - \(end)"
+    }
+
+    private static func isUnknownDate(_ value: String) -> Bool {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"[.!]$"#, with: "", options: .regularExpression)
+        return normalized == "????" ||
+            normalized == "unknown" ||
+            normalized == "unknown date" ||
+            normalized == "date unknown" ||
+            normalized.contains("дата неизвест") ||
+            normalized.contains("дата неизв")
     }
 }
 

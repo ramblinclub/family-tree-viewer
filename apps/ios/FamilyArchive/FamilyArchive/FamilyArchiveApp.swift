@@ -59,7 +59,7 @@ private struct ArchiveLaunchView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
 
-            Text(ArchiveCopy.text(english: "Family Archive", russian: "Семейный архив"))
+            Text("FamSpam")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(ArchiveTheme.ink)
 

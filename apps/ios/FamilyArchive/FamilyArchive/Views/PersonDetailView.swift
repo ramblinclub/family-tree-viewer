@@ -1640,15 +1640,14 @@ private struct PersonMediaGalleryTile: View {
 
 private struct PersonMediaVisual: View {
     let item: MediaReference
+    @StateObject private var imageLoader = ArchiveImageLoader()
 
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
             .overlay {
                 ZStack(alignment: .bottomLeading) {
-                    if item.kind == .photo,
-                       let path = item.path,
-                       let image = ArchiveFileResolver.image(for: path) {
+                    if let image = imageLoader.image {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
@@ -1678,6 +1677,12 @@ private struct PersonMediaVisual: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .task(id: item.path) {
+                imageLoader.load(
+                    path: item.kind == .photo ? item.path : nil,
+                    maxPixelSize: 700
+                )
             }
             .clipped()
     }
@@ -1721,7 +1726,11 @@ private struct PersonMediaPagerView: View {
             VStack(spacing: 0) {
                 TabView(selection: $selectedIndex) {
                     ForEach(Array(pageItems.enumerated()), id: \.offset) { index, item in
-                        PersonMediaDetailContent(personID: personID, item: item)
+                        PersonMediaDetailContent(
+                            personID: personID,
+                            item: item,
+                            isActive: index == selectedIndex
+                        )
                             .tag(index)
                     }
                 }
@@ -1829,11 +1838,18 @@ private struct PersonMediaPagerView: View {
 private struct PersonMediaDetailContent: View {
     let personID: Person.ID
     let item: MediaReference
+    let isActive: Bool
+
+    init(personID: Person.ID, item: MediaReference, isActive: Bool = true) {
+        self.personID = personID
+        self.item = item
+        self.isActive = isActive
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                PersonMediaLargeVisual(item: item)
+                PersonMediaLargeVisual(item: item, isActive: isActive)
 
                 let caption = NarrativeLocalizationStore.shared.mediaCaption(personID, mediaID: item.id, source: item.caption ?? "")
                 if !caption.isEmpty {
@@ -1862,20 +1878,47 @@ private func mediaCaptionWithDate(_ caption: String, date: String?) -> String {
 
 private struct PersonMediaLargeVisual: View {
     let item: MediaReference
+    let isActive: Bool
+    @StateObject private var imageLoader = ArchiveImageLoader()
+
+    init(item: MediaReference, isActive: Bool = true) {
+        self.item = item
+        self.isActive = isActive
+    }
 
     var body: some View {
         Group {
-            if item.kind == .photo,
-               let path = item.path,
-               let image = ArchiveFileResolver.image(for: path) {
+            if let image = imageLoader.image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity)
                     .background(ArchiveTheme.ink.opacity(0.05))
             } else {
-                PersonMediaVisual(item: item)
+                ZStack {
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [ArchiveTheme.accent, ArchiveTheme.accentLight],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: item.kind.systemImage)
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(maxWidth: .infinity, minHeight: 260)
             }
+        }
+        .task(id: "\(item.path ?? "")|\(isActive)") {
+            guard isActive else { return }
+            imageLoader.load(
+                path: item.kind == .photo ? item.path : nil,
+                // The viewer is screen-sized; decoding a multi-thousand-pixel
+                // original adds latency without improving the on-device view.
+                maxPixelSize: 1400
+            )
         }
     }
 }
