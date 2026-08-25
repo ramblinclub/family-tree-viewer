@@ -424,6 +424,41 @@ enum ArchiveCopy {
         return trimmed
     }
 
+    static func eventSummary(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
+        guard language == .russian else { return trimmed }
+
+        let lowercased = trimmed.lowercased()
+        let birthSuffix = " was born."
+        if lowercased.hasSuffix(birthSuffix) {
+            let subject = String(trimmed.dropLast(birthSuffix.count))
+            return subject + (feminineSubject(subject) ? " родилась." : " родился.")
+        }
+
+        let deathSuffix = " died."
+        if lowercased.hasSuffix(deathSuffix) {
+            let subject = String(trimmed.dropLast(deathSuffix.count))
+            return subject + (feminineSubject(subject) ? " умерла." : " умер.")
+        }
+
+        if let range = trimmed.range(of: " married ", options: .caseInsensitive) {
+            let subject = String(trimmed[..<range.lowerBound])
+            let spouse = String(trimmed[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return subject + " вступил(а) в брак с " + spouse
+        }
+
+        return trimmed
+    }
+
+    private static func feminineSubject(_ value: String) -> Bool {
+        let words = value.split(whereSeparator: { $0 == " " || $0 == "\u{2019}" })
+        let givenName = words.first.map(String.init)?.lowercased() ?? ""
+        let familyName = words.last.map(String.init)?.lowercased() ?? ""
+        return givenName.hasSuffix("а") || givenName.hasSuffix("я") ||
+            familyName.hasSuffix("ова") || familyName.hasSuffix("ева") || familyName.hasSuffix("ина")
+    }
+
     private static func localizeNames(_ value: String) -> String {
         NameLocalizationStore.shared.localizeEmbeddedNames(in: value)
     }
@@ -623,7 +658,7 @@ struct LifeEvent: Codable, Identifiable, Hashable {
     }
 
     var localizedSummary: String {
-        localized(summaryTranslations, fallback: NameLocalizationStore.shared.localizeEmbeddedNames(in: summary))
+        ArchiveCopy.eventSummary(localized(summaryTranslations, fallback: NameLocalizationStore.shared.localizeEmbeddedNames(in: summary)))
     }
 
     private func localized(_ values: [String: String]?, fallback: String) -> String {
