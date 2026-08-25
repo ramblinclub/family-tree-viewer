@@ -1229,6 +1229,7 @@ private struct SettingsView: View {
     @State private var showingExporter = false
     @State private var showingImporter = false
     @State private var importConfirmation: ImportConfirmation?
+    @State private var importAccess: ScopedImportURL?
     @State private var transferMessage: TransferMessage?
     @State private var transferInProgress = false
 
@@ -1352,17 +1353,21 @@ private struct SettingsView: View {
                             _ = try repository.importPrivateArchive(at: url)
                             DispatchQueue.main.async {
                                 transferInProgress = false
+                                importAccess = nil
                                 transferMessage = TransferMessage(message: ArchiveCopy.text(english: "Private archive imported.", russian: "Приватный архив импортирован."))
                             }
                         } catch {
                             DispatchQueue.main.async {
                                 transferInProgress = false
+                                importAccess = nil
                                 transferMessage = TransferMessage(message: error.localizedDescription)
                             }
                         }
                     }
                 },
-                secondaryButton: .cancel()
+                secondaryButton: .cancel(Text(ArchiveCopy.text(english: "Cancel", russian: "Отмена"))) {
+                    importAccess = nil
+                }
             )
         }
         .alert(item: $transferMessage) { message in
@@ -1416,23 +1421,43 @@ private struct SettingsView: View {
     }
 
     private func importPrivateArchive(from url: URL) {
-        let accessed = url.startAccessingSecurityScopedResource()
+        // Keep the security-scoped access alive from the file picker through
+        // the review alert and the eventual replacement. Files selected from
+        // Files/iCloud can otherwise become unreadable after the preview ends.
+        let access = ScopedImportURL(url: url)
         transferInProgress = true
         DispatchQueue.global(qos: .userInitiated).async {
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
                 guard let repository else { throw ArchivePackageError.documentsUnavailable }
                 let summary = try repository.previewPrivateArchive(at: url)
                 DispatchQueue.main.async {
                     transferInProgress = false
+                    importAccess = access
                     importConfirmation = ImportConfirmation(url: url, summary: summary)
                 }
             } catch {
                 DispatchQueue.main.async {
                     transferInProgress = false
+                    importAccess = nil
                     transferMessage = TransferMessage(message: error.localizedDescription)
                 }
             }
+        }
+    }
+}
+
+private final class ScopedImportURL: @unchecked Sendable {
+    let url: URL
+    private let accessGranted: Bool
+
+    init(url: URL) {
+        self.url = url
+        self.accessGranted = url.startAccessingSecurityScopedResource()
+    }
+
+    deinit {
+        if accessGranted {
+            url.stopAccessingSecurityScopedResource()
         }
     }
 }

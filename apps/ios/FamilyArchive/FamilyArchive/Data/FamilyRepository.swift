@@ -256,7 +256,8 @@ private enum PrivateArchiveFile {
     static func isArchive(at url: URL) -> Bool {
         guard let input = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? input.close() }
-        return (try? input.read(upToCount: magic.count)) == magic
+        guard let header = try? readExact(from: input, count: magic.count) else { return false }
+        return header == magic
     }
 
     static func extract(_ archiveURL: URL, to destinationURL: URL, fileManager: FileManager) throws {
@@ -270,9 +271,10 @@ private enum PrivateArchiveFile {
         }
 
         while true {
-            guard let header = try input.read(upToCount: 16) else { throw ArchivePackageError.invalidZip }
-            if header.isEmpty { break }
-            guard header.count == 16 else { throw ArchivePackageError.invalidZip }
+            // Files-provider URLs can return a short read even when more bytes
+            // are available. Read the fixed-size record header until complete,
+            // while still treating EOF between records as a clean end.
+            guard let header = try readHeader(from: input, count: 16) else { break }
             let pathLength = Int(try readUInt64(header, at: 0))
             let fileSize = try readUInt64(header, at: 8)
             guard pathLength > 0, pathLength <= 4096, fileSize <= UInt64(Int.max) else {
@@ -314,8 +316,31 @@ private enum PrivateArchiveFile {
     }
 
     private static func readExact(from handle: FileHandle, count: Int) throws -> Data {
-        guard let data = try handle.read(upToCount: count), data.count == count else {
-            throw ArchivePackageError.invalidZip
+        guard count >= 0 else { throw ArchivePackageError.invalidZip }
+        var data = Data()
+        data.reserveCapacity(count)
+        while data.count < count {
+            guard let chunk = try handle.read(upToCount: count - data.count), !chunk.isEmpty else {
+                throw ArchivePackageError.invalidZip
+            }
+            data.append(chunk)
+        }
+        return data
+    }
+
+    private static func readHeader(from handle: FileHandle, count: Int) throws -> Data? {
+        guard count > 0 else { return Data() }
+        var data = Data()
+        data.reserveCapacity(count)
+        while data.count < count {
+            guard let chunk = try handle.read(upToCount: count - data.count) else {
+                throw ArchivePackageError.invalidZip
+            }
+            if chunk.isEmpty {
+                if data.isEmpty { return nil }
+                throw ArchivePackageError.invalidZip
+            }
+            data.append(chunk)
         }
         return data
     }
