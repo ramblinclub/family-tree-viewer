@@ -334,6 +334,7 @@ private enum PrivateArchiveFile {
         data.reserveCapacity(count)
         while data.count < count {
             guard let chunk = try handle.read(upToCount: count - data.count) else {
+                if data.isEmpty { return nil }
                 throw ArchivePackageError.invalidZip
             }
             if chunk.isEmpty {
