@@ -548,7 +548,7 @@ struct MainTabView: View {
     @ObservedObject var repository: FamilyRepository
     let initialPersonID: Person.ID?
 
-    @State private var selectedTab: MainTab = .family
+    @State private var selectedTab: MainTab = .home
     @State private var familyResetID = UUID()
     @State private var shouldOpenInitialPerson = true
     @State private var personIDToOpen: Person.ID?
@@ -596,9 +596,9 @@ struct MainTabView: View {
             }
         }
         .onAppear {
-            if initialPersonID != nil {
-                selectedTab = .family
-            }
+            // A fresh app launch is a welcoming Home experience. Selecting
+            // Family from the bottom bar can still open the requested person.
+            selectedTab = .home
         }
     }
 }
@@ -778,7 +778,10 @@ private struct HomeView: View {
                     .padding(.top, 28)
 
                     detailSection(ArchiveCopy.text(english: "Archive at a glance", russian: "Архив вкратце")) {
-                        HStack(spacing: 0) {
+                        LazyVGrid(
+                            columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                            spacing: 12
+                        ) {
                             HomeStat(value: "\(repository.people.count)", label: ArchiveCopy.text(english: "People", russian: "Люди"))
                             HomeStat(value: "\(repository.people.filter { repository.isLiving($0) }.count)", label: ArchiveCopy.text(english: "Living", russian: "Живые"))
                             HomeStat(value: "\(repository.people.filter { !repository.isLiving($0) }.count)", label: ArchiveCopy.text(english: "Deceased", russian: "Ушедшие"))
@@ -1009,14 +1012,16 @@ private struct RememberedDateRow: View {
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(ArchiveTheme.accent)
             }
-            .frame(width: 54, alignment: .leading)
+            .frame(width: 70, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(date.title)
                     .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(date.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer()
@@ -1259,28 +1264,6 @@ private struct SettingsView: View {
                     .foregroundStyle(ArchiveTheme.accent)
                     .padding(.top, 28)
 
-                if transferInProgress {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .tint(ArchiveTheme.action)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(ArchiveCopy.text(
-                                english: "Preparing private archive…",
-                                russian: "Подготовка приватного архива…"
-                            ))
-                                .font(ArchiveTypography.metadata)
-                                .foregroundStyle(ArchiveTheme.ink)
-                            Text(ArchiveCopy.text(
-                                english: "Keep this screen open. The save dialog will appear when it is ready.",
-                                russian: "Оставьте этот экран открытым. Диалог сохранения появится после подготовки."
-                            ))
-                                .font(ArchiveTypography.metadata)
-                                .foregroundStyle(ArchiveTheme.metadata)
-                        }
-                    }
-                    .padding(.vertical, 12)
-                }
-
                 Button {
                     exportPrivateArchive()
                 } label: {
@@ -1335,7 +1318,10 @@ private struct SettingsView: View {
             contentType: .familyArchive,
             defaultFilename: "family-archive-private.familyarchive"
         ) { result in
-            if case .failure(let error) = result {
+            switch result {
+            case .success(let url):
+                finishExport(to: url)
+            case .failure(let error):
                 transferMessage = TransferMessage(message: error.localizedDescription)
             }
         }
@@ -1360,10 +1346,10 @@ private struct SettingsView: View {
                 primaryButton: .destructive(Text(ArchiveCopy.text(english: "Replace", russian: "Заменить"))) {
                     guard let repository else { return }
                     transferInProgress = true
-                    let data = confirmation.data
+                    let url = confirmation.url
                     DispatchQueue.global(qos: .userInitiated).async {
                         do {
-                            _ = try repository.importPrivateArchive(data)
+                            _ = try repository.importPrivateArchive(at: url)
                             DispatchQueue.main.async {
                                 transferInProgress = false
                                 transferMessage = TransferMessage(message: ArchiveCopy.text(english: "Private archive imported.", russian: "Приватный архив импортирован."))
@@ -1386,14 +1372,39 @@ private struct SettingsView: View {
 
     private func exportPrivateArchive() {
         guard let repository else { return }
+        do {
+            // This is intentionally synchronous and limited to resolving the
+            // already-persistent store URL. No media scan, copy, or state
+            // transition occurs before the picker is presented.
+            _ = try repository.exportPrivateStoreURL()
+            transferDocument = ArchiveTransferDocument(data: Data("Family Archive private export".utf8))
+            showingExporter = true
+        } catch {
+            transferMessage = TransferMessage(message: error.localizedDescription)
+        }
+    }
+
+    private func finishExport(to destinationURL: URL) {
+        guard let repository else { return }
         transferInProgress = true
+        let accessed = destinationURL.startAccessingSecurityScopedResource()
+
         DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                if accessed { destinationURL.stopAccessingSecurityScopedResource() }
+            }
+
             do {
-                let data = try repository.exportPrivateArchive()
+                // The system picker wrote only the tiny placeholder. Replace
+                // it at the chosen location with the streaming archive file.
+                try? FileManager.default.removeItem(at: destinationURL)
+                try repository.exportPrivateArchiveFile(to: destinationURL)
                 DispatchQueue.main.async {
-                    transferDocument = ArchiveTransferDocument(data: data)
                     transferInProgress = false
-                    showingExporter = true
+                    transferMessage = TransferMessage(message: ArchiveCopy.text(
+                        english: "Private archive saved.",
+                        russian: "Приватный архив сохранён."
+                    ))
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1410,11 +1421,11 @@ private struct SettingsView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
-                let data = try Data(contentsOf: url)
-                let summary = try FamilyRepository.previewPrivateArchive(data)
+                guard let repository else { throw ArchivePackageError.documentsUnavailable }
+                let summary = try repository.previewPrivateArchive(at: url)
                 DispatchQueue.main.async {
                     transferInProgress = false
-                    importConfirmation = ImportConfirmation(data: data, summary: summary)
+                    importConfirmation = ImportConfirmation(url: url, summary: summary)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1453,7 +1464,7 @@ private struct ArchiveTransferRow: View {
 
 private struct ImportConfirmation: Identifiable {
     let id = UUID()
-    let data: Data
+    let url: URL
     let summary: ArchivePackageSummary
 }
 
@@ -1462,7 +1473,7 @@ private struct TransferMessage: Identifiable {
     let message: String
 }
 
-struct ArchiveTransferDocument: FileDocument {
+private struct ArchiveTransferDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.familyArchive] }
     var data: Data
 
@@ -1512,6 +1523,7 @@ private struct HomeStat: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)

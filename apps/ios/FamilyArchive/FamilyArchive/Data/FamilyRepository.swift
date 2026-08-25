@@ -3,6 +3,324 @@ import Combine
 import ImageIO
 import UIKit
 
+/// The app's canonical private document store. Metadata is split into one
+/// file per person so an edit does not rewrite the complete family archive.
+/// Media and documents remain ordinary persistent files and are referenced by
+/// their relative paths from the app's Documents directory.
+private struct PrivateDocumentStore {
+    struct Manifest: Codable {
+        let format: String
+        let version: Int
+        let schemaVersion: Int
+        let title: String
+        let accountHolderID: Person.ID?
+        let personIDs: [Person.ID]
+        let updatedAt: String
+    }
+
+    let fileManager: FileManager
+    let rootURL: URL
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        self.rootURL = documentsURL.appendingPathComponent("FamilyArchiveStore", isDirectory: true)
+    }
+
+    init(rootURL: URL, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        self.rootURL = rootURL
+    }
+
+    var manifestURL: URL { rootURL.appendingPathComponent("manifest.json") }
+    var peopleURL: URL { rootURL.appendingPathComponent("people", isDirectory: true) }
+    var privateDataURL: URL { rootURL.appendingPathComponent("PrivateData", isDirectory: true) }
+    var gedcomURL: URL { rootURL.appendingPathComponent("family.ged") }
+
+    func loadDocument() throws -> FamilyArchiveDocument? {
+        guard fileManager.fileExists(atPath: manifestURL.path) else { return nil }
+        let manifestData = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder.archive.decode(Manifest.self, from: manifestData)
+        var people: [Person] = []
+        people.reserveCapacity(manifest.personIDs.count)
+
+        for personID in manifest.personIDs {
+            guard let filename = safeFilename(for: personID) else { throw StoreError.invalidPersonID }
+            let url = peopleURL.appendingPathComponent(filename)
+            let data = try Data(contentsOf: url)
+            people.append(try JSONDecoder.archive.decode(Person.self, from: data))
+        }
+
+        guard !people.isEmpty else { return nil }
+        return FamilyArchiveDocument(
+            schemaVersion: manifest.schemaVersion,
+            title: manifest.title,
+            accountHolderID: manifest.accountHolderID,
+            people: people
+        )
+    }
+
+    func bootstrap(document: FamilyArchiveDocument) throws {
+        try save(document: document, changedPersonIDs: Set(document.people.map(\.id)), rebuildGEDCOM: true)
+        try copySidecarsIfAvailable()
+    }
+
+    /// Writes only changed person records plus the small manifest. The GEDCOM
+    /// derivative is regenerated because it is small and must reflect any
+    /// relationship/date edits, but media files are never read or rewritten.
+    func save(
+        document: FamilyArchiveDocument,
+        changedPersonIDs: Set<Person.ID>,
+        rebuildGEDCOM: Bool
+    ) throws {
+        try fileManager.createDirectory(at: peopleURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: privateDataURL, withIntermediateDirectories: true)
+
+        let peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
+        let idsToWrite = changedPersonIDs.isEmpty ? Set(peopleByID.keys) : changedPersonIDs
+        for personID in idsToWrite {
+            guard let person = peopleByID[personID], let filename = safeFilename(for: personID) else { continue }
+            let data = try JSONEncoder.archive.encode(person)
+            try data.write(to: peopleURL.appendingPathComponent(filename), options: .atomic)
+        }
+
+        // Remove person records deleted from the document, without touching
+        // any media/document asset.
+        let currentFiles = Set(peopleByID.keys.compactMap(safeFilename(for:)))
+        for url in try fileManager.contentsOfDirectory(at: peopleURL, includingPropertiesForKeys: nil)
+            where url.pathExtension == "json" && !currentFiles.contains(url.lastPathComponent) {
+            try? fileManager.removeItem(at: url)
+        }
+
+        let manifest = Manifest(
+            format: "family-archive-private-store",
+            version: 1,
+            schemaVersion: document.schemaVersion,
+            title: document.title,
+            accountHolderID: document.accountHolderID,
+            personIDs: document.people.map(\.id).sorted(),
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        let manifestData = try JSONEncoder.archive.encode(manifest)
+        try manifestData.write(to: manifestURL, options: .atomic)
+
+        if rebuildGEDCOM {
+            try GEDCOMExporter(document: document).makeGEDCOM().write(to: gedcomURL, options: .atomic)
+        }
+    }
+
+    func exportDirectoryURL() throws -> URL {
+        guard fileManager.fileExists(atPath: rootURL.path) else { throw StoreError.storeUnavailable }
+        return rootURL
+    }
+
+    func copyStore(to destinationURL: URL) throws {
+        guard fileManager.fileExists(atPath: rootURL.path) else { throw StoreError.storeUnavailable }
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        try copyDirectoryContents(from: rootURL, to: destinationURL)
+    }
+
+    func exportArchive(to destinationURL: URL) throws {
+        guard fileManager.fileExists(atPath: rootURL.path) else { throw StoreError.storeUnavailable }
+        try PrivateArchiveFile.write(directory: rootURL, to: destinationURL, fileManager: fileManager)
+    }
+
+    func replaceContents(with sourceDirectory: URL) throws {
+        guard fileManager.fileExists(atPath: sourceDirectory.path) else { throw StoreError.storeUnavailable }
+        try? fileManager.removeItem(at: rootURL)
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try copyDirectoryContents(from: sourceDirectory, to: rootURL)
+    }
+
+    private func copyDirectoryContents(from source: URL, to destination: URL) throws {
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        let items = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isDirectoryKey])
+        for item in items {
+            let target = destination.appendingPathComponent(item.lastPathComponent)
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory {
+                try copyDirectoryContents(from: item, to: target)
+            } else {
+                try? fileManager.removeItem(at: target)
+                try fileManager.copyItem(at: item, to: target)
+            }
+        }
+    }
+
+    private func copyReferencedAssetsIfNeeded(document: FamilyArchiveDocument) throws {
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+        for person in document.people {
+            for item in person.media {
+                guard let path = item.path,
+                      !path.hasPrefix("/"),
+                      !path.split(separator: "/").contains("..") else { continue }
+                let destination = rootURL.appendingPathComponent(path)
+                if fileManager.fileExists(atPath: destination.path) { continue }
+
+                let candidates = [
+                    documentsURL?.appendingPathComponent(path),
+                    Bundle.main.url(forResource: path, withExtension: nil)
+                ].compactMap { $0 }
+                guard let source = candidates.first(where: { fileManager.fileExists(atPath: $0.path) }) else { continue }
+                try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fileManager.copyItem(at: source, to: destination)
+            }
+        }
+    }
+
+    private func copySidecarsIfAvailable() throws {
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+        for filename in ["name-localizations.private.json", "narrative-translations.private.json"] {
+            let destination = privateDataURL.appendingPathComponent(filename)
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            let candidates = [
+                documentsURL?.appendingPathComponent("PrivateData").appendingPathComponent(filename),
+                documentsURL?.appendingPathComponent(filename),
+                Bundle.main.url(forResource: filename.replacingOccurrences(of: ".json", with: ""), withExtension: "json")
+            ].compactMap { $0 }
+            if let source = candidates.first(where: { fileManager.fileExists(atPath: $0.path) }) {
+                try fileManager.copyItem(at: source, to: destination)
+            }
+        }
+    }
+
+    private func safeFilename(for personID: Person.ID) -> String? {
+        guard !personID.isEmpty,
+              !personID.contains("/"),
+              !personID.contains("\\"),
+              !personID.contains("..") else { return nil }
+        return "\(personID).json"
+    }
+
+    enum StoreError: LocalizedError {
+        case invalidPersonID
+        case storeUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidPersonID: "The private store contains an invalid person identifier."
+            case .storeUnavailable: "The private document store is unavailable."
+            }
+        }
+    }
+}
+
+/// A streaming, uncompressed private archive format. It deliberately keeps
+/// the portable export as one ordinary file without loading media into memory.
+/// Each record is: UTF-8 path length (UInt64), file length (UInt64), path, bytes.
+private enum PrivateArchiveFile {
+    private static let magic = Data("FAR1".utf8)
+    private static let chunkSize = 1024 * 1024
+
+    static func write(directory: URL, to destinationURL: URL, fileManager: FileManager) throws {
+        try? fileManager.removeItem(at: destinationURL)
+        fileManager.createFile(atPath: destinationURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: destinationURL)
+        defer { try? output.close() }
+        try output.write(contentsOf: magic)
+
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { throw ArchivePackageError.documentsUnavailable }
+
+        for case let fileURL as URL in enumerator {
+            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
+            let relativePath = fileURL.path.replacingOccurrences(of: directory.path + "/", with: "")
+            guard !relativePath.isEmpty,
+                  !relativePath.hasPrefix("/"),
+                  !relativePath.split(separator: "/").contains("..") else { continue }
+            let pathData = Data(relativePath.utf8)
+            let fileSize = UInt64(values.fileSize ?? 0)
+            try output.write(contentsOf: uint64Data(UInt64(pathData.count)))
+            try output.write(contentsOf: uint64Data(fileSize))
+            try output.write(contentsOf: pathData)
+
+            let input = try FileHandle(forReadingFrom: fileURL)
+            defer { try? input.close() }
+            var remaining = fileSize
+            while remaining > 0 {
+                let requested = Int(min(UInt64(chunkSize), remaining))
+                guard let data = try input.read(upToCount: requested), !data.isEmpty else {
+                    throw ArchivePackageError.invalidZip
+                }
+                try output.write(contentsOf: data)
+                remaining -= UInt64(data.count)
+            }
+        }
+    }
+
+    static func isArchive(at url: URL) -> Bool {
+        guard let input = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? input.close() }
+        return (try? input.read(upToCount: magic.count)) == magic
+    }
+
+    static func extract(_ archiveURL: URL, to destinationURL: URL, fileManager: FileManager) throws {
+        guard isArchive(at: archiveURL) else { throw ArchivePackageError.invalidZip }
+        try? fileManager.removeItem(at: destinationURL)
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        let input = try FileHandle(forReadingFrom: archiveURL)
+        defer { try? input.close() }
+        guard try readExact(from: input, count: magic.count) == magic else {
+            throw ArchivePackageError.invalidZip
+        }
+
+        while true {
+            guard let header = try input.read(upToCount: 16) else { throw ArchivePackageError.invalidZip }
+            if header.isEmpty { break }
+            guard header.count == 16 else { throw ArchivePackageError.invalidZip }
+            let pathLength = Int(try readUInt64(header, at: 0))
+            let fileSize = try readUInt64(header, at: 8)
+            guard pathLength > 0, pathLength <= 4096, fileSize <= UInt64(Int.max) else {
+                throw ArchivePackageError.invalidZip
+            }
+            let pathData = try readExact(from: input, count: pathLength)
+            guard let relativePath = String(data: pathData, encoding: .utf8),
+                  !relativePath.hasPrefix("/"),
+                  !relativePath.split(separator: "/").contains("..") else {
+                throw ArchivePackageError.invalidZip
+            }
+            let outputURL = destinationURL.appendingPathComponent(relativePath)
+            try fileManager.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            fileManager.createFile(atPath: outputURL.path, contents: nil)
+            let output = try FileHandle(forWritingTo: outputURL)
+            defer { try? output.close() }
+            var remaining = fileSize
+            while remaining > 0 {
+                let requested = Int(min(UInt64(chunkSize), remaining))
+                guard let data = try input.read(upToCount: requested), !data.isEmpty else {
+                    throw ArchivePackageError.invalidZip
+                }
+                try output.write(contentsOf: data)
+                remaining -= UInt64(data.count)
+            }
+        }
+    }
+
+    private static func uint64Data(_ value: UInt64) -> Data {
+        var littleEndian = value.littleEndian
+        return Data(bytes: &littleEndian, count: MemoryLayout<UInt64>.size)
+    }
+
+    private static func readUInt64(_ data: Data, at offset: Int) throws -> UInt64 {
+        guard offset >= 0, offset + 8 <= data.count else { throw ArchivePackageError.invalidZip }
+        return data[offset..<(offset + 8)].enumerated().reduce(UInt64(0)) { result, pair in
+            result | (UInt64(pair.element) << (UInt64(pair.offset) * 8))
+        }
+    }
+
+    private static func readExact(from handle: FileHandle, count: Int) throws -> Data {
+        guard let data = try handle.read(upToCount: count), data.count == count else {
+            throw ArchivePackageError.invalidZip
+        }
+        return data
+    }
+}
+
 final class FamilyRepository: ObservableObject {
     @Published private(set) var document: FamilyArchiveDocument
     @Published var appLanguage: ArchiveLanguage {
@@ -15,6 +333,7 @@ final class FamilyRepository: ObservableObject {
     private let presumedDeathBeforeBirthYear = 1921
     private var profilePhotoPathCache: [Person.ID: String] = [:]
     private var coloredPhotoCache: [String: Bool] = [:]
+    private let privateStore: PrivateDocumentStore
 
     private struct PhotoCandidate {
         let path: String
@@ -22,11 +341,12 @@ final class FamilyRepository: ObservableObject {
         let order: Int
     }
 
-    init(document: FamilyArchiveDocument) {
+    init(document: FamilyArchiveDocument, fileManager: FileManager = .default) {
         self.document = document
+        self.privateStore = PrivateDocumentStore(fileManager: fileManager)
         self.appLanguage = ArchiveLanguage(
-            rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue
-        ) ?? .english
+            rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue
+        ) ?? .russian
         peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
         NameLocalizationStore.shared.reload()
     }
@@ -244,6 +564,10 @@ final class FamilyRepository: ObservableObject {
         }
 
         if let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let storeURL = privateStore.rootURL.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: storeURL.path) {
+                return storeURL
+            }
             let url = documentsURL.appendingPathComponent(path)
             if FileManager.default.fileExists(atPath: url.path) {
                 return url
@@ -264,7 +588,7 @@ final class FamilyRepository: ObservableObject {
         var people = document.people
         guard let index = people.firstIndex(where: { $0.id == person.id }) else { return }
         people[index] = person
-        replaceDocument(people: people)
+        replaceDocument(people: people, changedPersonIDs: [person.id])
     }
 
     func updateMedia(_ item: MediaReference, for ownerID: Person.ID) {
@@ -287,7 +611,7 @@ final class FamilyRepository: ObservableObject {
                 people[index].media.removeAll { $0.id == item.id }
             }
         }
-        replaceDocument(people: people)
+        replaceDocument(people: people, changedPersonIDs: updatedIDs.union(previousIDs))
     }
 
     func removeMedia(_ item: MediaReference, from ownerID: Person.ID) {
@@ -298,10 +622,10 @@ final class FamilyRepository: ObservableObject {
         for index in people.indices where relatedIDs.contains(people[index].id) {
             people[index].media.removeAll { $0.id == item.id }
         }
-        replaceDocument(people: people)
+        replaceDocument(people: people, changedPersonIDs: relatedIDs.union([ownerID]))
     }
 
-    private func replaceDocument(people: [Person]) {
+    private func replaceDocument(people: [Person], changedPersonIDs: Set<Person.ID> = []) {
         document = FamilyArchiveDocument(
             schemaVersion: document.schemaVersion,
             title: document.title,
@@ -311,20 +635,97 @@ final class FamilyRepository: ObservableObject {
         peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
         profilePhotoPathCache.removeAll()
         coloredPhotoCache.removeAll()
-        savePrivateCopy()
+        try? privateStore.save(document: document, changedPersonIDs: changedPersonIDs, rebuildGEDCOM: true)
     }
 
-    private func savePrivateCopy(fileManager: FileManager = .default) {
-        guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first,
-              let data = try? JSONEncoder.archive.encode(document) else { return }
-        try? data.write(to: documentsURL.appendingPathComponent("family-archive.json"), options: .atomic)
-    }
-
-    /// Exports the current private archive as a self-contained package. The
-    /// package contains the app JSON, generated GEDCOM, a Topola-ready GDZ,
-    /// private localization sidecars, and referenced media/documents.
+    /// Legacy ZIP export retained for compatibility with packages created by
+    /// earlier builds. New UI uses the streaming single-file archive below.
     func exportPrivateArchive(fileManager: FileManager = .default) throws -> Data {
         try ArchivePackageBuilder(repository: self, fileManager: fileManager).build()
+    }
+
+    /// Returns the already-persisted private store for internal diagnostics.
+    func exportPrivateStoreURL() throws -> URL {
+        try privateStore.exportDirectoryURL()
+    }
+
+    func exportPrivateStore(to destinationURL: URL) throws {
+        try privateStore.copyStore(to: destinationURL)
+    }
+
+    func exportPrivateArchiveFile(to destinationURL: URL, fileManager: FileManager = .default) throws {
+        try privateStore.exportArchive(to: destinationURL)
+    }
+
+    func previewPrivateArchive(at url: URL, fileManager: FileManager = .default) throws -> ArchivePackageSummary {
+        if PrivateArchiveFile.isArchive(at: url) {
+            let stagingURL = fileManager.temporaryDirectory.appendingPathComponent("FamilyArchivePreview-\(UUID().uuidString)", isDirectory: true)
+            defer { try? fileManager.removeItem(at: stagingURL) }
+            try PrivateArchiveFile.extract(url, to: stagingURL, fileManager: fileManager)
+            return try previewPrivateArchive(at: stagingURL, fileManager: fileManager)
+        }
+        if url.hasDirectoryPath || fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
+            let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
+            guard let document = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
+            return ArchivePackageSummary(document: document, fileCount: countFiles(at: url, fileManager: fileManager))
+        }
+        return try Self.previewPrivateArchive(Data(contentsOf: url))
+    }
+
+    func importPrivateArchive(at url: URL, fileManager: FileManager = .default) throws -> ArchivePackageSummary {
+        if PrivateArchiveFile.isArchive(at: url) {
+            let stagingURL = fileManager.temporaryDirectory.appendingPathComponent("FamilyArchiveImport-\(UUID().uuidString)", isDirectory: true)
+            defer { try? fileManager.removeItem(at: stagingURL) }
+            try PrivateArchiveFile.extract(url, to: stagingURL, fileManager: fileManager)
+            return try importPrivateArchive(at: stagingURL, fileManager: fileManager)
+        }
+        if url.hasDirectoryPath || fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
+            let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
+            guard let importedDocument = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
+            // Keep the imported media and documents inside the canonical
+            // private store so a later export remains complete. The mirrored
+            // Documents copies below preserve compatibility with older paths.
+            try privateStore.replaceContents(with: url)
+            try privateStore.bootstrap(document: importedDocument)
+
+            let sourcePrivateData = url.appendingPathComponent("PrivateData", isDirectory: true)
+            let destinationPrivateData = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("PrivateData", isDirectory: true)
+            if fileManager.fileExists(atPath: sourcePrivateData.path), let destinationPrivateData {
+                try copyDirectoryContents(from: sourcePrivateData, to: destinationPrivateData, fileManager: fileManager)
+            }
+
+            document = importedDocument
+            peopleByID = Dictionary(uniqueKeysWithValues: importedDocument.people.map { ($0.id, $0) })
+            profilePhotoPathCache.removeAll()
+            coloredPhotoCache.removeAll()
+            NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
+            NameLocalizationStore.shared.reload(fileManager: fileManager)
+            return ArchivePackageSummary(document: importedDocument, fileCount: countFiles(at: url, fileManager: fileManager))
+        }
+        return try importPrivateArchive(Data(contentsOf: url), fileManager: fileManager)
+    }
+
+    private func countFiles(at url: URL, fileManager: FileManager) -> Int {
+        guard let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) else { return 0 }
+        return enumerator.reduce(into: 0) { count, item in
+            guard let fileURL = item as? URL,
+                  (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return }
+            count += 1
+        }
+    }
+
+    private func copyDirectoryContents(from source: URL, to destination: URL, fileManager: FileManager) throws {
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        guard let items = try? fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
+        for item in items {
+            let target = destination.appendingPathComponent(item.lastPathComponent)
+            if (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                try copyDirectoryContents(from: item, to: target, fileManager: fileManager)
+            } else {
+                try? fileManager.removeItem(at: target)
+                try fileManager.copyItem(at: item, to: target)
+            }
+        }
     }
 
     static func previewPrivateArchive(_ data: Data) throws -> ArchivePackageSummary {
@@ -362,6 +763,7 @@ final class FamilyRepository: ObservableObject {
         peopleByID = Dictionary(uniqueKeysWithValues: importedDocument.people.map { ($0.id, $0) })
         profilePhotoPathCache.removeAll()
         coloredPhotoCache.removeAll()
+        try privateStore.bootstrap(document: importedDocument)
         NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
         NameLocalizationStore.shared.reload(fileManager: fileManager)
         return ArchivePackageSummary(document: importedDocument, fileCount: entries.count)
@@ -378,18 +780,24 @@ final class FamilyRepository: ObservableObject {
         return url.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/") ? url : nil
     }
 
-    static func bundled(bundle: Bundle = .main) -> FamilyRepository {
+    static func bundled(bundle: Bundle = .main, fileManager: FileManager = .default) -> FamilyRepository {
         guard let url = bundle.url(forResource: "sample-family", withExtension: "json") else {
-            return FamilyRepository(document: .empty)
+            let repository = FamilyRepository(document: .empty, fileManager: fileManager)
+            try? repository.privateStore.bootstrap(document: .empty)
+            return repository
         }
 
         do {
             let data = try Data(contentsOf: url)
             let document = try JSONDecoder().decode(FamilyArchiveDocument.self, from: data)
-            return FamilyRepository(document: document)
+            let repository = FamilyRepository(document: document, fileManager: fileManager)
+            try? repository.privateStore.bootstrap(document: document)
+            return repository
         } catch {
             assertionFailure("Unable to load bundled family data: \(error)")
-            return FamilyRepository(document: .empty)
+            let repository = FamilyRepository(document: .empty, fileManager: fileManager)
+            try? repository.privateStore.bootstrap(document: .empty)
+            return repository
         }
     }
 
@@ -397,15 +805,22 @@ final class FamilyRepository: ObservableObject {
         fileManager: FileManager = .default,
         bundle: Bundle = .main
     ) -> FamilyRepository {
+        let store = PrivateDocumentStore(fileManager: fileManager)
+        if let document = try? store.loadDocument() {
+            return FamilyRepository(document: document, fileManager: fileManager)
+        }
+
         if let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
             let localURL = documentsURL.appendingPathComponent("family-archive.json")
             if let data = try? Data(contentsOf: localURL),
                let document = try? JSONDecoder().decode(FamilyArchiveDocument.self, from: data) {
-                return FamilyRepository(document: document)
+                let repository = FamilyRepository(document: document, fileManager: fileManager)
+                try? repository.privateStore.bootstrap(document: document)
+                return repository
             }
         }
 
-        return bundled(bundle: bundle)
+        return bundled(bundle: bundle, fileManager: fileManager)
     }
 }
 
@@ -414,6 +829,12 @@ private extension JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return encoder
+    }
+}
+
+private extension JSONDecoder {
+    static var archive: JSONDecoder {
+        JSONDecoder()
     }
 }
 

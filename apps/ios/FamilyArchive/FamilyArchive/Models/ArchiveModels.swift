@@ -121,7 +121,7 @@ final class NarrativeLocalizationStore {
     }
 
     private func localized(source: String, translation: String?, pending: String) -> String {
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         guard language == .english else { return source }
         if let translation, !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return translation
@@ -169,7 +169,7 @@ final class NameLocalizationStore {
         if namesByID.isEmpty {
             reload()
         }
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         guard let localized = namesByID[personID]?.localizedNames[language.rawValue],
               !localized.isEmpty else {
             return fallback
@@ -195,7 +195,7 @@ final class NameLocalizationStore {
 
         let source = familyName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else { return nil }
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
 
         for record in namesByID.values {
             guard let originalSurname = record.original.split(separator: " ").last.map(String.init),
@@ -214,7 +214,7 @@ final class NameLocalizationStore {
             reload()
         }
 
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return namesByID.values
             .sorted { $0.original.count > $1.original.count }
             .reduce(text) { result, record in
@@ -231,7 +231,7 @@ final class NameLocalizationStore {
 
 enum ArchiveCopy {
     static func text(english: String, russian: String) -> String {
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return language == .russian ? russian : english
     }
 
@@ -270,7 +270,7 @@ enum ArchiveCopy {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return trimmed }
 
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         guard language == .english else { return trimmed }
 
         let exact: [String: String] = [
@@ -347,7 +347,7 @@ enum ArchiveCopy {
 
     static func familyName(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         guard language == .english else {
             switch trimmed.lowercased() {
             case "fedotova": return "Федотов"
@@ -449,7 +449,7 @@ enum ArchiveDateFormatter {
         for format in inputFormats {
             inputFormatter.dateFormat = format
             if let date = inputFormatter.date(from: trimmed) {
-                let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+                let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
                 let localizedFormatter = DateFormatter()
                 localizedFormatter.locale = Locale(identifier: language == .russian ? "ru_RU" : "en_US_POSIX")
                 if format == "MMMM yyyy" || format == "MMM yyyy" {
@@ -585,7 +585,7 @@ struct PersonFact: Codable, Identifiable, Hashable {
     }
 
     private func localized(_ values: [String: String]?, fallback: String) -> String {
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return values?[language.rawValue].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
     }
 }
@@ -612,7 +612,7 @@ struct LifeEvent: Codable, Identifiable, Hashable {
     }
 
     private func localized(_ values: [String: String]?, fallback: String) -> String {
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.english.rawValue) ?? .english
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return values?[language.rawValue].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
     }
 }

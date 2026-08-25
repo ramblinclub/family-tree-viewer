@@ -13,6 +13,7 @@
 		100000000000000000000004 /* PeopleListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* PeopleListView.swift */; };
 		100000000000000000000005 /* PersonDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* PersonDetailView.swift */; };
 		100000000000000000000006 /* sample-family.json in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* sample-family.json */; };
+		100000000000000000000008 /* AppIcon-1024.png in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AppIcon-1024.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -23,6 +24,8 @@
 		200000000000000000000005 /* PersonDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonDetailView.swift; sourceTree = "<group>"; };
 		200000000000000000000006 /* sample-family.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sample-family.json"; sourceTree = "<group>"; };
 		200000000000000000000007 /* FamilyArchive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FamilyArchive.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000009 /* AppIcon-1024.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "AppIcon-1024.png"; sourceTree = "<group>"; };
+		200000000000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +96,8 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000006 /* sample-family.json */,
+				200000000000000000000009 /* AppIcon-1024.png */,
+				200000000000000000000010 /* Info.plist */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -156,6 +161,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				100000000000000000000006 /* sample-family.json in Resources */,
+				100000000000000000000008 /* AppIcon-1024.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -225,8 +231,10 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = 6269G7LZQ9;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FamilyArchive/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Family Archive";
+				INFOPLIST_KEY_CFBundleIconFiles = "AppIcon-1024.png";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
@@ -247,8 +255,10 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = 6269G7LZQ9;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FamilyArchive/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Family Archive";
+				INFOPLIST_KEY_CFBundleIconFiles = "AppIcon-1024.png";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
