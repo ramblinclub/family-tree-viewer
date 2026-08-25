@@ -616,7 +616,10 @@ struct LifeEvent: Codable, Identifiable, Hashable {
     var summaryTranslations: [String: String]?
 
     var localizedTitle: String {
-        localized(titleTranslations, fallback: ArchiveCopy.eventTitle(title))
+        // Normalize both the source title and any stored translation through
+        // the same approved event vocabulary. This prevents an English value
+        // in an older `titleTranslations` entry from leaking into Russian UI.
+        return ArchiveCopy.eventTitle(localized(titleTranslations, fallback: title))
     }
 
     var localizedSummary: String {
