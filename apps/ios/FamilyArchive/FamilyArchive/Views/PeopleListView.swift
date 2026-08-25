@@ -1232,6 +1232,7 @@ private struct SettingsView: View {
     @State private var transferMessage: TransferMessage?
     @State private var transferInProgress = false
     @State private var diagnosticRunning = false
+    @State private var transferStatus: String?
 
     var body: some View {
         ScrollView {
@@ -1290,6 +1291,13 @@ private struct SettingsView: View {
                 .buttonStyle(.plain)
                 .disabled(transferInProgress)
                 .opacity(transferInProgress ? 0.5 : 1)
+
+                if let transferStatus {
+                    Text(transferStatus)
+                        .font(.caption)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .padding(.top, 8)
+                }
 
                 #if DEBUG
                 Text("IMPORT DIAGNOSTICS")
@@ -1444,6 +1452,7 @@ private struct SettingsView: View {
     private func importPrivateArchive(from url: URL) {
         let accessed = url.startAccessingSecurityScopedResource()
         transferInProgress = true
+        transferStatus = ArchiveCopy.text(english: "Reading selected archive…", russian: "Чтение выбранного архива…")
         DispatchQueue.global(qos: .userInitiated).async {
             let localURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("FamilyArchiveImport-\(UUID().uuidString)", isDirectory: false)
@@ -1457,15 +1466,19 @@ private struct SettingsView: View {
                 try FileManager.default.copyItem(at: url, to: localURL)
                 let summary = try repository.previewPrivateArchive(at: localURL)
                 if accessed { url.stopAccessingSecurityScopedResource() }
-                DispatchQueue.main.async {
+                // Let the Files picker finish its dismissal before presenting
+                // the review alert; otherwise SwiftUI can discard the alert.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                     transferInProgress = false
+                    transferStatus = ArchiveCopy.text(english: "Archive ready for review.", russian: "Архив готов к проверке.")
                     importConfirmation = ImportConfirmation(url: localURL, summary: summary)
                 }
             } catch {
                 if accessed { url.stopAccessingSecurityScopedResource() }
                 try? FileManager.default.removeItem(at: localURL)
-                DispatchQueue.main.async {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                     transferInProgress = false
+                    transferStatus = "Import failed: \(error.localizedDescription)"
                     transferMessage = TransferMessage(message: error.localizedDescription)
                 }
             }
