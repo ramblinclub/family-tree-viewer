@@ -323,7 +323,7 @@ struct FamilyMemberTile: View {
                             .foregroundStyle(ArchiveTheme.accent)
                             .lineLimit(1)
                     } else if repository?.hasUnknownDeathDate(person) == true {
-                        Text(ArchiveCopy.text(english: "Death date unknown", russian: "Дата смерти неизвестна"))
+                        Text("????")
                             .font(ArchiveTypography.metadata)
                             .foregroundStyle(ArchiveTheme.metadata)
                             .lineLimit(1)
@@ -455,7 +455,7 @@ extension Person {
         case (nil, _):
             let normalized = lifespan.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if normalized == "unknown" || normalized == "????" || normalized.isEmpty {
-                return ArchiveCopy.text(english: "Unknown", russian: "Неизвестно")
+                return "????"
             }
             return lifespan
         }
@@ -464,7 +464,7 @@ extension Person {
     private func localizedDate(_ value: String) -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized == "unknown" || normalized == "????" || normalized.isEmpty {
-            return ArchiveCopy.text(english: "Unknown", russian: "Неизвестно")
+            return "????"
         }
         return ArchiveDateFormatter.display(value) ?? value
     }

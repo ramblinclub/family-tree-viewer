@@ -244,7 +244,7 @@ struct PersonDetailView: View {
 
     private var profileLifeSummary: String? {
         if repository.hasUnknownDeathDate(person) {
-            return ArchiveCopy.text(english: "Death date unknown", russian: "Дата смерти неизвестна")
+            return "????"
         }
 
         let lifespanYears = years(in: person.lifespan)

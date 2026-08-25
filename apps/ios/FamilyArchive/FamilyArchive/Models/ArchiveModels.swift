@@ -452,7 +452,7 @@ enum ArchiveDateFormatter {
         guard !trimmed.isEmpty else { return nil }
 
         if ["unknown", "????"].contains(trimmed.lowercased()) {
-            return ArchiveCopy.text(english: "Unknown", russian: "Неизвестно")
+            return "????"
         }
 
         let inputFormatter = DateFormatter()
