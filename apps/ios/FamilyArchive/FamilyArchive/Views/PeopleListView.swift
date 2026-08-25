@@ -1302,7 +1302,7 @@ private struct SettingsView: View {
                     runBuiltInImportDiagnostic()
                 } label: {
                     ArchiveTransferRow(
-                        title: "Test importer · build 3e0f455",
+                        title: "Test importer · build cdb63f8",
                         detail: "Validate a synthetic archive without private data",
                         systemImage: "checkmark.seal"
                     )
@@ -1490,12 +1490,12 @@ private struct SettingsView: View {
                 let summaryText = "\(summary.personCount) person, \(summary.fileCount) files."
                 DispatchQueue.main.async {
                     diagnosticRunning = false
-                    transferMessage = TransferMessage(message: "Importer test passed (build 3e0f455): \(summaryText)")
+                    transferMessage = TransferMessage(message: "Importer test passed (build cdb63f8): \(summaryText)")
                 }
             } catch {
                 DispatchQueue.main.async {
                     diagnosticRunning = false
-                    transferMessage = TransferMessage(message: "Importer test failed (build 3e0f455): \(error.localizedDescription)")
+                    transferMessage = TransferMessage(message: "Importer test failed (build cdb63f8): \(error.localizedDescription)")
                 }
             }
         }
