@@ -1299,6 +1299,20 @@ private struct SettingsView: View {
                         .padding(.top, 8)
                 }
 
+                if let importConfirmation {
+                    ImportReviewPanel(
+                        personCount: importConfirmation.summary.personCount,
+                        relationshipCount: importConfirmation.summary.relationshipCount,
+                        onReplace: { replaceImportedArchive(importConfirmation) },
+                        onCancel: {
+                            cleanupTemporaryImport(at: importConfirmation.url)
+                            self.importConfirmation = nil
+                            transferStatus = ArchiveCopy.text(english: "Import cancelled.", russian: "Импорт отменён.")
+                        }
+                    )
+                    .padding(.top, 14)
+                }
+
                 #if DEBUG
                 Text("IMPORT DIAGNOSTICS")
                     .font(.caption.weight(.semibold))
@@ -1366,39 +1380,6 @@ private struct SettingsView: View {
                 transferMessage = TransferMessage(message: error.localizedDescription)
             }
         }
-        .alert(item: $importConfirmation) { confirmation in
-            Alert(
-                title: Text(ArchiveCopy.text(english: "Replace private archive?", russian: "Заменить приватный архив?")),
-                message: Text(ArchiveCopy.text(
-                    english: "This package contains \(confirmation.summary.personCount) people and \(confirmation.summary.relationshipCount) relationship links.",
-                    russian: "В этом пакете \(confirmation.summary.personCount) людей и \(confirmation.summary.relationshipCount) родственных связей."
-                )),
-                primaryButton: .destructive(Text(ArchiveCopy.text(english: "Replace", russian: "Заменить"))) {
-                    guard let repository else { return }
-                    transferInProgress = true
-                    let url = confirmation.url
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        do {
-                            _ = try repository.importPrivateArchive(at: url)
-                            DispatchQueue.main.async {
-                                transferInProgress = false
-                                cleanupTemporaryImport(at: url)
-                                transferMessage = TransferMessage(message: ArchiveCopy.text(english: "Private archive imported.", russian: "Приватный архив импортирован."))
-                            }
-                        } catch {
-                            DispatchQueue.main.async {
-                                transferInProgress = false
-                                cleanupTemporaryImport(at: url)
-                                transferMessage = TransferMessage(message: error.localizedDescription)
-                            }
-                        }
-                    }
-                },
-                secondaryButton: .cancel(Text(ArchiveCopy.text(english: "Cancel", russian: "Отмена"))) {
-                    cleanupTemporaryImport(at: confirmation.url)
-                }
-            )
-        }
         .alert(item: $transferMessage) { message in
             Alert(title: Text(message.message), dismissButton: .default(Text(ArchiveCopy.text(english: "OK", russian: "ОК"))))
         }
@@ -1444,6 +1425,35 @@ private struct SettingsView: View {
                 DispatchQueue.main.async {
                     transferInProgress = false
                     transferMessage = TransferMessage(message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func replaceImportedArchive(_ confirmation: ImportConfirmation) {
+        guard let repository else { return }
+        transferInProgress = true
+        transferStatus = ArchiveCopy.text(english: "Importing private archive…", russian: "Импорт приватного архива…")
+        let url = confirmation.url
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let summary = try repository.importPrivateArchive(at: url)
+                let message = ArchiveCopy.text(
+                    english: "Imported \(summary.personCount) people.",
+                    russian: "Импортировано людей: \(summary.personCount)."
+                )
+                DispatchQueue.main.async {
+                    transferInProgress = false
+                    cleanupTemporaryImport(at: url)
+                    importConfirmation = nil
+                    transferStatus = message
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    transferInProgress = false
+                    cleanupTemporaryImport(at: url)
+                    transferStatus = "Import failed: \(error.localizedDescription)"
                 }
             }
         }
@@ -1545,6 +1555,44 @@ private struct ImportConfirmation: Identifiable {
     let id = UUID()
     let url: URL
     let summary: ArchivePackageSummary
+}
+
+private struct ImportReviewPanel: View {
+    let personCount: Int
+    let relationshipCount: Int
+    let onReplace: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(ArchiveCopy.text(english: "ARCHIVE READY FOR REVIEW", russian: "АРХИВ ГОТОВ К ПРОВЕРКЕ"))
+                .font(.caption.weight(.semibold))
+                .tracking(1.1)
+                .foregroundStyle(ArchiveTheme.accent)
+
+            Text(ArchiveCopy.text(
+                english: "This package contains \(personCount) people and \(relationshipCount) relationship links.",
+                russian: "В этом пакете \(personCount) людей и \(relationshipCount) родственных связей."
+            ))
+                .font(ArchiveTypography.body)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            HStack(spacing: 10) {
+                Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена"), action: onCancel)
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.muted)
+
+                Spacer()
+
+                Button(ArchiveCopy.text(english: "Replace private data", russian: "Заменить приватные данные"), action: onReplace)
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.action)
+            }
+        }
+        .padding(14)
+        .background(ArchiveTheme.actionBackground)
+        .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+    }
 }
 
 private struct TransferMessage: Identifiable {
