@@ -271,8 +271,6 @@ enum ArchiveCopy {
         guard !trimmed.isEmpty else { return trimmed }
 
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-        guard language == .english else { return trimmed }
-
         let exact: [String: String] = [
             "Бежецк по документам | село Едрово по факту": "Bezhetsk by documents | Edrovo village in fact",
             "Бежецк по документам | село Едрово по факту, Россия": "Bezhetsk by documents | Edrovo village in fact, Russia",
@@ -331,6 +329,20 @@ enum ArchiveCopy {
             "умерла в детстве": "Died in childhood",
             "Веденковский Cemetery, Saint Petersburg": "Vedenkovsky Cemetery, Saint Petersburg"
         ]
+
+        if language == .russian {
+            // A few migrated records contain an English place even though
+            // Russian is the source/display language. Reverse the approved
+            // place map so those records still render in Russian without
+            // mutating the private source text.
+            if let original = exact.first(where: {
+                $0.value.caseInsensitiveCompare(trimmed) == .orderedSame
+            })?.key {
+                return original
+            }
+            return trimmed
+        }
+
         if let translated = exact[trimmed] {
             return translated
         }

@@ -1271,7 +1271,7 @@ private struct FactRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(fact.localizedValue)
                 if let place = fact.place {
-                Text(place)
+                Text(ArchiveCopy.place(place))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
