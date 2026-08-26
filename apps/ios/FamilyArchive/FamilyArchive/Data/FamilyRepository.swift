@@ -500,6 +500,25 @@ final class FamilyRepository: ObservableObject {
     private func normalizeMediaMentionStorage() {
         var updatedPeople = document.people
         var changedPersonIDs = Set<Person.ID>()
+
+        // Older imports copied a shared media record into every tagged
+        // person's JSON file. Preserve those record owners while upgrading
+        // captions to ID-backed tokens; deriving the list only from the
+        // caption can silently drop a valid profile when a visible name was
+        // ambiguous or partially tokenized (for example, duplicate Tatyana
+        // records).
+        var sharedRecordOwners: [MediaReference.ID: Set<Person.ID>] = [:]
+        for person in document.people {
+            for media in person.media {
+                // An explicit personIDs list is authoritative. Only infer
+                // tags from duplicate person files for truly legacy records
+                // that have no links; otherwise a stale duplicate copy can
+                // re-add a person that was intentionally untagged.
+                guard media.personIDs?.isEmpty != false else { continue }
+                sharedRecordOwners[media.id, default: []].insert(person.id)
+            }
+        }
+
         for personIndex in updatedPeople.indices {
             let person = updatedPeople[personIndex]
             var updatedMedia = person.media
@@ -512,14 +531,21 @@ final class FamilyRepository: ObservableObject {
                     preferredPersonIDs: Set(media.personIDs ?? [person.id])
                 )
                 let mentionedIDs = MediaMentionToken.personIDs(in: canonical)
-                let normalizedIDs = mentionedIDs.isEmpty
-                    ? (media.personIDs ?? [person.id]).sorted()
-                    : mentionedIDs.sorted()
+                var normalizedIDs = Set(media.personIDs ?? [person.id])
+                normalizedIDs.formUnion(mentionedIDs)
+                // If this legacy record exists in more than one person file,
+                // those files are the only available representation of its
+                // shared tags. Keep all of them while normalizing.
+                if (media.personIDs?.isEmpty ?? true),
+                   let owners = sharedRecordOwners[media.id], owners.count > 1 {
+                    normalizedIDs.formUnion(owners)
+                }
+                let sortedIDs = normalizedIDs.sorted()
                 let captionChanged = canonical != (media.caption ?? "")
-                let linksChanged = normalizedIDs != (media.personIDs ?? []).sorted()
+                let linksChanged = sortedIDs != (media.personIDs ?? []).sorted()
                 guard captionChanged || linksChanged else { continue }
                 updatedMedia[mediaIndex].caption = canonical.isEmpty ? nil : canonical
-                updatedMedia[mediaIndex].personIDs = normalizedIDs
+                updatedMedia[mediaIndex].personIDs = sortedIDs
                 personChanged = true
             }
             if personChanged {

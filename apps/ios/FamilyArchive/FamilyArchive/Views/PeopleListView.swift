@@ -2046,7 +2046,13 @@ private struct UserProfilePhotoView: View {
         .frame(width: size, height: size)
         .clipped()
         .clipShape(Circle())
+        .grayscale(isLiving ? 0 : 1)
         .accessibilityLabel("Elena profile")
+    }
+
+    private var isLiving: Bool {
+        guard let person else { return true }
+        return repository?.isLiving(person) ?? person.isLiving
     }
 
     private var loadedImage: UIImage? {

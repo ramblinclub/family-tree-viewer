@@ -146,15 +146,19 @@ final class NarrativeLocalizationStore {
                     continue
                 }
 
-                if (record.caption ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let caption = legacyRecord.caption,
-                   !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let caption = legacyRecord.caption,
+                   Self.captionQuality(caption) > Self.captionQuality(record.caption ?? "") {
+                    // Legacy exports could contain one copy of a shared
+                    // photo per person. Keep the most informative caption,
+                    // rather than whichever duplicate happened to be read
+                    // first. This prevents a short/ambiguous @mention copy
+                    // from replacing the original descriptive caption.
                     record.caption = caption
                 }
                 var translations = record.captionTranslations ?? [:]
                 for (language, value) in legacyRecord.captionTranslations ?? [:]
                     where !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    if translations[language]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                    if Self.captionQuality(value) > Self.captionQuality(translations[language] ?? "") {
                         translations[language] = value
                     }
                 }
@@ -163,6 +167,20 @@ final class NarrativeLocalizationStore {
             }
         }
         return result
+    }
+
+    private static func captionQuality(_ value: String) -> Int {
+        // Ignore implementation-only person markers when comparing legacy
+        // copies; the remaining letters/numbers approximate how much actual
+        // descriptive text the caption contains.
+        let prose = value.replacingOccurrences(
+            of: #"\[\[person:[^\]]+\]\]"#,
+            with: "",
+            options: .regularExpression
+        )
+        return prose.unicodeScalars.reduce(into: 0) { count, scalar in
+            if CharacterSet.alphanumerics.contains(scalar) { count += 1 }
+        }
     }
 
     private func persist(fileManager: FileManager) throws {
