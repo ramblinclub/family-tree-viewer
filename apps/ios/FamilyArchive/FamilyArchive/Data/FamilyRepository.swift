@@ -490,12 +490,62 @@ final class FamilyRepository: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.activeAccountIDKey)
         }
         NameLocalizationStore.shared.reload()
+        normalizeMediaMentionStorage()
     }
 
-    /// Whether this device may change the private family archive. A recipient
-    /// of a prepared account can browse everything, but cannot edit or delete
-    /// profiles, stories, events, captions, or media.
-    var canEdit: Bool { !isReadOnly }
+    /// One-time, idempotent upgrade for imported media. Captions used to store
+    /// visible names, which became stale after a rename or locale switch. The
+    /// private store now keeps immutable person-ID markers and renders names
+    /// at the point of use.
+    private func normalizeMediaMentionStorage() {
+        var updatedPeople = document.people
+        var changedPersonIDs = Set<Person.ID>()
+        for personIndex in updatedPeople.indices {
+            let person = updatedPeople[personIndex]
+            var updatedMedia = person.media
+            var personChanged = false
+            for mediaIndex in updatedMedia.indices {
+                let media = updatedMedia[mediaIndex]
+                let canonical = MediaMentionToken.canonicalize(
+                    media.caption ?? "",
+                    people: document.people,
+                    preferredPersonIDs: Set(media.personIDs ?? [person.id])
+                )
+                let mentionedIDs = MediaMentionToken.personIDs(in: canonical)
+                let normalizedIDs = mentionedIDs.isEmpty
+                    ? (media.personIDs ?? [person.id]).sorted()
+                    : mentionedIDs.sorted()
+                let captionChanged = canonical != (media.caption ?? "")
+                let linksChanged = normalizedIDs != (media.personIDs ?? []).sorted()
+                guard captionChanged || linksChanged else { continue }
+                updatedMedia[mediaIndex].caption = canonical.isEmpty ? nil : canonical
+                updatedMedia[mediaIndex].personIDs = normalizedIDs
+                personChanged = true
+            }
+            if personChanged {
+                updatedPeople[personIndex].media = updatedMedia
+                changedPersonIDs.insert(person.id)
+            }
+        }
+        if !changedPersonIDs.isEmpty {
+            replaceDocument(people: updatedPeople, changedPersonIDs: changedPersonIDs)
+        }
+        _ = NarrativeLocalizationStore.shared.migrateMediaMentions(
+            people: document.people,
+            fileManager: privateStore.fileManager
+        )
+        NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
+    }
+
+    /// Whether this account may change the private family archive. A prepared
+    /// recipient account can browse everything, but cannot edit or delete
+    /// profiles, stories, events, captions, or media. The archive owner keeps
+    /// admin access even if a read-only handoff flag was left on this device.
+    var canEdit: Bool {
+        guard isReadOnly else { return true }
+        guard let adminID = document.accountHolderID else { return false }
+        return activeAccountID == adminID
+    }
 
     var people: [Person] {
         document.people.sorted {
@@ -678,7 +728,11 @@ final class FamilyRepository: ObservableObject {
         try fileManager.createDirectory(at: canonicalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fileManager.copyItem(at: sourceURL, to: canonicalURL)
 
-        let cleanedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedCaption = MediaMentionToken.canonicalize(
+            caption.trimmingCharacters(in: .whitespacesAndNewlines),
+            people: document.people,
+            preferredPersonIDs: Set(uniquePersonIDs)
+        )
         let cleanedDate = date?.trimmingCharacters(in: .whitespacesAndNewlines)
         let media = MediaReference(
             id: mediaID,
@@ -725,18 +779,24 @@ final class FamilyRepository: ObservableObject {
             profilePhotoPathCache.removeAll()
             coloredPhotoCache.removeAll()
 
-            if captionLanguage == .english, !cleanedCaption.isEmpty {
-                for personID in uniquePersonIDs {
-                    try NarrativeLocalizationStore.shared.updateMediaCaption(
-                        personID: personID,
-                        mediaID: media.id,
-                        caption: cleanedCaption,
-                        language: .english,
-                        fileManager: fileManager
-                    )
-                }
-                NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
-            }
+            // Keep one centralized source caption for this media ID. The
+            // opposite supported locale is cleared before its asynchronous
+            // translation is generated, preventing stale text from appearing
+            // for any tagged profile.
+            let targetLanguage: ArchiveLanguage = captionLanguage == .english ? .russian : .english
+            try? NarrativeLocalizationStore.shared.updateMediaCaption(
+                mediaID: media.id,
+                caption: cleanedCaption,
+                language: captionLanguage,
+                fileManager: fileManager
+            )
+            try? NarrativeLocalizationStore.shared.updateMediaCaption(
+                mediaID: media.id,
+                caption: "",
+                language: targetLanguage,
+                fileManager: fileManager
+            )
+            NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
 
             try fileManager.createDirectory(at: stagingReviewedURL, withIntermediateDirectories: true)
             var reviewedURL = stagingReviewedURL.appendingPathComponent(sourceURL.lastPathComponent)
@@ -765,24 +825,36 @@ final class FamilyRepository: ObservableObject {
         fileManager: FileManager = .default
     ) async {
         let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
+        let normalizedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let currentMedia = mediaItem(withID: mediaID),
+              currentMedia.caption?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCaption,
+              !Set(currentMedia.personIDs ?? []).intersection(personIDs).isEmpty else { return }
+
         let source = Locale.Language(identifier: sourceLanguage.rawValue)
         let target = Locale.Language(identifier: targetLanguage.rawValue)
 
         do {
             let session = TranslationSession(installedSource: source, target: target)
-            let response = try await session.translate(caption)
-            let translated = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let protected = MediaMentionToken.protectedForTranslation(caption)
+            let response = try await session.translate(protected.text)
+            let translated = MediaMentionToken.restoreAfterTranslation(
+                response.targetText,
+                tokens: protected.tokens
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !translated.isEmpty else { return }
 
-            for personID in personIDs {
-                try NarrativeLocalizationStore.shared.updateMediaCaption(
-                    personID: personID,
-                    mediaID: mediaID,
-                    caption: translated,
-                    language: targetLanguage,
-                    fileManager: fileManager
-                )
-            }
+            // Re-check the source text and links after translation; the user
+            // may have edited or removed the media while the model ran.
+            guard let latestMedia = mediaItem(withID: mediaID),
+                  latestMedia.caption?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCaption,
+                  !Set(latestMedia.personIDs ?? []).intersection(personIDs).isEmpty else { return }
+
+            try NarrativeLocalizationStore.shared.updateMediaCaption(
+                mediaID: mediaID,
+                caption: translated,
+                language: targetLanguage,
+                fileManager: fileManager
+            )
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
         } catch {
             // Translation is intentionally best effort. The source caption
@@ -957,12 +1029,17 @@ final class FamilyRepository: ObservableObject {
     /// Returns media owned by a person plus shared media records that reference them.
     func media(for personID: Person.ID) -> [MediaReference] {
         var result: [MediaReference] = []
-        var seen = Set<MediaReference.ID>()
+        // A legacy import can contain the same asset under multiple media IDs
+        // or person collections. Prefer its shared path as the identity so a
+        // single photograph is shown once while still being available from
+        // every tagged profile.
+        var seen = Set<String>()
         for owner in document.people {
             for item in owner.media {
                 let belongsToPerson = item.personIDs?.contains(personID) == true ||
                     (item.personIDs == nil && owner.id == personID)
-                guard belongsToPerson, seen.insert(item.id).inserted else { continue }
+                let identity = item.path ?? item.id
+                guard belongsToPerson, seen.insert(identity).inserted else { continue }
                 result.append(item)
             }
         }
@@ -1003,41 +1080,34 @@ final class FamilyRepository: ObservableObject {
 
     func photoPath(for personID: Person.ID) -> String? {
         guard let person = person(id: personID) else { return nil }
+        // A profile image must always be one of this person's tagged media
+        // records. This prevents a stale profileImagePath (for example after
+        // correcting an ambiguous @mention) from showing another person's
+        // photograph on the profile.
+        let collectionMedia = media(for: personID).filter { $0.kind == .photo }
+        let collectionPaths = Set(collectionMedia.compactMap(\.path))
         if let cachedPath = profilePhotoPathCache[personID] {
-            return cachedPath
+            if collectionPaths.contains(cachedPath), resolvedFileURL(for: cachedPath) != nil {
+                return cachedPath
+            }
+            profilePhotoPathCache.removeValue(forKey: personID)
         }
         // An explicitly selected profile image takes precedence over the
-        // automatic colored/recency choice. The editor can therefore select
-        // any existing private media item and keep that choice stable.
+        // automatic colored/recency choice, but only while it remains in this
+        // person's media collection.
         if let selectedPath = person.profileImagePath,
+           collectionPaths.contains(selectedPath),
            resolvedFileURL(for: selectedPath) != nil {
             profilePhotoPathCache[personID] = selectedPath
             return selectedPath
         }
-        // Prefer the person's own portrait/media. Shared tagged photos are a
-        // fallback, so a family group photograph cannot replace the profile
-        // image in the profile header or Home account avatar.
-        var candidates: [PhotoCandidate] = []
-        if let profileImagePath = person.profileImagePath {
-            candidates.append(PhotoCandidate(path: profileImagePath, date: nil, order: -1))
-        }
-
-        let ownCandidates = person.media
-            .filter { $0.kind == .photo }
-        candidates.append(contentsOf: ownCandidates.enumerated().compactMap { index, item in
+        // All candidates come from the person's tagged collection. Shared
+        // media is valid when it explicitly references this person; it is not
+        // a separate fallback pool.
+        let candidates: [PhotoCandidate] = collectionMedia.enumerated().compactMap { index, item -> PhotoCandidate? in
             guard let path = item.path else { return nil }
             return PhotoCandidate(path: path, date: item.date, order: index)
-        })
-
-        let sharedCandidates = document.people
-            .filter { $0.id != personID }
-            .flatMap(\.media)
-            .filter { $0.kind == .photo && $0.personIDs?.contains(personID) == true }
-        let sharedStart = ownCandidates.count
-        candidates.append(contentsOf: sharedCandidates.enumerated().compactMap { index, item in
-            guard let path = item.path else { return nil }
-            return PhotoCandidate(path: path, date: item.date, order: sharedStart + index)
-        })
+        }
 
         let validCandidates = candidates.filter { resolvedFileURL(for: $0.path) != nil }
         guard !validCandidates.isEmpty else { return nil }
@@ -1162,26 +1232,62 @@ final class FamilyRepository: ObservableObject {
     func updateMedia(_ item: MediaReference, for ownerID: Person.ID) {
         guard canEdit else { return }
         var people = document.people
-        guard let resolvedOwnerID = mediaOwnerID(for: item, preferredID: ownerID),
-              let ownerIndex = people.firstIndex(where: { $0.id == resolvedOwnerID }),
-              let mediaIndex = people[ownerIndex].media.firstIndex(where: { $0.id == item.id }) else { return }
+        // A shared media item may be opened from any tagged profile. Resolve
+        // the physical record by ID, then update every tagged profile from
+        // that one record. This avoids silently keeping an old copy when the
+        // same-name person was selected from the @mention picker.
+        guard let ownerIndex = people.firstIndex(where: { person in
+            person.media.contains(where: { $0.id == item.id })
+        }),
+        let mediaIndex = people[ownerIndex].media.firstIndex(where: { $0.id == item.id }) else { return }
 
-        let previousIDs = Set(people[ownerIndex].media[mediaIndex].personIDs ?? [resolvedOwnerID])
-        let updatedIDs = Set(item.personIDs ?? [resolvedOwnerID]).union([resolvedOwnerID])
-        people[ownerIndex].media[mediaIndex] = item
+        let previousIDs = Set(people.compactMap { person in
+            person.media.first(where: { $0.id == item.id })?.personIDs ??
+                (person.media.contains(where: { $0.id == item.id }) ? [person.id] : nil)
+        }.flatMap { $0 })
+        let updatedIDs = Set(item.personIDs ?? [ownerID])
+        guard !updatedIDs.isEmpty else { return }
+        var updatedItem = item
+        updatedItem.personIDs = Array(updatedIDs).sorted()
+        let canonicalCaption = MediaMentionToken.canonicalize(
+            item.caption ?? "",
+            people: people,
+            preferredPersonIDs: updatedIDs
+        )
+        updatedItem.caption = canonicalCaption.isEmpty ? nil : canonicalCaption
+        var changedIDs = updatedIDs.union(previousIDs)
 
-        for index in people.indices where people[index].id != resolvedOwnerID {
-            if updatedIDs.contains(people[index].id) {
+        for index in people.indices {
+            if index == ownerIndex {
+                people[index].media[mediaIndex] = updatedItem
+            } else if updatedIDs.contains(people[index].id) {
                 if let existingIndex = people[index].media.firstIndex(where: { $0.id == item.id }) {
-                    people[index].media[existingIndex] = item
+                    people[index].media[existingIndex] = updatedItem
                 } else {
-                    people[index].media.append(item)
+                    people[index].media.append(updatedItem)
                 }
             } else if previousIDs.contains(people[index].id) {
                 people[index].media.removeAll { $0.id == item.id }
+                // If this asset had been selected as that person's profile
+                // image, unlink it as well. Otherwise a corrected @mention
+                // would still leave the photo visible at the old profile.
+                if people[index].profileImagePath == item.path {
+                    changedIDs.insert(people[index].id)
+                    people[index].profileImagePath = nil
+                    people[index].profileImageScale = nil
+                    people[index].profileImageOffsetX = nil
+                    people[index].profileImageOffsetY = nil
+                }
+            } else if people[index].profileImagePath == item.path {
+                changedIDs.insert(people[index].id)
+                people[index].profileImagePath = nil
+                people[index].profileImageScale = nil
+                people[index].profileImageOffsetX = nil
+                people[index].profileImageOffsetY = nil
             }
         }
-        replaceDocument(people: people, changedPersonIDs: updatedIDs.union(previousIDs))
+        replaceDocument(people: people, changedPersonIDs: changedIDs)
+
     }
 
     func removeMedia(_ item: MediaReference, from ownerID: Person.ID) {
@@ -1217,6 +1323,14 @@ final class FamilyRepository: ObservableObject {
             person.media.contains { $0.path == item.path } || person.profileImagePath == item.path
         }
         replaceDocument(people: people, changedPersonIDs: changedPersonIDs)
+
+        // The asset is gone from every profile, so discard all language
+        // variants from the private localization sidecar as well.
+        try? NarrativeLocalizationStore.shared.removeMediaCaptions(
+            mediaID: item.id,
+            fileManager: privateStore.fileManager
+        )
+        NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
 
         // Only delete the canonical normalized-store asset. Absolute paths
         // and legacy Documents/ or bundled copies are deliberately left

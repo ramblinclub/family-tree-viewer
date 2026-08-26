@@ -29,7 +29,29 @@ private struct NameLocalization: Codable {
 }
 
 private struct NarrativeLocalizationDocument: Codable {
+    /// Narrative text remains person-scoped, while media captions are shared
+    /// by media ID so every tagged profile reads the same localized record.
     var people: [String: NarrativePersonLocalization]
+    var media: [String: NarrativeMediaLocalization]
+
+    private enum CodingKeys: String, CodingKey {
+        case people
+        case media
+    }
+
+    init(
+        people: [String: NarrativePersonLocalization] = [:],
+        media: [String: NarrativeMediaLocalization] = [:]
+    ) {
+        self.people = people
+        self.media = media
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        people = try container.decodeIfPresent([String: NarrativePersonLocalization].self, forKey: .people) ?? [:]
+        media = try container.decodeIfPresent([String: NarrativeMediaLocalization].self, forKey: .media) ?? [:]
+    }
 }
 
 private struct NarrativePersonLocalization: Codable {
@@ -60,12 +82,14 @@ private struct NarrativeMediaLocalization: Codable {
     var captionTranslations: [String: String]?
 }
 
-/// Reads approved English narrative translations from the private app data
-/// area. The Russian source remains in the archive JSON and is never replaced.
+/// Reads private narrative translations. Media captions are centrally keyed by
+/// media ID; the old person-scoped media entries are read once and flattened
+/// during load for backward compatibility with earlier private exports.
 final class NarrativeLocalizationStore {
     nonisolated(unsafe) static let shared = NarrativeLocalizationStore()
 
     private var people: [String: NarrativePersonLocalization] = [:]
+    private var mediaByID: [String: NarrativeMediaLocalization] = [:]
 
     private init() {
         reload()
@@ -90,11 +114,73 @@ final class NarrativeLocalizationStore {
                   let document = try? JSONDecoder().decode(NarrativeLocalizationDocument.self, from: data) else {
                 continue
             }
+            let hasLegacyMedia = document.media.isEmpty && document.people.values.contains { $0.media?.isEmpty == false }
             people = document.people
+            mediaByID = document.media
+            if mediaByID.isEmpty {
+                mediaByID = Self.flattenLegacyMedia(from: people)
+            }
+            // Do not keep the denormalized person-scoped media copy in memory;
+            // all subsequent writes use the centralized media dictionary.
+            for personID in people.keys {
+                people[personID]?.media = nil
+            }
+            if hasLegacyMedia {
+                try? persist(fileManager: fileManager)
+            }
             return
         }
 
         people = [:]
+        mediaByID = [:]
+    }
+
+    private static func flattenLegacyMedia(
+        from people: [String: NarrativePersonLocalization]
+    ) -> [String: NarrativeMediaLocalization] {
+        var result: [String: NarrativeMediaLocalization] = [:]
+        for person in people.values {
+            for (mediaID, legacyRecord) in person.media ?? [:] {
+                guard var record = result[mediaID] else {
+                    result[mediaID] = legacyRecord
+                    continue
+                }
+
+                if (record.caption ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let caption = legacyRecord.caption,
+                   !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    record.caption = caption
+                }
+                var translations = record.captionTranslations ?? [:]
+                for (language, value) in legacyRecord.captionTranslations ?? [:]
+                    where !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if translations[language]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                        translations[language] = value
+                    }
+                }
+                record.captionTranslations = translations.isEmpty ? nil : translations
+                result[mediaID] = record
+            }
+        }
+        return result
+    }
+
+    private func persist(fileManager: FileManager) throws {
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let destination = documentsURL
+            .appendingPathComponent("FamilyArchiveStore", isDirectory: true)
+            .appendingPathComponent("PrivateData", isDirectory: true)
+            .appendingPathComponent("narrative-translations.private.json")
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        var normalizedPeople = people
+        for personID in normalizedPeople.keys {
+            normalizedPeople[personID]?.media = nil
+        }
+        let document = NarrativeLocalizationDocument(people: normalizedPeople, media: mediaByID)
+        let data = try JSONEncoder().encode(document)
+        try data.write(to: destination, options: Data.WritingOptions.atomic)
     }
 
     func personSummary(_ personID: String, source: String) -> String {
@@ -125,13 +211,16 @@ final class NarrativeLocalizationStore {
         localized(source: source, translation: people[personID]?.events?[eventID]?.summary, pending: "English event description pending")
     }
 
-    func mediaTitle(_ personID: String, mediaID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.media?[mediaID]?.title, pending: "English title pending")
+    func mediaTitle(mediaID: String, source: String) -> String {
+        localized(source: source, translation: mediaByID[mediaID]?.title, pending: "English title pending")
     }
 
-    func mediaCaption(_ personID: String, mediaID: String, source: String) -> String {
-        let record = people[personID]?.media?[mediaID]
-        let language = ArchiveLanguage.current
+    func mediaCaption(
+        mediaID: String,
+        language: ArchiveLanguage = .current,
+        source: String
+    ) -> String {
+        let record = mediaByID[mediaID]
         let localeTranslation = record?.captionTranslations?[language.rawValue]
         if let localeTranslation, !localeTranslation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return localeTranslation
@@ -139,30 +228,66 @@ final class NarrativeLocalizationStore {
         return localized(source: source, translation: language == .english ? record?.caption : nil, pending: "English caption pending")
     }
 
-    func storedMediaCaption(_ personID: String, mediaID: String) -> String? {
-        people[personID]?.media?[mediaID]?.caption
+    func storedMediaCaption(mediaID: String) -> String? {
+        mediaByID[mediaID]?.caption
     }
 
-    /// Persists an English media caption in the private localization sidecar.
-    /// Russian/source captions stay in the person record and are handled by
-    /// FamilyRepository.updateMedia(_:for:).
+    /// Upgrades legacy visible `@Name` captions to ID-backed mention tokens.
+    /// The migration is intentionally private-store-only and is idempotent;
+    /// original archive files are never changed.
+    @discardableResult
+    func migrateMediaMentions(
+        people: [Person],
+        fileManager: FileManager = .default
+    ) -> Bool {
+        var preferredIDsByMediaID: [String: Set<Person.ID>] = [:]
+        for person in people {
+            for media in person.media {
+                preferredIDsByMediaID[media.id, default: []].formUnion(media.personIDs ?? [person.id])
+            }
+        }
+
+        var changed = false
+        for mediaID in mediaByID.keys {
+            guard var record = mediaByID[mediaID] else { continue }
+            let preferredIDs = preferredIDsByMediaID[mediaID] ?? []
+            if let caption = record.caption {
+                let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
+                if canonical != caption {
+                    record.caption = canonical
+                    changed = true
+                }
+            }
+            if var translations = record.captionTranslations {
+                for language in translations.keys {
+                    guard let caption = translations[language] else { continue }
+                    let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
+                    if canonical != caption {
+                        translations[language] = canonical
+                        changed = true
+                    }
+                }
+                record.captionTranslations = translations
+            }
+            mediaByID[mediaID] = record
+        }
+        if changed {
+            try? persist(fileManager: fileManager)
+        }
+        return changed
+    }
+
+    /// Persists one locale of a centralized media caption. The media record's
+    /// personIDs field supplies the profile references; no person-specific
+    /// caption copies are created.
     func updateMediaCaption(
-        personID: String,
         mediaID: String,
         caption: String,
         language: ArchiveLanguage = .english,
         fileManager: FileManager = .default
     ) throws {
         let value = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-        var person = people[personID] ?? NarrativePersonLocalization(
-            summary: nil,
-            biography: nil,
-            stories: nil,
-            events: nil,
-            media: nil
-        )
-        var media = person.media ?? [:]
-        var record = media[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil, captionTranslations: nil)
+        var record = mediaByID[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil, captionTranslations: nil)
         var translations = record.captionTranslations ?? [:]
         translations[language.rawValue] = value.isEmpty ? nil : value
         record.captionTranslations = translations.isEmpty ? nil : translations
@@ -171,19 +296,20 @@ final class NarrativeLocalizationStore {
         if language == .english {
             record.caption = value.isEmpty ? nil : value
         }
-        media[mediaID] = record
-        person.media = media
-        people[personID] = person
+        mediaByID[mediaID] = record
+        try persist(fileManager: fileManager)
+    }
 
-        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? fileManager.temporaryDirectory
-        let destination = documentsURL
-            .appendingPathComponent("FamilyArchiveStore", isDirectory: true)
-            .appendingPathComponent("PrivateData", isDirectory: true)
-            .appendingPathComponent("narrative-translations.private.json")
-        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(NarrativeLocalizationDocument(people: people))
-        try data.write(to: destination, options: Data.WritingOptions.atomic)
+    /// Removes every localized caption record for a media item. Media IDs are
+    /// shared across tagged profiles, so deleting the asset must also remove
+    /// its private localization entries; otherwise an export can retain
+    /// captions for a media file that no longer exists.
+    func removeMediaCaptions(
+        mediaID: String,
+        fileManager: FileManager = .default
+    ) throws {
+        guard mediaByID.removeValue(forKey: mediaID) != nil else { return }
+        try persist(fileManager: fileManager)
     }
 
     private func localized(source: String, translation: String?, pending: String) -> String {
@@ -943,11 +1069,165 @@ struct MediaReference: Codable, Identifiable, Hashable {
     var title: String
     var date: String?
     var path: String?
+    /// Captions use MediaMentionToken markers internally; the UI always
+    /// renders these as localized @Name labels.
     var caption: String?
     var tags: [String]?
     var collection: String?
     var isApproximate: Bool?
     var personIDs: [Person.ID]?
+}
+
+/// Stable, language-independent mention references used inside media
+/// captions. The marker is an implementation detail: it is converted to a
+/// visible `@Name` label whenever a caption is rendered or edited. Keeping the
+/// ID in the caption means a name edit or locale switch never breaks a link.
+enum MediaMentionToken {
+    static let prefix = "[[person:"
+    static let suffix = "]]"
+
+    static func token(for personID: Person.ID) -> String {
+        "\(prefix)\(personID)\(suffix)"
+    }
+
+    static func personIDs(in text: String) -> [Person.ID] {
+        var result: [Person.ID] = []
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex,
+              let start = text.range(of: prefix, range: searchStart..<text.endIndex),
+              let end = text.range(of: suffix, range: start.upperBound..<text.endIndex) {
+            let id = String(text[start.upperBound..<end.lowerBound])
+            if !id.isEmpty, !result.contains(id) {
+                result.append(id)
+            }
+            searchStart = end.upperBound
+        }
+        return result
+    }
+
+    /// Converts a stored tokenized caption to the current visible language.
+    /// Unknown IDs are retained as an explicit `@ID` rather than silently
+    /// dropping a reference from an imported private archive.
+    static func visibleText(
+        _ text: String,
+        people: [Person],
+        language: ArchiveLanguage? = nil
+    ) -> String {
+        var result = ""
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            guard let start = text.range(of: prefix, range: cursor..<text.endIndex),
+                  let end = text.range(of: suffix, range: start.upperBound..<text.endIndex) else {
+                result += text[cursor...]
+                break
+            }
+            result += text[cursor..<start.lowerBound]
+            let id = String(text[start.upperBound..<end.lowerBound])
+            if let person = people.first(where: { $0.id == id }) {
+                let fallback = person.sourceDisplayName
+                let name = NameLocalizationStore.shared.displayName(
+                    for: person.id,
+                    fallback: fallback,
+                    language: language
+                )
+                result += "@\(name)"
+            } else {
+                result += "@\(id)"
+            }
+            cursor = end.upperBound
+        }
+        return result
+    }
+
+    /// Converts human-readable `@Name` mentions to immutable ID tokens. Existing
+    /// tokens are preserved. For duplicate names, an explicitly selected ID is
+    /// preferred; an ambiguous unselected name is left readable for manual
+    /// review instead of being linked to the wrong person.
+    static func canonicalize(
+        _ text: String,
+        people: [Person],
+        preferredPersonIDs: Set<Person.ID> = []
+    ) -> String {
+        let candidates = people.flatMap { person in
+            let names = [
+                person.displayName,
+                person.sourceDisplayName,
+                person.originalDisplayName
+            ] + ArchiveLanguage.allCases.compactMap {
+                NameLocalizationStore.shared.localizedName(for: person.id, language: $0)
+            }
+            return names
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map { ($0, person.id) }
+        }
+        .sorted { $0.0.count > $1.0.count }
+
+        var result = ""
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            if let tokenStart = text.range(of: prefix, range: cursor..<text.endIndex),
+               tokenStart.lowerBound == cursor,
+               let tokenEnd = text.range(of: suffix, range: tokenStart.upperBound..<text.endIndex) {
+                result += text[tokenStart.lowerBound..<tokenEnd.upperBound]
+                cursor = tokenEnd.upperBound
+                continue
+            }
+
+            guard text[cursor] == "@" else {
+                result.append(text[cursor])
+                cursor = text.index(after: cursor)
+                continue
+            }
+
+            let queryStart = text.index(after: cursor)
+            let matches = candidates.filter { name, _ in
+                guard text[queryStart...].hasPrefix(name) else { return false }
+                let end = text.index(queryStart, offsetBy: name.count)
+                guard end < text.endIndex else { return true }
+                let next = text[end]
+                return !(next.isLetter || next.isNumber || next == "_")
+            }
+            let matchingIDs = Array(Set(matches.map(\.1))).sorted()
+            let selectedMatches = matchingIDs.filter { preferredPersonIDs.contains($0) }
+            let chosenID: Person.ID?
+            if selectedMatches.count == 1 {
+                chosenID = selectedMatches[0]
+            } else if matchingIDs.count == 1 {
+                chosenID = matchingIDs[0]
+            } else {
+                chosenID = nil
+            }
+
+            guard let chosenID, let matchedName = matches.first(where: { $0.1 == chosenID })?.0 else {
+                result.append(text[cursor])
+                cursor = text.index(after: cursor)
+                continue
+            }
+            result += token(for: chosenID)
+            cursor = text.index(queryStart, offsetBy: matchedName.count)
+        }
+        return result
+    }
+
+    /// Protects ID markers while sending caption prose through translation.
+    /// Translation services should never be allowed to alter a person ID.
+    static func protectedForTranslation(_ text: String) -> (text: String, tokens: [String]) {
+        let tokens = personIDs(in: text).map(token)
+        var protected = text
+        for (index, token) in tokens.enumerated() {
+            protected = protected.replacingOccurrences(of: token, with: "FAMILYMENTIONTOKEN\(index)X")
+        }
+        return (protected, tokens)
+    }
+
+    static func restoreAfterTranslation(_ text: String, tokens: [String]) -> String {
+        var restored = text
+        for (index, token) in tokens.enumerated() {
+            restored = restored.replacingOccurrences(of: "FAMILYMENTIONTOKEN\(index)X", with: token)
+        }
+        return restored
+    }
 }
 
 enum MediaKind: String, Codable, Hashable {

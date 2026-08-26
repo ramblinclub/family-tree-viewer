@@ -45,7 +45,7 @@ struct PersonDetailView: View {
                                 .padding(.bottom, 32)
                         } header: {
                             tabBar
-                                .background(Color(uiColor: .systemBackground))
+                                .background(ArchiveTheme.background)
                         }
                     }
                 }
@@ -64,13 +64,17 @@ struct PersonDetailView: View {
             }
         }
         .foregroundStyle(ArchiveTheme.ink)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingAllMedia) {
             PersonMediaGalleryView(person: person, items: browsableMedia, repository: repository)
         }
         .sheet(item: $selectedMedia) { item in
-            PersonMediaPagerView(personID: person.id, items: browsableMedia, initialID: item.id, repository: repository)
+            MemoriesPagerView(
+                items: browsableMedia.map { MemoryItem(person: person, media: $0) },
+                initialID: "\(person.id)-\(item.id)",
+                repository: repository
+            )
         }
         .sheet(isPresented: $showingEditor) {
             ProfileEditorView(person: person, repository: repository)
@@ -117,7 +121,7 @@ struct PersonDetailView: View {
             }
         }
         .frame(width: 188, alignment: .leading)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
         .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
         .shadow(color: ArchiveTheme.ink.opacity(0.14), radius: 8, y: 3)
     }
@@ -375,15 +379,15 @@ struct PersonDetailView: View {
 
     @ViewBuilder
     private var profileMediaPreview: some View {
-        let previewMedia = person.media.filter { $0.path != profileMediaPath }
+        // Media is shared by person ID, not by whichever person's JSON file
+        // happens to own the record. Use the repository lookup here so a
+        // newly selected @mention appears on the target profile immediately.
+        let previewMedia = repository.media(for: person.id).filter { $0.path != profileMediaPath }
 
         if !previewMedia.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(ArchiveCopy.text(english: "MEDIA", russian: "МЕДИА"))
-                        .font(ArchiveTypography.sectionTitle)
-                        .tracking(1.2)
-                        .foregroundStyle(ArchiveTheme.ink)
+                    ArchiveSectionHeading(ArchiveCopy.text(english: "MEDIA", russian: "МЕДИА"))
 
                     Spacer()
 
@@ -421,7 +425,7 @@ struct PersonDetailView: View {
 
     private var profileMediaItem: MediaReference? {
         guard let path = profileMediaPath else { return nil }
-        if let existing = person.media.first(where: { $0.path == path }) {
+        if let existing = repository.media(for: person.id).first(where: { $0.path == path }) {
             return existing
         }
         return MediaReference(
@@ -439,11 +443,12 @@ struct PersonDetailView: View {
     }
 
     private var browsableMedia: [MediaReference] {
+        let relatedMedia = repository.media(for: person.id)
         guard let profileMediaItem,
-              !person.media.contains(where: { $0.path == profileMediaItem.path }) else {
-            return person.media
+              !relatedMedia.contains(where: { $0.path == profileMediaItem.path }) else {
+            return relatedMedia
         }
-        return [profileMediaItem] + person.media
+        return [profileMediaItem] + relatedMedia
     }
 
     @ViewBuilder
@@ -757,10 +762,7 @@ struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(ArchiveCopy.text(english: "LIFE EVENTS & RECORDS", russian: "СОБЫТИЯ И ЗАПИСИ"))
-                        .font(ArchiveTypography.sectionTitle)
-                        .tracking(1.2)
-                        .foregroundStyle(ArchiveTheme.ink)
+                    ArchiveSectionHeading(ArchiveCopy.text(english: "LIFE EVENTS & RECORDS", russian: "СОБЫТИЯ И ЗАПИСИ"))
                     Spacer()
                     if repository.canEdit {
                         Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingEventsManager = true }
@@ -796,10 +798,7 @@ struct PersonDetailView: View {
     private var storiesContent: some View {
         VStack(alignment: .leading, spacing: 28) {
             HStack(alignment: .firstTextBaseline) {
-                Text(ArchiveCopy.text(english: "STORIES", russian: "ИСТОРИИ"))
-                    .font(ArchiveTypography.sectionTitle)
-                    .tracking(1.2)
-                    .foregroundStyle(ArchiveTheme.ink)
+                ArchiveSectionHeading(ArchiveCopy.text(english: "STORIES", russian: "ИСТОРИИ"))
                 Spacer()
                 if repository.canEdit {
                     Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingStoriesManager = true }
@@ -812,10 +811,9 @@ struct PersonDetailView: View {
             if !person.structuredStories.isEmpty {
                 ForEach(person.structuredStories) { chapter in
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(NarrativeLocalizationStore.shared.storyTitle(person.id, storyID: chapter.id, source: chapter.title).uppercased())
-                            .font(ArchiveTypography.sectionTitle)
-                            .tracking(1.2)
-                            .foregroundStyle(ArchiveTheme.ink)
+                        ArchiveSectionHeading(
+                            NarrativeLocalizationStore.shared.storyTitle(person.id, storyID: chapter.id, source: chapter.title)
+                        )
 
                         if let dateRange = chapter.dateRange, let summary = chapter.summary {
                             StoryDatedContentBlock(
@@ -854,7 +852,7 @@ struct PersonDetailView: View {
                 mediaStats
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 1) {
                     ForEach(person.media) { item in
-                        MediaTile(item: item)
+                        MediaTile(item: item, people: repository.people)
                     }
                 }
                 .padding(.top, 10)
@@ -1071,14 +1069,29 @@ struct PersonDetailView: View {
     @ViewBuilder
     private func detailSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(ArchiveTypography.sectionTitle)
-                .tracking(1.2)
-                .foregroundStyle(ArchiveTheme.ink)
+            ArchiveSectionHeading(title)
 
             VStack(alignment: .leading, spacing: 0, content: content)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Shared visual treatment for section headings inside a person profile.
+/// Keeping the casing, tracking, font, and ink color in one component prevents
+/// the Overview relationship heading from drifting from the other tabs.
+private struct ArchiveSectionHeading: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(ArchiveTypography.sectionTitle)
+            .tracking(1.2)
+            .foregroundStyle(ArchiveTheme.ink)
     }
 }
 
@@ -1302,7 +1315,15 @@ private struct ProfilePhotoView: View {
     }
 
     private var loadedImage: UIImage? {
-        let path = repository?.photoPath(for: person.id) ?? person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        let path: String?
+        if let repository {
+            // The repository resolver enforces that the path belongs to this
+            // person's tagged media collection. Do not fall back to a stale
+            // profileImagePath when that check rejects it.
+            path = repository.photoPath(for: person.id)
+        } else {
+            path = person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        }
         guard let path else { return nil }
         return ArchiveFileResolver.image(for: path)
     }
@@ -1387,10 +1408,7 @@ private struct ConnectionPathPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(ArchiveCopy.text(english: "YOUR RELATIONSHIP", russian: "ВАША СВЯЗЬ"))
-                    .font(ArchiveTypography.sectionTitle)
-                    .tracking(1.2)
-                    .foregroundStyle(ArchiveTheme.ink)
+                ArchiveSectionHeading(ArchiveCopy.text(english: "YOUR RELATIONSHIP", russian: "ВАША СВЯЗЬ"))
 
                 Text(preview.relationshipSummary)
                     .font(ArchiveTypography.paragraph)
@@ -1665,7 +1683,11 @@ private struct PersonMediaGalleryView: View {
                     spacing: 14
                 ) {
                     ForEach(items) { item in
-                        PersonMediaGalleryTile(personID: person.id, item: item)
+                        PersonMediaGalleryTile(
+                            personID: person.id,
+                            item: item,
+                            people: repository?.people ?? [person]
+                        )
                             .contentShape(Rectangle())
                             .onTapGesture {
                             if selectionMode {
@@ -1681,12 +1703,20 @@ private struct PersonMediaGalleryView: View {
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
         }
         .foregroundStyle(ArchiveTheme.ink)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
         .sheet(item: $selectedMedia) { item in
-            PersonMediaPagerView(personID: person.id, items: items, initialID: item.id, repository: repository)
+            if let repository {
+                MemoriesPagerView(
+                    items: items.map { MemoryItem(person: person, media: $0) },
+                    initialID: "\(person.id)-\(item.id)",
+                    repository: repository
+                )
+            } else {
+                PersonMediaPagerView(personID: person.id, items: items, initialID: item.id, repository: repository)
+            }
         }
     }
 
@@ -1732,15 +1762,19 @@ private struct PersonMediaGalleryView: View {
 private struct PersonMediaGalleryTile: View {
     let personID: Person.ID
     let item: MediaReference
+    let people: [Person]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             PersonMediaVisual(item: item)
 
             Group {
-                let caption = NarrativeLocalizationStore.shared.mediaCaption(personID, mediaID: item.id, source: item.caption ?? "")
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: item.id, source: item.caption ?? "")
                 if !caption.isEmpty {
-                    Text(captionWithDate(caption))
+                    Text(MediaMentionToken.visibleText(
+                        captionWithDate(caption),
+                        people: people
+                    ))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(2)
@@ -1821,6 +1855,8 @@ private struct PersonMediaPagerView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndex: Int
+    @State private var showingMediaEditor = false
+    @State private var showingRemoveConfirmation = false
 
     init(personID: Person.ID, items: [MediaReference], initialID: String, repository: FamilyRepository? = nil) {
         self.personID = personID
@@ -1844,6 +1880,12 @@ private struct PersonMediaPagerView: View {
         return min(max(selectedIndex, 1), items.count)
     }
 
+    private var currentItem: MediaReference? {
+        guard !items.isEmpty else { return nil }
+        let pageIndex = min(max(selectedIndex, 0), pageItems.count - 1)
+        return pageItems[pageIndex]
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             mediaTopBar
@@ -1854,7 +1896,8 @@ private struct PersonMediaPagerView: View {
                         PersonMediaDetailContent(
                             personID: personID,
                             item: item,
-                            isActive: index == selectedIndex
+                            isActive: index == selectedIndex,
+                            repository: repository
                         )
                             .tag(index)
                     }
@@ -1920,12 +1963,34 @@ private struct PersonMediaPagerView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
-                .background(Color(uiColor: .systemBackground))
+                .background(ArchiveTheme.background)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
         }
         .foregroundStyle(ArchiveTheme.ink)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
+        .sheet(isPresented: $showingMediaEditor) {
+            if let currentItem, let repository {
+                MediaMetadataEditor(item: currentItem, ownerID: personID, repository: repository)
+            }
+        }
+        .confirmationDialog(
+            ArchiveCopy.text(english: "Remove this image?", russian: "Удалить это изображение?"),
+            isPresented: $showingRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"), role: .destructive) {
+                guard let currentItem, let repository, repository.canEdit else { return }
+                repository.removeMedia(currentItem, from: personID)
+                dismiss()
+            }
+            Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена"), role: .cancel) { }
+        } message: {
+            Text(ArchiveCopy.text(
+                english: "This permanently removes the image from the app’s private normalized store and linked profiles. The original archive is not changed.",
+                russian: "Изображение будет навсегда удалено из приватного нормализованного хранилища приложения и связанных профилей. Исходный архив не изменится."
+            ))
+        }
     }
 
     private var mediaTopBar: some View {
@@ -1951,8 +2016,39 @@ private struct PersonMediaPagerView: View {
 
             Spacer()
 
-            Color.clear
-                .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+            if let repository, repository.canEdit {
+                Menu {
+                    Button {
+                        showingMediaEditor = true
+                    } label: {
+                        Label(
+                            ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"),
+                            systemImage: "pencil"
+                        )
+                    }
+
+                    Button(role: .destructive) {
+                        showingRemoveConfirmation = true
+                    } label: {
+                        Label(
+                            ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"),
+                            systemImage: "trash"
+                        )
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(ArchiveTypography.icon)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                        .background(ArchiveTheme.actionBackground)
+                        .clipShape(Circle())
+                }
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel(ArchiveCopy.text(english: "Media actions", russian: "Действия с медиа"))
+            } else {
+                Color.clear
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
@@ -1964,11 +2060,16 @@ private struct PersonMediaDetailContent: View {
     let personID: Person.ID
     let item: MediaReference
     let isActive: Bool
+    let repository: FamilyRepository?
 
-    init(personID: Person.ID, item: MediaReference, isActive: Bool = true) {
+    @State private var showingMediaEditor = false
+    @State private var showingRemoveConfirmation = false
+
+    init(personID: Person.ID, item: MediaReference, isActive: Bool = true, repository: FamilyRepository? = nil) {
         self.personID = personID
         self.item = item
         self.isActive = isActive
+        self.repository = repository
     }
 
     var body: some View {
@@ -1976,9 +2077,12 @@ private struct PersonMediaDetailContent: View {
             VStack(alignment: .leading, spacing: 16) {
                 PersonMediaLargeVisual(item: item, isActive: isActive)
 
-                let caption = NarrativeLocalizationStore.shared.mediaCaption(personID, mediaID: item.id, source: item.caption ?? "")
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: item.id, source: item.caption ?? "")
                 if !caption.isEmpty {
-                    Text(mediaCaptionWithDate(caption, date: item.date))
+                    Text(MediaMentionToken.visibleText(
+                        mediaCaptionWithDate(caption, date: item.date),
+                        people: repository?.people ?? []
+                    ))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1988,12 +2092,58 @@ private struct PersonMediaDetailContent: View {
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
 
+                if let repository, repository.canEdit {
+                    HStack(spacing: 18) {
+                        Button {
+                            showingMediaEditor = true
+                        } label: {
+                            Text(ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"))
+                                .font(ArchiveTypography.action)
+                                .foregroundStyle(ArchiveTheme.action)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(role: .destructive) {
+                            showingRemoveConfirmation = true
+                        } label: {
+                            Label(
+                                ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"),
+                                systemImage: "trash"
+                            )
+                            .font(ArchiveTypography.action)
+                            .foregroundStyle(ArchiveTheme.action)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
             }
             .padding(.horizontal, ArchiveLayout.pageHorizontal)
             .padding(.top, ArchiveLayout.pageTop)
             .padding(.bottom, ArchiveLayout.pageBottom)
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
+        .sheet(isPresented: $showingMediaEditor) {
+            if let repository {
+                MediaMetadataEditor(item: item, ownerID: personID, repository: repository)
+            }
+        }
+        .confirmationDialog(
+            ArchiveCopy.text(english: "Remove this image?", russian: "Удалить это изображение?"),
+            isPresented: $showingRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"), role: .destructive) {
+                guard let repository, repository.canEdit else { return }
+                repository.removeMedia(item, from: personID)
+            }
+            Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена"), role: .cancel) { }
+        } message: {
+            Text(ArchiveCopy.text(
+                english: "This permanently removes the image from the app’s private normalized store and linked profiles. The original archive is not changed.",
+                russian: "Изображение будет навсегда удалено из приватного нормализованного хранилища приложения и связанных профилей. Исходный архив не изменится."
+            ))
+        }
     }
 }
 
@@ -2066,6 +2216,7 @@ private struct GalleryMetadataRow: View {
 
 private struct MediaTile: View {
     let item: MediaReference
+    let people: [Person]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2097,7 +2248,7 @@ private struct MediaTile: View {
             }
 
             if let caption = item.caption, !caption.isEmpty {
-                Text(caption)
+                Text(MediaMentionToken.visibleText(caption, people: people))
                     .font(ArchiveTypography.metadata)
                     .foregroundStyle(ArchiveTheme.metadata)
                     .lineLimit(2)
@@ -2261,7 +2412,7 @@ private struct ProfileEditorView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .toolbar(.hidden, for: .navigationBar)
             .alert(copy("Language check", "Проверка языка"), isPresented: Binding(
                 get: { languageError != nil },
@@ -2345,7 +2496,7 @@ private struct ProfileEditorView: View {
         .padding(.horizontal, ArchiveLayout.pageHorizontal)
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
     }
 
     private func switchEditorLanguage() {
@@ -2761,7 +2912,7 @@ private struct ProfilePhotoAdjustmentScreen: View {
                 }
                 .buttonStyle(.plain)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .navigationTitle(ArchiveCopy.text(english: "Adjust image", russian: "Настроить изображение"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2810,23 +2961,12 @@ private struct ProfilePhotoSelectionView: View {
         _offsetY = State(initialValue: person.profileImageOffsetY ?? 0)
 
         let currentPath = person.profileImagePath?.trimmed ?? ""
-        if !currentPath.isEmpty {
-            let existing = repository.media(for: person.id).first {
-                $0.kind == .photo && $0.path?.trimmed == currentPath
-            }
-            _selectedPhotoForAdjustment = State(initialValue: existing ?? MediaReference(
-                id: "profile-\(person.id)",
-                kind: .photo,
-                title: "",
-                date: nil,
-                path: currentPath,
-                caption: nil,
-                tags: nil,
-                collection: nil,
-                isApproximate: nil,
-                personIDs: [person.id]
-            ))
-            _returnToAdjustmentPhoto = State(initialValue: _selectedPhotoForAdjustment.wrappedValue)
+        let existing = repository.media(for: person.id).first {
+            $0.kind == .photo && $0.path?.trimmed == currentPath
+        }
+        if !currentPath.isEmpty, let existing {
+            _selectedPhotoForAdjustment = State(initialValue: existing)
+            _returnToAdjustmentPhoto = State(initialValue: existing)
         } else {
             // If there is exactly one available photo, there is no useful
             // choice to make: open it directly in the adjustment screen.
@@ -2905,7 +3045,10 @@ private struct ProfilePhotoSelectionView: View {
         let path = selectedPath.trimmed.isEmpty
             ? (selectedPhotoForAdjustment?.path?.trimmed ?? person.profileImagePath?.trimmed ?? "")
             : selectedPath.trimmed
-        guard !path.isEmpty else { return }
+        guard !path.isEmpty,
+              repository.media(for: person.id).contains(where: { $0.kind == .photo && $0.path?.trimmed == path }) else {
+            return
+        }
 
         var updated = person
         updated.profileImagePath = path
@@ -3304,7 +3447,9 @@ private struct PersonMediaEditorView: View {
                                     .foregroundStyle(ArchiveTheme.action)
                                     .frame(width: 24)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.caption?.trimmed.isEmpty == false ? item.caption! : item.kind.rawValue.capitalized)
+                                    Text(item.caption?.trimmed.isEmpty == false
+                                        ? MediaMentionToken.visibleText(item.caption!, people: repository.people)
+                                        : item.kind.rawValue.capitalized)
                                         .foregroundStyle(ArchiveTheme.ink)
                                     if let date = item.date, !date.isEmpty {
                                         Text(ArchiveDateFormatter.displayRange(date) ?? date)
@@ -3365,17 +3510,19 @@ struct MediaMetadataEditor: View {
         _repository = ObservedObject(wrappedValue: repository)
         let sourceCaption = item.caption ?? ""
         let englishCaption = NarrativeLocalizationStore.shared.storedMediaCaption(
-            ownerID,
             mediaID: item.id
         ) ?? (sourceCaption.range(of: "[А-Яа-яЁё]", options: .regularExpression) == nil ? sourceCaption : "")
-        _caption = State(initialValue: repository.appLanguage == .english ? englishCaption : sourceCaption)
+        let localizedCaption = repository.appLanguage == .english ? englishCaption : sourceCaption
+        _caption = State(initialValue: MediaMentionToken.visibleText(
+            localizedCaption,
+            people: repository.people,
+            language: repository.appLanguage
+        ))
         _date = State(initialValue: item.date ?? "")
         _relatedIDs = State(initialValue: Set(item.personIDs ?? [ownerID]))
         _languageError = State(initialValue: nil)
         _saveError = State(initialValue: nil)
     }
-
-    private var isEnglish: Bool { repository.appLanguage == .english }
 
     private var captionLabel: String {
         ArchiveCopy.text(english: "Caption", russian: "Подпись")
@@ -3436,31 +3583,39 @@ struct MediaMetadataEditor: View {
                             languageError = issue
                             return
                         }
+                        let canonicalCaption = MediaMentionToken.canonicalize(
+                            caption,
+                            people: repository.people,
+                            preferredPersonIDs: relatedIDs.union([ownerID])
+                        )
                         var updated = item
                         updated.date = date.trimmed.isEmpty ? nil : date.trimmed
                         updated.personIDs = Array(relatedIDs.union([ownerID])).sorted()
 
-                        if isEnglish {
-                            // English captions live in the private localization
-                            // sidecar. Write them for every tagged profile so
-                            // a shared photograph never falls back to “pending”.
-                            do {
-                                for personID in updated.personIDs ?? [ownerID] {
-                                    try NarrativeLocalizationStore.shared.updateMediaCaption(
-                                        personID: personID,
-                                        mediaID: item.id,
-                                        caption: caption,
-                                        language: .english
-                                    )
-                                }
-                            } catch {
-                                saveError = error.localizedDescription
-                                return
-                            }
+                        // Captions are centralized by media ID. Persist the
+                        // edited source locale once, clear the old target
+                        // translation immediately, and let the translator
+                        // fill that target locale below.
+                        do {
+                            let sourceLanguage = repository.appLanguage
+                            let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
+                            try NarrativeLocalizationStore.shared.updateMediaCaption(
+                                mediaID: item.id,
+                                caption: canonicalCaption,
+                                language: sourceLanguage
+                            )
+                            try NarrativeLocalizationStore.shared.updateMediaCaption(
+                                mediaID: item.id,
+                                caption: "",
+                                language: targetLanguage
+                            )
+                        } catch {
+                            saveError = error.localizedDescription
+                            return
                         }
                         // Keep the entered text on the media record as a
                         // durable fallback, regardless of the current locale.
-                        updated.caption = caption.trimmed.isEmpty ? nil : caption.trimmed
+                        updated.caption = canonicalCaption.trimmed.isEmpty ? nil : canonicalCaption.trimmed
 
                         repository.updateMedia(updated, for: ownerID)
                         NarrativeLocalizationStore.shared.reload()
@@ -3468,7 +3623,7 @@ struct MediaMetadataEditor: View {
                         if #available(iOS 26.0, *) {
                             Task { @MainActor in
                                 await repository.autoTranslateMediaCaption(
-                                    caption,
+                                    canonicalCaption,
                                     mediaID: item.id,
                                     personIDs: updated.personIDs ?? [ownerID],
                                     from: sourceLanguage

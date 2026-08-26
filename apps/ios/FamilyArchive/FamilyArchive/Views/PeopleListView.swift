@@ -150,6 +150,12 @@ private enum ConnectionScope: String, CaseIterable, Identifiable {
     }
 }
 
+private enum DateFilterSelection: Equatable {
+    case any
+    case unknown
+    case value(Int)
+}
+
 struct PeopleListView: View {
     @ObservedObject var repository: FamilyRepository
     let initialPersonID: Person.ID?
@@ -158,7 +164,11 @@ struct PeopleListView: View {
     @State private var selectedFamilyNameKey: String?
     @State private var storiesOnly = false
     @State private var selectedConnectionScope: ConnectionScope = .all
+    @State private var selectedBirthMonth: DateFilterSelection = .any
+    @State private var selectedDeathMonth: DateFilterSelection = .any
+    @State private var selectedCentury: DateFilterSelection = .any
     @State private var navigationPath = NavigationPath()
+    @State private var showingFilters = false
 
     private var connectionDistances: [Person.ID: Int] {
         repository.connectionDistances(from: repository.accountHolderID)
@@ -190,13 +200,19 @@ struct PeopleListView: View {
         let distances = connectionDistances
 
         return people.filter { person in
+            let searchableNames = [
+                person.displayName,
+                person.originalDisplayName,
+                person.sourceDisplayName
+            ] + person.alternateNames
             let matchesSearch = query.isEmpty ||
-                person.displayName.localizedCaseInsensitiveContains(query) ||
-                person.alternateNames.contains { $0.localizedCaseInsensitiveContains(query) } ||
-                person.localizedSummary.localizedCaseInsensitiveContains(query)
+                searchableNames.contains { $0.localizedCaseInsensitiveContains(query) }
             let matchesFamilyName = selectedFamilyNameKey == nil ||
                 normalizedFamilyNameKey(person.familyName) == selectedFamilyNameKey
             let matchesStories = !storiesOnly || person.hasStories
+            let matchesBirthMonth = matchesDateFilter(selectedBirthMonth, value: dateMonth(for: person.birthFact?.value))
+            let matchesDeathMonth = matchesDateFilter(selectedDeathMonth, value: dateMonth(for: person.deathFact?.value))
+            let matchesLivedCentury = matchesCenturyFilter(selectedCentury, person: person)
             let matchesConnection: Bool
             if selectedConnectionScope == .all {
                 matchesConnection = true
@@ -208,8 +224,95 @@ struct PeopleListView: View {
             } else {
                 matchesConnection = false
             }
-            return matchesSearch && matchesFamilyName && matchesStories && matchesConnection
+            return matchesSearch && matchesFamilyName && matchesStories &&
+                matchesBirthMonth && matchesDeathMonth && matchesLivedCentury && matchesConnection
         }
+    }
+
+    private var activeFilterCount: Int {
+        [selectedFamilyNameKey != nil,
+         storiesOnly,
+         selectedBirthMonth != .any,
+         selectedDeathMonth != .any,
+         selectedCentury != .any,
+         selectedConnectionScope != .all]
+            .filter { $0 }
+            .count
+    }
+
+    private var availableBirthCenturies: [Int] {
+        Set(repository.people.flatMap { livedInCenturies(for: $0) }).sorted()
+    }
+
+    private func matchesDateFilter(_ selection: DateFilterSelection, value: Int?) -> Bool {
+        switch selection {
+        case .any: true
+        case .unknown: value == nil
+        case .value(let expected): value == expected
+        }
+    }
+
+    private func matchesCenturyFilter(_ selection: DateFilterSelection, person: Person) -> Bool {
+        switch selection {
+        case .any: true
+        case .unknown: livedInCenturies(for: person).isEmpty
+        case .value(let expected): livedInCenturies(for: person).contains(expected)
+        }
+    }
+
+    private func livedInCenturies(for person: Person) -> Set<Int> {
+        let values = [person.birthFact?.value, person.deathFact?.value, person.lifespan].compactMap { $0 }
+        return Set(values.flatMap(years(in:)).map { (($0 - 1) / 100) + 1 })
+    }
+
+    private func years(in value: String) -> [Int] {
+        let parts = value.split(whereSeparator: { !$0.isNumber })
+        return parts.compactMap { Int($0) }.filter { (1000...2100).contains($0) }
+    }
+
+    private func dateMonth(for value: String?) -> Int? {
+        guard let value, !value.isEmpty else { return nil }
+        let normalized = value.lowercased()
+
+        // The normalized archive commonly stores ISO dates (yyyy-mm-dd),
+        // while the display formatter turns them into a localized date. Read
+        // that source form directly so month filters work regardless of the
+        // currently selected app language.
+        let isoPattern = #"\b\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?\b"#
+        if let range = normalized.range(of: isoPattern, options: .regularExpression) {
+            let components = normalized[range].split { $0 == "." || $0 == "/" || $0 == "-" }
+            if components.count >= 2,
+               let year = Int(components[0]),
+               (1000...2100).contains(year),
+               let month = Int(components[1]),
+               (1...12).contains(month) {
+                return month
+            }
+        }
+
+        let monthStems: [(Int, [String])] = [
+            (1, ["january", "jan", "январ"]), (2, ["february", "feb", "феврал"]),
+            (3, ["march", "mar", "март"]), (4, ["april", "apr", "апрел"]),
+            (5, ["may", "май"]), (6, ["june", "jun", "июн"]),
+            (7, ["july", "jul", "июл"]), (8, ["august", "aug", "август"]),
+            (9, ["september", "sep", "sept", "сентябр"]), (10, ["october", "oct", "октябр"]),
+            (11, ["november", "nov", "ноябр"]), (12, ["december", "dec", "декабр"])
+        ]
+        if let match = monthStems.first(where: { stems in
+            stems.1.contains { normalized.contains($0) }
+        }) {
+            return match.0
+        }
+
+        // Numeric dates are primarily imported in day-month-year form.
+        let pattern = #"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b"#
+        guard let range = normalized.range(of: pattern, options: .regularExpression) else { return nil }
+        let components = normalized[range].split { $0 == "." || $0 == "/" || $0 == "-" }
+        guard components.count >= 3,
+              let first = Int(components[0]), let second = Int(components[1]) else { return nil }
+        if first > 12 { return second }
+        if second > 12 { return first }
+        return second
     }
 
     private var familyNameOptions: [FamilyNameFilterOption] {
@@ -298,6 +401,11 @@ struct PeopleListView: View {
                     filterControls
                         .padding(.bottom, 16)
 
+                    if activeFilterCount > 0 {
+                        activeFilterBubbles
+                            .padding(.bottom, 14)
+                    }
+
                     if filteredPeople.isEmpty {
                         ContentUnavailableView(
                             searchText.isEmpty ? ArchiveCopy.text(english: "No matching people", russian: "Люди не найдены") : ArchiveCopy.text(english: "No results", russian: "Нет результатов"),
@@ -325,7 +433,7 @@ struct PeopleListView: View {
             }
             .scrollIndicators(.hidden)
             .padding(.horizontal, ArchiveLayout.pageHorizontal)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: Person.ID.self) { personID in
@@ -336,6 +444,27 @@ struct PeopleListView: View {
                         "Person not found",
                         systemImage: "person.crop.circle.badge.questionmark"
                     )
+                }
+            }
+            .sheet(isPresented: $showingFilters) {
+                FamilyFilterSheet(
+                    repository: repository,
+                    familyNameOptions: familyNameOptions,
+                    connectionScopeCounts: connectionScopeCounts,
+                    availableCenturies: availableBirthCenturies,
+                    familyNameKey: selectedFamilyNameKey,
+                    storiesOnly: storiesOnly,
+                    connectionScope: selectedConnectionScope,
+                    birthMonth: selectedBirthMonth,
+                    deathMonth: selectedDeathMonth,
+                    century: selectedCentury
+                ) { familyNameKey, storiesOnly, connectionScope, birthMonth, deathMonth, century in
+                    selectedFamilyNameKey = familyNameKey
+                    self.storiesOnly = storiesOnly
+                    selectedConnectionScope = connectionScope
+                    selectedBirthMonth = birthMonth
+                    selectedDeathMonth = deathMonth
+                    selectedCentury = century
                 }
             }
             .onAppear {
@@ -352,65 +481,94 @@ struct PeopleListView: View {
     }
 
     private var filterControls: some View {
+        Button {
+            showingFilters = true
+        } label: {
+            filterControlLabel(
+                title: activeFilterCount == 0
+                    ? ArchiveCopy.text(english: "Filters", russian: "Фильтры")
+                    : ArchiveCopy.text(english: "Filters · \(activeFilterCount)", russian: "Фильтры · \(activeFilterCount)"),
+                systemImage: "line.3.horizontal.decrease.circle",
+                isSelected: activeFilterCount > 0
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(ArchiveCopy.text(english: "Open family filters", russian: "Открыть фильтры семьи"))
+    }
+
+    private func monthName(_ month: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: repository.appLanguage == .russian ? "ru_RU" : "en_US_POSIX")
+        formatter.dateFormat = "LLLL"
+        return formatter.string(from: Calendar(identifier: .gregorian).date(from: DateComponents(year: 2000, month: month, day: 1)) ?? Date())
+    }
+
+    private func monthFilterLabel(_ selection: DateFilterSelection, englishPrefix: String, russianPrefix: String) -> String {
+        switch selection {
+        case .any:
+            return ArchiveCopy.text(english: "\(englishPrefix) month", russian: "Месяц: \(russianPrefix.lowercased())")
+        case .unknown:
+            return ArchiveCopy.text(english: "\(englishPrefix): unknown month", russian: "\(russianPrefix): месяц неизвестен")
+        case .value(let month):
+            return ArchiveCopy.text(english: "\(englishPrefix): \(monthName(month))", russian: "\(russianPrefix): \(monthName(month))")
+        }
+    }
+
+    private var centuryFilterLabel: String {
+        switch selectedCentury {
+        case .any:
+            ArchiveCopy.text(english: "Lived in century", russian: "Жил в веке")
+        case .unknown:
+            ArchiveCopy.text(english: "Lived in: unknown century", russian: "Жил в: век неизвестен")
+        case .value(let century):
+            ArchiveCopy.text(english: "Lived in: \(centuryName(century))", russian: "Жил в: \(centuryName(century))")
+        }
+    }
+
+    private var activeFilterBubbles: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-            Menu {
-                Button {
-                    selectedFamilyNameKey = nil
-                } label: {
-                    filterMenuLabel(ArchiveCopy.text(english: "All last names", russian: "Все фамилии"), isSelected: selectedFamilyNameKey == nil)
+                if let selectedFamilyNameKey,
+                   let name = familyNameOptions.first(where: { $0.id == selectedFamilyNameKey })?.displayName {
+                    FilterBubble(title: name) { self.selectedFamilyNameKey = nil }
                 }
-
-                Divider()
-
-                ForEach(familyNameOptions) { option in
-                    Button {
-                        selectedFamilyNameKey = option.id
-                    } label: {
-                        filterMenuLabel(option.displayName, isSelected: selectedFamilyNameKey == option.id)
+                if storiesOnly {
+                    FilterBubble(title: ArchiveCopy.text(english: "Has stories", russian: "Есть истории")) {
+                        storiesOnly = false
                     }
                 }
-            } label: {
-                filterControlLabel(
-                    title: familyNameOptions.first(where: { $0.id == selectedFamilyNameKey })?.displayName ?? ArchiveCopy.text(english: "Last name", russian: "Фамилия"),
-                    systemImage: "textformat"
-                )
-            }
-            .accessibilityLabel(ArchiveCopy.text(english: "Filter by last name", russian: "Фильтр по фамилии"))
-
-            Button {
-                storiesOnly.toggle()
-            } label: {
-                filterControlLabel(
-                    title: ArchiveCopy.text(english: "Stories", russian: "Истории"),
-                    systemImage: storiesOnly ? "book.pages.fill" : "book.pages",
-                    isSelected: storiesOnly
-                )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(storiesOnly ? ArchiveCopy.text(english: "Showing people with stories", russian: "Показаны люди с историями") : ArchiveCopy.text(english: "Show only people with stories", russian: "Показать только людей с историями"))
-
-            Menu {
-                ForEach(ConnectionScope.allCases) { scope in
-                    Button {
-                        selectedConnectionScope = scope
-                    } label: {
-                        filterMenuLabel(
-                            scope.label(count: connectionScopeCounts[scope] ?? 0),
-                            isSelected: selectedConnectionScope == scope
-                        )
+                if selectedConnectionScope != .all {
+                    FilterBubble(title: connectionFilterTitle) { selectedConnectionScope = .all }
+                }
+                if selectedBirthMonth != .any {
+                    FilterBubble(title: monthFilterLabel(selectedBirthMonth, englishPrefix: "Birth", russianPrefix: "Рождение")) {
+                        selectedBirthMonth = .any
                     }
                 }
-            } label: {
-                filterControlLabel(
-                    title: selectedConnectionScope.label(count: connectionScopeCounts[selectedConnectionScope] ?? 0),
-                    systemImage: "person.2"
-                )
-            }
-            .accessibilityLabel(ArchiveCopy.text(english: "Filter by relationship distance", russian: "Фильтр по расстоянию родства"))
-
+                if selectedDeathMonth != .any {
+                    FilterBubble(title: monthFilterLabel(selectedDeathMonth, englishPrefix: "Death", russianPrefix: "Смерть")) {
+                        selectedDeathMonth = .any
+                    }
+                }
+                if selectedCentury != .any {
+                    FilterBubble(title: centuryFilterLabel) { selectedCentury = .any }
+                }
             }
         }
+    }
+
+    private var connectionFilterTitle: String {
+        switch selectedConnectionScope {
+        case .all: ArchiveCopy.text(english: "Everyone", russian: "Все")
+        case .withinOne: ArchiveCopy.text(english: "Within 1 connection", russian: "До 1 связи")
+        case .withinTwo: ArchiveCopy.text(english: "Within 2 connections", russian: "До 2 связей")
+        case .withinThree: ArchiveCopy.text(english: "Within 3 connections", russian: "До 3 связей")
+        }
+    }
+
+    private func centuryName(_ century: Int) -> String {
+        let suffix = century == 1 ? "st" : century == 2 ? "nd" : century == 3 ? "rd" : "th"
+        return ArchiveCopy.text(english: "\(century)\(suffix) century", russian: "\(century)-й век")
     }
 
     private func filterControlLabel(title: String, systemImage: String, isSelected: Bool = false) -> some View {
@@ -428,6 +586,29 @@ struct PeopleListView: View {
             ArchiveShape.control
                 .stroke(isSelected ? ArchiveTheme.accent : ArchiveTheme.controlBorder, lineWidth: 1)
         )
+    }
+
+    private struct FilterBubble: View {
+        let title: String
+        let action: () -> Void
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: 5) {
+                    Text(title)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.ink)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(ArchiveTheme.controlBackground)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func filterMenuLabel(_ title: String, isSelected: Bool) -> some View {
@@ -456,6 +637,358 @@ struct PeopleListView: View {
                 .foregroundStyle(ArchiveTheme.metadata)
         }
         .padding(.top, ArchiveLayout.pageTop)
+    }
+}
+
+/// A persistent staging area for family filters. Changes stay local to the
+/// sheet until the user taps Apply, so several filters can be chosen before
+/// the list is recalculated. This avoids the old one-selection-at-a-time menu
+/// behavior, where the menu dismissed after every choice.
+private struct FamilyFilterSheet: View {
+    @ObservedObject var repository: FamilyRepository
+    let familyNameOptions: [FamilyNameFilterOption]
+    let connectionScopeCounts: [ConnectionScope: Int]
+    let availableCenturies: [Int]
+    let onApply: (String?, Bool, ConnectionScope, DateFilterSelection, DateFilterSelection, DateFilterSelection) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var familyNameKey: String?
+    @State private var storiesOnly: Bool
+    @State private var connectionScope: ConnectionScope
+    @State private var birthMonth: DateFilterSelection
+    @State private var deathMonth: DateFilterSelection
+    @State private var century: DateFilterSelection
+
+    init(
+        repository: FamilyRepository,
+        familyNameOptions: [FamilyNameFilterOption],
+        connectionScopeCounts: [ConnectionScope: Int],
+        availableCenturies: [Int],
+        familyNameKey: String?,
+        storiesOnly: Bool,
+        connectionScope: ConnectionScope,
+        birthMonth: DateFilterSelection,
+        deathMonth: DateFilterSelection,
+        century: DateFilterSelection,
+        onApply: @escaping (String?, Bool, ConnectionScope, DateFilterSelection, DateFilterSelection, DateFilterSelection) -> Void
+    ) {
+        self.repository = repository
+        self.familyNameOptions = familyNameOptions
+        self.connectionScopeCounts = connectionScopeCounts
+        self.availableCenturies = availableCenturies
+        self.onApply = onApply
+        _familyNameKey = State(initialValue: familyNameKey)
+        _storiesOnly = State(initialValue: storiesOnly)
+        _connectionScope = State(initialValue: connectionScope)
+        _birthMonth = State(initialValue: birthMonth)
+        _deathMonth = State(initialValue: deathMonth)
+        _century = State(initialValue: century)
+    }
+
+    private var isRussian: Bool { repository.appLanguage == .russian }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(ArchiveCopy.text(
+                        english: "Choose any filters, then apply them together.",
+                        russian: "Выберите фильтры и примените их вместе."
+                    ))
+                    .font(ArchiveTypography.body)
+                    .foregroundStyle(ArchiveTheme.muted)
+
+                    filterSection(
+                        title: ArchiveCopy.text(english: "PEOPLE", russian: "ЛЮДИ")
+                    ) {
+                        filterMenuRow(
+                            title: ArchiveCopy.text(english: "Last name", russian: "Фамилия"),
+                            value: familyNameOptions.first(where: { $0.id == familyNameKey })?.displayName
+                                ?? ArchiveCopy.text(english: "Everyone", russian: "Все фамилии")
+                        ) {
+                            Button {
+                                familyNameKey = nil
+                            } label: {
+                                selectionLabel(ArchiveCopy.text(english: "All last names", russian: "Все фамилии"), isSelected: familyNameKey == nil)
+                            }
+                            Divider()
+                            ForEach(familyNameOptions) { option in
+                                Button {
+                                    familyNameKey = option.id
+                                } label: {
+                                    selectionLabel(option.displayName, isSelected: familyNameKey == option.id)
+                                }
+                            }
+                        }
+
+                        filterToggleRow(
+                            title: ArchiveCopy.text(english: "Has stories", russian: "Есть истории"),
+                            isOn: $storiesOnly
+                        )
+
+                        filterMenuRow(
+                            title: ArchiveCopy.text(english: "Relationship", russian: "Родственная связь"),
+                            value: connectionScope.label(count: connectionScopeCounts[connectionScope] ?? 0)
+                        ) {
+                            ForEach(ConnectionScope.allCases) { scope in
+                                Button {
+                                    connectionScope = scope
+                                } label: {
+                                    selectionLabel(
+                                        scope.label(count: connectionScopeCounts[scope] ?? 0),
+                                        isSelected: connectionScope == scope
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    filterSection(
+                        title: ArchiveCopy.text(english: "DATES", russian: "ДАТЫ")
+                    ) {
+                        filterMenuRow(
+                            title: ArchiveCopy.text(english: "Birth month", russian: "Месяц рождения"),
+                            value: monthSelectionLabel(birthMonth, kind: .birth)
+                        ) {
+                            monthMenuItems(selection: $birthMonth)
+                        }
+
+                        filterMenuRow(
+                            title: ArchiveCopy.text(english: "Death month", russian: "Месяц смерти"),
+                            value: monthSelectionLabel(deathMonth, kind: .death)
+                        ) {
+                            monthMenuItems(selection: $deathMonth)
+                        }
+
+                        filterMenuRow(
+                            title: ArchiveCopy.text(english: "Lived in century", russian: "Век жизни"),
+                            value: centurySelectionLabel
+                        ) {
+                            Button {
+                                century = .any
+                            } label: {
+                                selectionLabel(ArchiveCopy.text(english: "Any century", russian: "Любой век"), isSelected: century == .any)
+                            }
+                            Button {
+                                century = .unknown
+                            } label: {
+                                selectionLabel(ArchiveCopy.text(english: "Unknown century", russian: "Век неизвестен"), isSelected: century == .unknown)
+                            }
+                            if !availableCenturies.isEmpty { Divider() }
+                            ForEach(availableCenturies, id: \.self) { value in
+                                Button {
+                                    century = .value(value)
+                                } label: {
+                                    selectionLabel(centuryName(value), isSelected: century == .value(value))
+                                }
+                            }
+                        }
+                    }
+
+                    Button {
+                        clearAll()
+                    } label: {
+                        Text(ArchiveCopy.text(english: "Clear all filters", russian: "Очистить все фильтры"))
+                            .font(ArchiveTypography.action)
+                            .foregroundStyle(ArchiveTheme.action)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, 20)
+                .padding(.bottom, 32)
+            }
+            .scrollIndicators(.hidden)
+            .background(ArchiveTheme.background)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                    }
+                    .accessibilityLabel(ArchiveCopy.text(english: "Cancel", russian: "Отмена"))
+                }
+                ToolbarItem(placement: .principal) {
+                    Text(ArchiveCopy.text(english: "Filters", russian: "Фильтры"))
+                        .font(ArchiveTypography.navigationTitle)
+                        .foregroundStyle(ArchiveTheme.ink)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        onApply(familyNameKey, storiesOnly, connectionScope, birthMonth, deathMonth, century)
+                        dismiss()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                    }
+                    .accessibilityLabel(ArchiveCopy.text(english: "Apply filters", russian: "Применить фильтры"))
+                }
+            }
+            .toolbarBackground(ArchiveTheme.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+        }
+        // Filters are a focused task, so open the sheet at full height. The
+        // half-height detent hid the date choices and made the panel feel
+        // transient instead of like a standard settings screen.
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(ArchiveTheme.background)
+    }
+
+    private enum MonthKind {
+        case birth
+        case death
+    }
+
+    @ViewBuilder
+    private func filterSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(1.2)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            VStack(spacing: 0) {
+                content()
+            }
+            .background(ArchiveTheme.controlBackground)
+            .clipShape(ArchiveShape.control)
+            .overlay(ArchiveShape.control.stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder
+    private func filterMenuRow<MenuContent: View>(title: String, value: String, @ViewBuilder menu: @escaping () -> MenuContent) -> some View {
+        Menu {
+            menu()
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(ArchiveTypography.metadataEmphasis)
+                        .foregroundStyle(ArchiveTheme.ink)
+                    Text(value)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.action)
+            }
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ArchiveTheme.controlBorder)
+                    .frame(height: 1)
+                    .padding(.leading, 14)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func filterToggleRow(title: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            Text(title)
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(ArchiveTheme.ink)
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(ArchiveTheme.action)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 52)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(ArchiveTheme.controlBorder)
+                .frame(height: 1)
+                .padding(.leading, 14)
+        }
+    }
+
+    private func selectionLabel(_ title: String, isSelected: Bool) -> some View {
+        HStack {
+            Text(title)
+            if isSelected {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func monthMenuItems(selection: Binding<DateFilterSelection>) -> some View {
+        Button {
+            selection.wrappedValue = .any
+        } label: {
+            selectionLabel(ArchiveCopy.text(english: "Any month", russian: "Любой месяц"), isSelected: selection.wrappedValue == .any)
+        }
+        Button {
+            selection.wrappedValue = .unknown
+        } label: {
+            selectionLabel(ArchiveCopy.text(english: "Unknown month", russian: "Месяц неизвестен"), isSelected: selection.wrappedValue == .unknown)
+        }
+        Divider()
+        ForEach(1...12, id: \.self) { month in
+            Button {
+                selection.wrappedValue = .value(month)
+            } label: {
+                selectionLabel(monthName(month), isSelected: selection.wrappedValue == .value(month))
+            }
+        }
+    }
+
+    private func monthSelectionLabel(_ selection: DateFilterSelection, kind: MonthKind) -> String {
+        let prefix = kind == .birth
+            ? ArchiveCopy.text(english: "Birth", russian: "Рождение")
+            : ArchiveCopy.text(english: "Death", russian: "Смерть")
+        switch selection {
+        case .any:
+            return ArchiveCopy.text(english: "Any month", russian: "Любой месяц")
+        case .unknown:
+            return ArchiveCopy.text(english: "Unknown month", russian: "Месяц неизвестен")
+        case .value(let month):
+            return "\(prefix): \(monthName(month))"
+        }
+    }
+
+    private var centurySelectionLabel: String {
+        switch century {
+        case .any:
+            return ArchiveCopy.text(english: "Any century", russian: "Любой век")
+        case .unknown:
+            return ArchiveCopy.text(english: "Unknown century", russian: "Век неизвестен")
+        case .value(let value):
+            return centuryName(value)
+        }
+    }
+
+    private func monthName(_ month: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: isRussian ? "ru_RU" : "en_US_POSIX")
+        formatter.dateFormat = "LLLL"
+        return formatter.string(from: Calendar(identifier: .gregorian).date(from: DateComponents(year: 2000, month: month, day: 1)) ?? Date())
+    }
+
+    private func centuryName(_ century: Int) -> String {
+        let suffix = century == 1 ? "st" : century == 2 ? "nd" : century == 3 ? "rd" : "th"
+        return ArchiveCopy.text(english: "\(century)\(suffix) century", russian: "\(century)-й век")
+    }
+
+    private func clearAll() {
+        familyNameKey = nil
+        storiesOnly = false
+        connectionScope = .all
+        birthMonth = .any
+        deathMonth = .any
+        century = .any
     }
 }
 
@@ -496,8 +1029,14 @@ struct FamilyMemberTile: View {
                         AccountHolderBadge()
                     }
 
-                    if person.hasProfileContent {
+                    Spacer(minLength: 6)
+
+                    if person.hasStories {
                         ProfileContentBadge()
+                    }
+
+                    if photoCount > 1 {
+                        PhotoContentBadge()
                     }
                 }
 
@@ -511,16 +1050,6 @@ struct FamilyMemberTile: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
                         .layoutPriority(1)
-                    if isLiving {
-                        Circle()
-                            .fill(ArchiveTheme.accent)
-                            .frame(width: 5, height: 5)
-                            .accessibilityLabel("Living")
-                        Text(ArchiveCopy.livingLabel(gender: person.archiveGender))
-                            .font(ArchiveTypography.metadata)
-                            .foregroundStyle(ArchiveTheme.accent)
-                            .lineLimit(1)
-                    }
                 }
             }
 
@@ -529,6 +1058,11 @@ struct FamilyMemberTile: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+
+    private var photoCount: Int {
+        let media = repository?.media(for: person.id) ?? person.media
+        return media.filter { $0.kind == .photo }.count
     }
 }
 
@@ -550,15 +1084,19 @@ struct AccountHolderBadge: View {
 
 private struct ProfileContentBadge: View {
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "book.pages")
-                .font(.system(size: 10, weight: .semibold))
-                Text(ArchiveCopy.text(english: "PROFILE", russian: "ПРОФИЛЬ"))
-                .font(ArchiveTypography.sectionTitle)
-                .tracking(0.5)
-        }
-        .foregroundStyle(ArchiveTheme.action)
-        .accessibilityLabel("Profile story available")
+        Image(systemName: "book.pages")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ArchiveTheme.muted)
+            .accessibilityLabel(ArchiveCopy.text(english: "Stories available", russian: "Есть истории"))
+    }
+}
+
+private struct PhotoContentBadge: View {
+    var body: some View {
+        Image(systemName: "photo")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ArchiveTheme.muted)
+            .accessibilityLabel(ArchiveCopy.text(english: "More than one photo", russian: "Больше одной фотографии"))
     }
 }
 
@@ -817,7 +1355,7 @@ struct MainTabView: View {
                 selectedTab = tab
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
         .sheet(item: $homePerson) { presented in
             if let person = repository.person(id: presented.id) {
                 NavigationStack {
@@ -877,10 +1415,10 @@ private struct ArchiveBottomNavigation: View {
             }
         }
         .frame(height: 68)
-        .background(ArchiveTheme.ink)
+        .background(ArchiveTheme.navigationBackground)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(ArchiveTheme.ink)
+                .fill(ArchiveTheme.navigationBackground)
                 .frame(height: 1)
         }
     }
@@ -912,14 +1450,59 @@ enum MainTab: Hashable, CaseIterable {
 }
 
 enum ArchiveTheme {
-    static let accent = Color(red: 0.66, green: 0.24, blue: 0.08)
-    static let accentLight = Color(red: 0.88, green: 0.43, blue: 0.16)
-    static let ink = Color(red: 0.12, green: 0.18, blue: 0.17)
-    static let muted = Color(red: 0.34, green: 0.39, blue: 0.37)
-    static let metadata = Color(red: 0.46, green: 0.50, blue: 0.48)
-    static let controlBackground = Color(uiColor: .systemBackground)
-    static let controlBorder = Color(uiColor: .separator)
-    static let actionBackground = Color(red: 0.93, green: 0.95, blue: 0.94)
+    private static func adaptive(light: UIColor, dark: UIColor) -> Color {
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark ? dark : light
+        })
+    }
+
+    // The night palette stays in the archive's gray-green family. In
+    // particular, the old near-black ink color was unreadable against the
+    // system dark background.
+    static let background = adaptive(
+        light: UIColor(red: 0.99, green: 1.00, blue: 0.99, alpha: 1),
+        dark: UIColor(red: 0.08, green: 0.13, blue: 0.12, alpha: 1)
+    )
+    static let accent = adaptive(
+        light: UIColor(red: 0.66, green: 0.24, blue: 0.08, alpha: 1),
+        dark: UIColor(red: 0.96, green: 0.53, blue: 0.30, alpha: 1)
+    )
+    static let accentLight = adaptive(
+        light: UIColor(red: 0.88, green: 0.43, blue: 0.16, alpha: 1),
+        dark: UIColor(red: 1.00, green: 0.68, blue: 0.46, alpha: 1)
+    )
+    static let ink = adaptive(
+        light: UIColor(red: 0.12, green: 0.18, blue: 0.17, alpha: 1),
+        dark: UIColor(red: 0.88, green: 0.94, blue: 0.91, alpha: 1)
+    )
+    static let muted = adaptive(
+        light: UIColor(red: 0.34, green: 0.39, blue: 0.37, alpha: 1),
+        dark: UIColor(red: 0.68, green: 0.77, blue: 0.73, alpha: 1)
+    )
+    static let metadata = adaptive(
+        light: UIColor(red: 0.46, green: 0.50, blue: 0.48, alpha: 1),
+        dark: UIColor(red: 0.61, green: 0.71, blue: 0.67, alpha: 1)
+    )
+    static let controlBackground = adaptive(
+        light: UIColor(red: 0.99, green: 1.00, blue: 0.99, alpha: 1),
+        dark: UIColor(red: 0.13, green: 0.21, blue: 0.19, alpha: 1)
+    )
+    static let controlBorder = adaptive(
+        light: UIColor.separator,
+        dark: UIColor(red: 0.27, green: 0.39, blue: 0.35, alpha: 1)
+    )
+    static let actionBackground = adaptive(
+        light: UIColor(red: 0.93, green: 0.95, blue: 0.94, alpha: 1),
+        dark: UIColor(red: 0.16, green: 0.27, blue: 0.24, alpha: 1)
+    )
+    static let mention = adaptive(
+        light: UIColor(red: 0.10, green: 0.30, blue: 0.25, alpha: 1),
+        dark: UIColor(red: 0.46, green: 0.76, blue: 0.63, alpha: 1)
+    )
+    static let navigationBackground = adaptive(
+        light: UIColor(red: 0.12, green: 0.18, blue: 0.17, alpha: 1),
+        dark: UIColor(red: 0.05, green: 0.10, blue: 0.09, alpha: 1)
+    )
     static let action = accent
 }
 
@@ -1046,21 +1629,24 @@ private struct HomeView: View {
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(ArchiveTheme.actionBackground, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+            .background(ArchiveTheme.background)
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack {
                     Button {
                         showingSettings = true
                     } label: {
                         UserProfilePhotoView(person: accountHolder, repository: repository, size: 40)
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Circle())
                     .accessibilityLabel("Open account settings")
+
+                    Spacer()
                 }
+                .frame(height: 72)
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .background(ArchiveTheme.actionBackground)
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -1656,7 +2242,7 @@ private struct SettingsView: View {
             .padding(.bottom, ArchiveLayout.pageBottom)
         }
         .scrollIndicators(.hidden)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
         .navigationTitle(ArchiveCopy.text(english: "Settings", russian: "Настройки"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2132,7 +2718,7 @@ private struct AccountChooserView: View {
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2416,23 +3002,44 @@ private struct MemoriesView: View {
 
     @State private var searchText = ""
     @State private var filter: MemoryFilter = .photo
-    @State private var sort: MemorySort = .newest
+    @State private var mediaSnapshot: [MemoryItem] = []
     @State private var selectedMemory: MemoryItem?
     @State private var showingMediaReview = false
 
-    private var allMemories: [MemoryItem] {
-        repository.people.flatMap { person in
-            person.media.map { MemoryItem(person: person, media: $0) }
+    init(repository: FamilyRepository) {
+        self.repository = repository
+        _mediaSnapshot = State(initialValue: Self.makeMediaSnapshot(repository: repository))
+    }
+
+    private static func makeMediaSnapshot(repository: FamilyRepository) -> [MemoryItem] {
+        // Build this once per document change. The previous implementation
+        // called repository.media(for:) for every person on every SwiftUI
+        // refresh; each call scanned every person's media collection again.
+        // A single pass keeps archive navigation responsive while preserving
+        // one gallery entry for a shared asset.
+        var seen = Set<String>()
+        var result: [MemoryItem] = []
+        for person in repository.people {
+            for item in person.media {
+                let identity = item.path ?? item.id
+                guard seen.insert(identity).inserted else { continue }
+                result.append(MemoryItem(person: person, media: item))
+            }
         }
+        return result
     }
 
     private var visibleMemories: [MemoryItem] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = allMemories.filter { memory in
-            let matchesType = filter.matches(memory.media.kind)
+        let people = repository.people
+        let filtered = mediaSnapshot.filter { memory in
+            let matchesType = filter.matches(memory)
             let searchableText = [
                 memory.media.title,
-                NarrativeLocalizationStore.shared.mediaCaption(memory.person.id, mediaID: memory.media.id, source: memory.media.caption ?? ""),
+                MediaMentionToken.visibleText(
+                    NarrativeLocalizationStore.shared.mediaCaption(mediaID: memory.media.id, source: memory.media.caption ?? ""),
+                    people: people
+                ),
                 memory.media.collection ?? "",
                 memory.person.displayName,
                 (memory.media.tags ?? []).joined(separator: " ")
@@ -2443,18 +3050,7 @@ private struct MemoriesView: View {
             return matchesType && matchesSearch
         }
 
-        return filtered.sorted { left, right in
-            switch sort {
-            case .newest:
-                return left.year > right.year
-            case .oldest:
-                return left.year < right.year
-            case .title:
-                return left.media.title.localizedStandardCompare(right.media.title) == .orderedAscending
-            case .person:
-                return left.person.displayName.localizedStandardCompare(right.person.displayName) == .orderedAscending
-            }
-        }
+        return filtered
     }
 
     var body: some View {
@@ -2498,39 +3094,9 @@ private struct MemoriesView: View {
                     }
                     .padding(.vertical, 12)
 
-                    HStack {
-                        Text("\(visibleMemories.count) \(filter.localizedCountLabel)")
-                            .font(ArchiveTypography.metadataEmphasis)
-                            .foregroundStyle(ArchiveTheme.metadata)
-
-                        Spacer()
-
-                        Menu {
-                            ForEach(MemorySort.allCases) { option in
-                                Button {
-                                    sort = option
-                                } label: {
-                                    HStack {
-                                        Text(option.localizedTitle)
-                                        if sort == option {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "arrow.up.arrow.down")
-                                Text(sort.localizedTitle)
-                            }
-                            .font(ArchiveTypography.metadataEmphasis)
-                            .foregroundStyle(ArchiveTheme.accent)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 10)
-                            .clipShape(ArchiveShape.control)
-                            .overlay(ArchiveShape.control.stroke(ArchiveTheme.accent, lineWidth: 1))
-                        }
-                    }
+                    Text("\(visibleMemories.count) \(filter.localizedCountLabel)")
+                        .font(ArchiveTypography.metadataEmphasis)
+                        .foregroundStyle(ArchiveTheme.metadata)
                     .padding(.bottom, 8)
 
                     if visibleMemories.isEmpty {
@@ -2540,7 +3106,7 @@ private struct MemoriesView: View {
                     } else {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
                             ForEach(visibleMemories) { memory in
-                                GalleryMemoryTile(memory: memory)
+                                GalleryMemoryTile(memory: memory, people: repository.people)
                                     .contentShape(Rectangle())
                                     .onTapGesture {
                                         selectedMemory = memory
@@ -2553,7 +3119,7 @@ private struct MemoriesView: View {
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: Person.ID.self) { personID in
@@ -2566,6 +3132,14 @@ private struct MemoriesView: View {
             }
             .sheet(isPresented: $showingMediaReview) {
                 MediaReviewView(repository: repository)
+            }
+            .task {
+                if mediaSnapshot.isEmpty {
+                    mediaSnapshot = Self.makeMediaSnapshot(repository: repository)
+                }
+            }
+            .onReceive(repository.$document) { _ in
+                mediaSnapshot = Self.makeMediaSnapshot(repository: repository)
             }
         }
     }
@@ -2635,7 +3209,7 @@ private struct MediaReviewView: View {
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .navigationTitle(ArchiveCopy.text(english: "Review media", russian: "Проверка медиа"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2816,12 +3390,16 @@ private struct StagedMediaEditor: View {
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
 
-                    TextEditor(text: $caption)
-                        .font(ArchiveTypography.body)
-                        .foregroundStyle(ArchiveTheme.ink)
-                        .frame(minHeight: 84, maxHeight: 150)
-                        .padding(.vertical, 2)
-                        .scrollContentBackground(.hidden)
+                    MentionTextEditor(text: $caption, people: repository.people)
+                        // UITextView does not provide a reliable intrinsic
+                        // height when hosted by SwiftUI. Without an explicit
+                        // height the editor collapses and only the helper
+                        // text below it remains visible.
+                        .frame(minHeight: 104, maxHeight: 180)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(ArchiveTheme.controlBackground)
+                        .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
                         .onChange(of: caption) { _, _ in
                             updateMentionSuggestions()
                         }
@@ -2837,11 +3415,9 @@ private struct StagedMediaEditor: View {
                                             Text("@\(person.displayName)")
                                                 .font(ArchiveTypography.metadataEmphasis)
                                                 .foregroundStyle(ArchiveTheme.ink)
-                                            if let birthYear = person.birthYear {
-                                                Text("· \(String(birthYear))")
-                                                    .font(ArchiveTypography.metadata)
-                                                    .foregroundStyle(ArchiveTheme.metadata)
-                                            }
+                                            Text("· \(ArchiveDateFormatter.displayRange(person.lifespan) ?? person.lifespan)")
+                                                .font(ArchiveTypography.metadata)
+                                                .foregroundStyle(ArchiveTheme.metadata)
                                         }
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 7)
@@ -2886,7 +3462,7 @@ private struct StagedMediaEditor: View {
                 .padding(.bottom, ArchiveLayout.pageBottom)
             }
             .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .navigationTitle(ArchiveCopy.text(english: "Review media", russian: "Проверка медиа"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2988,9 +3564,14 @@ private struct StagedMediaEditor: View {
 
         do {
             let recordDate = dateFromCaption(caption)
+            let canonicalCaption = MediaMentionToken.canonicalize(
+                caption,
+                people: repository.people,
+                preferredPersonIDs: linkedIDs
+            )
             let mediaID = try repository.reviewStagedMedia(
                 item,
-                caption: caption,
+                caption: canonicalCaption,
                 date: recordDate,
                 personIDs: Array(linkedIDs),
                 isApproximate: false,
@@ -3001,7 +3582,7 @@ private struct StagedMediaEditor: View {
             if #available(iOS 26.0, *) {
                 Task { @MainActor in
                     await repository.autoTranslateMediaCaption(
-                        caption,
+                        canonicalCaption,
                         mediaID: mediaID,
                         personIDs: Array(linkedIDs),
                         from: sourceLanguage
@@ -3018,23 +3599,7 @@ private struct StagedMediaEditor: View {
 
 
     private func updateMentionSuggestions() {
-        guard let atIndex = caption.lastIndex(of: "@") else {
-            mentionSuggestions = []
-            return
-        }
-
-        let fragmentStart = caption.index(after: atIndex)
-        let fragment = String(caption[fragmentStart...])
-        guard !fragment.contains(where: { $0 == "\n" || ".,;:!?·".contains($0) }) else {
-            mentionSuggestions = []
-            return
-        }
-
-        let query = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
-        if fragment.last?.isWhitespace == true,
-           repository.people.contains(where: { person in
-               person.displayName.compare(query, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-           }) {
+        guard let query = mentionQuery(in: caption) else {
             mentionSuggestions = []
             return
         }
@@ -3048,7 +3613,12 @@ private struct StagedMediaEditor: View {
 
     private func insertMention(for person: Person) {
         guard let atIndex = caption.lastIndex(of: "@") else { return }
-        caption.replaceSubrange(atIndex..<caption.endIndex, with: "@\(person.displayName) ")
+        let tokenRange = mentionReplacementRange(in: caption, at: atIndex, displayName: person.displayName)
+        caption.replaceSubrange(tokenRange, with: "@\(person.displayName) ")
+        let duplicateIDs = repository.people
+            .filter { personNameVariants($0).contains { lhs in personNameVariants(person).contains { rhs in lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame } } }
+            .map(\.id)
+        selectedMentionIDs.subtract(duplicateIDs)
         selectedMentionIDs.insert(person.id)
         mentionSuggestions = []
     }
@@ -3060,6 +3630,8 @@ private struct StagedMediaEditor: View {
     }
 
     private func mentionedPersonIDs(in text: String) -> Set<Person.ID> {
+        let storedIDs = Set(MediaMentionToken.personIDs(in: text))
+        if !storedIDs.isEmpty { return storedIDs }
         let candidates = repository.people.flatMap { person in
             personNameVariants(person).map { ($0, person.id) }
         }
@@ -3091,7 +3663,7 @@ private struct StagedMediaEditor: View {
     }
 }
 
-private struct MemoryItem: Identifiable {
+struct MemoryItem: Identifiable {
     let person: Person
     let media: MediaReference
 
@@ -3180,49 +3752,28 @@ private enum MemoryFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    func matches(_ kind: MediaKind) -> Bool {
-        rawValue == kind.rawValue
-    }
-}
-
-private enum MemorySort: String, CaseIterable, Identifiable {
-    case newest
-    case oldest
-    case title
-    case person
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .newest: "Newest"
-        case .oldest: "Oldest"
-        case .title: "Title"
-        case .person: "Person"
-        }
-    }
-
-    var localizedTitle: String {
-        switch self {
-        case .newest: ArchiveCopy.text(english: "Newest", russian: "Сначала новые")
-        case .oldest: ArchiveCopy.text(english: "Oldest", russian: "Сначала старые")
-        case .title: ArchiveCopy.text(english: "Title", russian: "Название")
-        case .person: ArchiveCopy.text(english: "Person", russian: "Человек")
-        }
+    func matches(_ memory: MemoryItem) -> Bool {
+        rawValue == memory.media.kind.rawValue
     }
 }
 
 private struct GalleryMemoryTile: View {
     let memory: MemoryItem
+    let people: [Person]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            GalleryMediaVisual(memory: memory)
+            // Gallery cells are small previews; decoding a 900px thumbnail
+            // for each cell wastes memory and delays the first screen.
+            GalleryMediaVisual(memory: memory, maxPixelSize: 540)
 
             Group {
-                let caption = NarrativeLocalizationStore.shared.mediaCaption(memory.person.id, mediaID: memory.media.id, source: memory.media.caption ?? "")
+                let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: memory.media.id, source: memory.media.caption ?? "")
                 if !caption.isEmpty {
-                    Text(memoryCaptionWithDate(caption, date: memory.media.date))
+                    Text(MediaMentionToken.visibleText(
+                        memoryCaptionWithDate(caption, date: memory.media.date),
+                        people: people
+                    ))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(2)
@@ -3264,11 +3815,13 @@ private func memoryCaptionWithDate(_ caption: String, date: String?) -> String {
 private struct GalleryMediaVisual: View {
     let memory: MemoryItem
     let isActive: Bool
+    let maxPixelSize: Int
     @StateObject private var imageLoader = ArchiveImageLoader()
 
-    init(memory: MemoryItem, isActive: Bool = true) {
+    init(memory: MemoryItem, isActive: Bool = true, maxPixelSize: Int = 900) {
         self.memory = memory
         self.isActive = isActive
+        self.maxPixelSize = maxPixelSize
     }
 
     var body: some View {
@@ -3314,7 +3867,7 @@ private struct GalleryMediaVisual: View {
                 guard isActive else { return }
                 imageLoader.load(
                     path: memory.media.kind == .photo ? memory.media.path : nil,
-                    maxPixelSize: 900
+                    maxPixelSize: maxPixelSize
                 )
             }
         .clipped()
@@ -3324,6 +3877,165 @@ private struct GalleryMediaVisual: View {
 /// Renders names found in a caption as links to the matching family profile.
 /// The caption itself remains the source text; only the recognized names are
 /// interactive and styled with the app accent color.
+///
+/// TextEditor on iOS 17 only supports a plain String binding. This small
+/// UITextView wrapper gives the editor the standard token behavior users
+/// expect from mention fields: recognized @names are highlighted as one unit,
+/// tapping a token selects the whole token, and backspace removes it as a
+/// whole rather than leaving a half-name behind.
+private struct MentionTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    let people: [Person]
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, people: people)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.isEditable = true
+        view.isScrollEnabled = true
+        view.backgroundColor = .clear
+        view.font = UIFont.systemFont(ofSize: 15)
+        view.textColor = UIColor.archiveInk
+        view.tintColor = UIColor.archiveInk
+        view.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        view.textContainer.lineFragmentPadding = 0
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.coordinator.applyAttributes(to: view)
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        guard view.text != text else { return }
+        let selectedRange = view.selectedRange
+        context.coordinator.applyAttributes(to: view, text: text)
+        view.selectedRange = NSRange(
+            location: min(selectedRange.location, view.text.utf16.count),
+            length: 0
+        )
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        private let people: [Person]
+        private var binding: Binding<String>
+
+        init(text: Binding<String>, people: [Person]) {
+            self.binding = text
+            self.people = people
+        }
+
+        func applyAttributes(to view: UITextView, text: String? = nil) {
+            let value = text ?? binding.wrappedValue
+            let attributed = NSMutableAttributedString(string: value, attributes: [
+                .font: UIFont.systemFont(ofSize: 15),
+                .foregroundColor: UIColor.archiveInk
+            ])
+            for range in mentionRanges(in: value) {
+                attributed.addAttributes([
+                    .foregroundColor: UIColor.archiveMention,
+                    .backgroundColor: UIColor.archiveMentionBackground,
+                    .link: URL(string: "family-mention://token") as Any,
+                    .underlineStyle: 0
+                ], range: range)
+            }
+            view.attributedText = attributed
+            view.typingAttributes = [
+                .font: UIFont.systemFont(ofSize: 15),
+                .foregroundColor: UIColor.archiveInk
+            ]
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            binding.wrappedValue = textView.text
+            applyAttributes(to: textView)
+        }
+
+        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange) -> Bool {
+            // Mention tokens are editable tokens here, not outbound links.
+            // Selecting the full range makes their special behavior visible
+            // and lets a single backspace remove the complete token.
+            textView.selectedRange = characterRange
+            return false
+        }
+
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText replacement: String
+        ) -> Bool {
+            let mentions = mentionRanges(in: textView.text)
+            guard let token = mentions.first(where: { NSIntersectionRange($0, range).length > 0 }) else {
+                return true
+            }
+
+            if replacement.isEmpty {
+                let value = textView.text as NSString
+                textView.text = value.replacingCharacters(in: token, with: "")
+                textView.selectedRange = NSRange(location: token.location, length: 0)
+                textViewDidChange(textView)
+            } else {
+                textView.selectedRange = NSRange(location: NSMaxRange(token), length: 0)
+            }
+            return false
+        }
+
+        private func mentionRanges(in text: String) -> [NSRange] {
+            let names = people
+                .flatMap { [$0.displayName, $0.sourceDisplayName, $0.originalDisplayName] }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .sorted { $0.utf16.count > $1.utf16.count }
+
+            var ranges: [NSRange] = []
+            for name in names {
+                let token = "@\(name)"
+                var search = NSRange(location: 0, length: (text as NSString).length)
+                while search.length > 0 {
+                    let found = (text as NSString).range(of: token, options: [.caseInsensitive, .diacriticInsensitive], range: search)
+                    guard found.location != NSNotFound else { break }
+                    let beforeOK = found.location == 0 || mentionBoundary((text as NSString).character(at: found.location - 1))
+                    let end = found.location + found.length
+                    let afterOK = end == (text as NSString).length || mentionBoundary((text as NSString).character(at: end))
+                    if beforeOK && afterOK && !ranges.contains(where: { NSIntersectionRange($0, found).length > 0 }) {
+                        ranges.append(found)
+                    }
+                    let next = found.location + max(found.length, 1)
+                    search = NSRange(location: next, length: (text as NSString).length - next)
+                }
+            }
+            return ranges.sorted { $0.location < $1.location }
+        }
+
+        private func mentionBoundary(_ value: unichar) -> Bool {
+            guard let scalar = UnicodeScalar(value) else { return true }
+            return CharacterSet.whitespacesAndNewlines.contains(scalar)
+                || CharacterSet.punctuationCharacters.contains(scalar)
+        }
+    }
+}
+
+private extension UIColor {
+    static let archiveInk = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.88, green: 0.94, blue: 0.91, alpha: 1)
+            : UIColor(red: 0.12, green: 0.18, blue: 0.17, alpha: 1)
+    }
+
+    static let archiveMention = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.46, green: 0.76, blue: 0.63, alpha: 1)
+            : UIColor(red: 0.10, green: 0.30, blue: 0.25, alpha: 1)
+    }
+
+    static let archiveMentionBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.16, green: 0.27, blue: 0.24, alpha: 1)
+            : UIColor(red: 0.93, green: 0.95, blue: 0.94, alpha: 1)
+    }
+}
+
 private struct CaptionPeopleText: View {
     let text: String
     let people: [Person]
@@ -3359,6 +4071,11 @@ private struct CaptionPeopleText: View {
     }
 
     private var linkedCaption: AttributedString {
+        // Always resolve internal ID markers before constructing SwiftUI's
+        // attributed text. This is the final display boundary: raw markers
+        // must never be visible to the reader, even if a legacy sidecar or a
+        // new translation is loaded during a view refresh.
+        let displayText = MediaMentionToken.visibleText(text, people: people)
         let candidates = people
             .flatMap { person in
                 [person.displayName, person.sourceDisplayName, person.originalDisplayName]
@@ -3374,24 +4091,77 @@ private struct CaptionPeopleText: View {
 
         var result = AttributedString()
         var plain = ""
-        var index = text.startIndex
+        var index = displayText.startIndex
 
-        while index < text.endIndex {
-            if let match = candidates.first(where: { text[index...].hasPrefix($0.0) }) {
+        while index < displayText.endIndex {
+            // New captions carry an immutable person-ID marker. Render the
+            // current localized name while keeping the link attached to the
+            // ID, so renaming or switching languages never breaks it.
+            if displayText[index...].hasPrefix(MediaMentionToken.prefix),
+               let tokenEnd = displayText.range(of: MediaMentionToken.suffix, range: index..<displayText.endIndex)?.upperBound {
+                let markerEnd = displayText.index(before: tokenEnd)
+                let markerStart = displayText.index(index, offsetBy: MediaMentionToken.prefix.count)
+                let personID = String(displayText[markerStart..<markerEnd])
+                guard let person = people.first(where: { $0.id == personID }) else {
+                    plain += displayText[index..<tokenEnd]
+                    index = tokenEnd
+                    continue
+                }
                 if !plain.isEmpty {
                     result += AttributedString(plain)
                     plain = ""
                 }
-                var linked = AttributedString(match.0)
-                linked.link = URL(string: "family-person://\(match.1.id)")
-                linked.foregroundColor = ArchiveTheme.metadata
+                var linked = AttributedString("@\(person.displayName)")
+                linked.link = URL(string: "family-person://\(person.id)")
+                linked.foregroundColor = ArchiveTheme.mention
+                linked.backgroundColor = ArchiveTheme.actionBackground
                 linked.inlinePresentationIntent = .stronglyEmphasized
                 result += linked
-                index = text.index(index, offsetBy: match.0.count)
-            } else {
-                plain.append(text[index])
-                index = text.index(after: index)
+                index = tokenEnd
+                continue
             }
+
+            // Legacy captions may still contain visible names. They remain
+            // readable and linkable until the next private-store migration or
+            // edit converts them to ID markers.
+            guard displayText[index] == "@", index < displayText.index(before: displayText.endIndex) else {
+                plain.append(displayText[index])
+                index = displayText.index(after: index)
+                continue
+            }
+
+            let nameStart = displayText.index(after: index)
+            guard let match = candidates.first(where: { displayText[nameStart...].hasPrefix($0.0) }) else {
+                plain.append(displayText[index])
+                index = displayText.index(after: index)
+                continue
+            }
+
+            let tokenLength = match.0.count + 1
+            let tokenEnd = displayText.index(index, offsetBy: tokenLength)
+            // Do not link a matching prefix inside a longer word such as
+            // “@IrinaSaparova”.
+            if tokenEnd < displayText.endIndex {
+                let next = displayText[tokenEnd]
+                if next.isLetter || next.isNumber || next == "_" {
+                    plain.append(displayText[index])
+                    index = displayText.index(after: index)
+                    continue
+                }
+            }
+
+            if !plain.isEmpty {
+                result += AttributedString(plain)
+                plain = ""
+            }
+
+            var linked = AttributedString(String(displayText[index..<tokenEnd]))
+            linked.link = URL(string: "family-person://\(match.1.id)")
+            linked.foregroundColor = ArchiveTheme.mention
+            linked.backgroundColor = ArchiveTheme.actionBackground
+            linked.inlinePresentationIntent = .stronglyEmphasized
+            result += linked
+            index = tokenEnd
         }
 
         if !plain.isEmpty {
@@ -3399,6 +4169,59 @@ private struct CaptionPeopleText: View {
         }
         return result
     }
+}
+
+/// Returns the current @mention token without consuming the text that follows
+/// it. This matches the behavior of standard mention fields: choosing a
+/// suggestion replaces only the active token, not the rest of the caption.
+private func mentionTokenRange(in text: String, at atIndex: String.Index) -> Range<String.Index> {
+    var end = text.index(after: atIndex)
+    // Spaces are allowed inside a person's display name. A newline or
+    // punctuation terminates the active token, matching normal mention fields
+    // while still supporting names such as “Irina Saparova”.
+    let separators = CharacterSet.newlines.union(.punctuationCharacters)
+    while end < text.endIndex {
+        let character = text[end]
+        if character.unicodeScalars.allSatisfy(separators.contains) {
+            break
+        }
+        end = text.index(after: end)
+    }
+    return atIndex..<end
+}
+
+private func mentionReplacementRange(in text: String, at atIndex: String.Index, displayName: String) -> Range<String.Index> {
+    let queryStart = text.index(after: atIndex)
+    var textIndex = queryStart
+    var nameIndex = displayName.startIndex
+
+    while textIndex < text.endIndex, nameIndex < displayName.endIndex {
+        let textCharacter = String(text[textIndex])
+        let nameCharacter = String(displayName[nameIndex])
+        guard textCharacter.compare(nameCharacter, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame else {
+            break
+        }
+        textIndex = text.index(after: textIndex)
+        nameIndex = displayName.index(after: nameIndex)
+    }
+
+    // If a different supported name variant was typed, keep the replacement
+    // bounded to the current token rather than consuming the rest of the text.
+    let end = textIndex == queryStart ? mentionTokenRange(in: text, at: atIndex).upperBound : textIndex
+    return atIndex..<end
+}
+
+private func mentionQuery(in text: String) -> String? {
+    guard let atIndex = text.lastIndex(of: "@") else { return nil }
+    if atIndex != text.startIndex {
+        let previous = text[text.index(before: atIndex)]
+        let isPunctuation = previous.unicodeScalars.allSatisfy(CharacterSet.punctuationCharacters.contains)
+        guard previous.isWhitespace || isPunctuation else { return nil }
+    }
+
+    let tokenRange = mentionTokenRange(in: text, at: atIndex)
+    let queryStart = text.index(after: atIndex)
+    return String(text[queryStart..<tokenRange.upperBound])
 }
 
 private struct MemoryDetailView: View {
@@ -3456,7 +4279,7 @@ private struct MemoryDetailView: View {
                 if isEditingCaption {
                     captionEditor
                 } else {
-                    let caption = NarrativeLocalizationStore.shared.mediaCaption(memory.person.id, mediaID: currentMedia.id, source: currentMedia.caption ?? "")
+                    let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: currentMedia.id, source: currentMedia.caption ?? "")
                     let captionWithDate = memoryCaptionWithDate(caption, date: currentMedia.date)
                     VStack(alignment: .leading, spacing: 10) {
                         if !captionWithDate.isEmpty {
@@ -3501,9 +4324,56 @@ private struct MemoryDetailView: View {
             .padding(.bottom, ArchiveLayout.pageBottom)
         }
         .scrollIndicators(.hidden)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
         .navigationTitle(ArchiveCopy.text(english: "Memory", russian: "Воспоминание"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                        .background(ArchiveTheme.actionBackground)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(ArchiveCopy.text(english: "Close", russian: "Закрыть"))
+            }
+
+            if repository.canEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            beginCaptionEditing()
+                        } label: {
+                            Label(
+                                ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"),
+                                systemImage: "pencil"
+                            )
+                        }
+
+                        Button(role: .destructive) {
+                            showingRemoveConfirmation = true
+                        } label: {
+                            Label(
+                                ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"),
+                                systemImage: "trash"
+                            )
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.body.weight(.semibold))
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .accessibilityLabel(ArchiveCopy.text(english: "Media actions", russian: "Действия с медиа"))
+                }
+            }
+        }
         .sheet(item: $selectedPerson) { person in
             PersonDetailView(person: person, repository: repository)
         }
@@ -3556,12 +4426,15 @@ private struct MemoryDetailView: View {
                 .tracking(1.2)
                 .foregroundStyle(ArchiveTheme.ink)
 
-            TextEditor(text: $draftCaption)
-                .font(ArchiveTypography.body)
-                .foregroundStyle(ArchiveTheme.ink)
-                .frame(minHeight: 84, maxHeight: 150)
-                .padding(.vertical, 2)
-                .scrollContentBackground(.hidden)
+            MentionTextEditor(text: $draftCaption, people: repository.people)
+                // Keep the editable caption visibly present above the helper
+                // copy; a bare UITextView can otherwise collapse to zero
+                // height inside this VStack.
+                .frame(minHeight: 104, maxHeight: 180)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(ArchiveTheme.controlBackground)
+                .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
                 .onChange(of: draftCaption) { _, _ in
                     updateMentionSuggestions()
                 }
@@ -3577,11 +4450,9 @@ private struct MemoryDetailView: View {
                                     Text("@\(person.displayName)")
                                         .font(ArchiveTypography.metadataEmphasis)
                                         .foregroundStyle(ArchiveTheme.ink)
-                                    if let birthYear = person.birthYear {
-                                        Text("· \(String(birthYear))")
-                                            .font(ArchiveTypography.metadata)
-                                            .foregroundStyle(ArchiveTheme.metadata)
-                                    }
+                                            Text("· \(ArchiveDateFormatter.displayRange(person.lifespan) ?? person.lifespan)")
+                                        .font(ArchiveTypography.metadata)
+                                        .foregroundStyle(ArchiveTheme.metadata)
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 7)
@@ -3628,7 +4499,7 @@ private struct MemoryDetailView: View {
         guard repository.canEdit else { return }
         let source = currentMedia.caption ?? ""
         let localizedCaption = repository.appLanguage == .english
-            ? (NarrativeLocalizationStore.shared.storedMediaCaption(memory.person.id, mediaID: currentMedia.id)
+            ? (NarrativeLocalizationStore.shared.storedMediaCaption(mediaID: currentMedia.id)
                 ?? (source.range(of: "[А-Яа-яЁё]", options: .regularExpression) == nil ? source : ""))
             : source
         // The year is part of the user-facing caption. The media date remains
@@ -3643,23 +4514,7 @@ private struct MemoryDetailView: View {
     }
 
     private func updateMentionSuggestions() {
-        guard let atIndex = draftCaption.lastIndex(of: "@") else {
-            mentionSuggestions = []
-            return
-        }
-
-        let fragmentStart = draftCaption.index(after: atIndex)
-        let fragment = String(draftCaption[fragmentStart...])
-        guard !fragment.contains(where: { $0 == "\n" || ".,;:!?·".contains($0) }) else {
-            mentionSuggestions = []
-            return
-        }
-
-        let query = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
-        if fragment.last?.isWhitespace == true,
-           repository.people.contains(where: { person in
-               person.displayName.compare(query, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-           }) {
+        guard let query = mentionQuery(in: draftCaption) else {
             mentionSuggestions = []
             return
         }
@@ -3674,8 +4529,13 @@ private struct MemoryDetailView: View {
 
     private func insertMention(for person: Person) {
         guard let atIndex = draftCaption.lastIndex(of: "@") else { return }
+        let tokenRange = mentionReplacementRange(in: draftCaption, at: atIndex, displayName: person.displayName)
         let mention = "@\(person.displayName) "
-        draftCaption.replaceSubrange(atIndex..<draftCaption.endIndex, with: mention)
+        draftCaption.replaceSubrange(tokenRange, with: mention)
+        let duplicateIDs = repository.people
+            .filter { personNameVariants($0).contains { lhs in personNameVariants(person).contains { rhs in lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame } } }
+            .map(\.id)
+        selectedMentionIDs.subtract(duplicateIDs)
         selectedMentionIDs.insert(person.id)
         mentionSuggestions = []
     }
@@ -3684,7 +4544,11 @@ private struct MemoryDetailView: View {
     /// entering edit mode, expose those links in the same @mention form the
     /// user can type, even if an imported caption only contained a plain name.
     private func captionWithMentionsForEditing(_ caption: String) -> String {
-        var result = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = MediaMentionToken.visibleText(
+            caption,
+            people: repository.people,
+            language: repository.appLanguage
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
         let relatedIDs = currentMedia.personIDs ?? [memory.person.id]
 
         for personID in relatedIDs {
@@ -3722,66 +4586,44 @@ private struct MemoryDetailView: View {
             return
         }
 
-        let parsedIDs = mentionedPersonIDs(in: draftCaption)
-        // Name text is intentionally readable, so two people with the same
-        // name can produce the same parsed token. Prefer the exact IDs chosen
-        // from the birth-year-disambiguated picker whenever one is available.
-        let activeSelectedIDs = selectedMentionIDs.filter { personID in
-            guard let person = repository.person(id: personID) else { return false }
-            return personNameVariants(person).contains { name in
-                draftCaption.range(
-                    of: "@\(name)",
-                    options: [.caseInsensitive, .diacriticInsensitive]
-                ) != nil
-            }
-        }
-        var mentionedIDs = parsedIDs
-        for person in repository.people {
-            let variants = personNameVariants(person)
-            guard variants.contains(where: { name in
-                draftCaption.range(
-                    of: "@\(name)",
-                    options: [.caseInsensitive, .diacriticInsensitive]
-                ) != nil
-            }) else { continue }
-
-            let duplicateIDs = repository.people
-                .filter { other in
-                    personNameVariants(other).contains { lhs in
-                        variants.contains { rhs in
-                            lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-                        }
-                    }
-                }
-                .map(\.id)
-
-            let selectedDuplicates = activeSelectedIDs.intersection(duplicateIDs)
-            if !selectedDuplicates.isEmpty {
-                mentionedIDs.subtract(duplicateIDs)
-                mentionedIDs.formUnion(selectedDuplicates)
-            }
-        }
-        let relatedIDs = (mentionedIDs.isEmpty ? Set([memory.person.id]) : mentionedIDs.union([memory.person.id]))
+        let canonicalCaption = MediaMentionToken.canonicalize(
+            draftCaption,
+            people: repository.people,
+            preferredPersonIDs: selectedMentionIDs
+        )
+        let parsedIDs = Set(MediaMentionToken.personIDs(in: canonicalCaption))
+        // The ID markers are now the source of truth. The selected picker ID
+        // disambiguates duplicate visible names before canonicalization.
+        let relatedIDs = parsedIDs.isEmpty ? Set([memory.person.id]) : parsedIDs
         var updated = currentMedia
         updated.personIDs = Array(relatedIDs).sorted()
         let ownerID = repository.mediaOwnerID(for: currentMedia, preferredID: memory.person.id) ?? memory.person.id
 
-        if repository.appLanguage == .english {
-            do {
-                for personID in relatedIDs {
-                    try NarrativeLocalizationStore.shared.updateMediaCaption(
-                        personID: personID,
-                        mediaID: currentMedia.id,
-                        caption: draftCaption
-                    )
-                }
-            } catch {
-                saveError = error.localizedDescription
-                return
-            }
-        } else {
-            updated.caption = draftCaption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftCaption.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Persist the relationship links first. A localization sidecar is
+        // secondary; a failure to write a translated caption must never make
+        // a correctly selected @mention disappear from the person's profile.
+        var translationError: String?
+        do {
+            let sourceLanguage = repository.appLanguage
+            let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
+            try NarrativeLocalizationStore.shared.updateMediaCaption(
+                mediaID: currentMedia.id,
+                caption: canonicalCaption,
+                language: sourceLanguage
+            )
+            // Do not leave an old translation visible while the new one
+            // is being generated. It will be restored by the translation
+            // task below, or remain explicitly pending if translation is
+            // unavailable.
+            try NarrativeLocalizationStore.shared.updateMediaCaption(
+                mediaID: currentMedia.id,
+                caption: "",
+                language: targetLanguage
+            )
+        } catch {
+            translationError = error.localizedDescription
         }
+        updated.caption = canonicalCaption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : canonicalCaption.trimmingCharacters(in: .whitespacesAndNewlines)
 
         repository.updateMedia(updated, for: ownerID)
         NarrativeLocalizationStore.shared.reload()
@@ -3789,12 +4631,15 @@ private struct MemoryDetailView: View {
         if #available(iOS 26.0, *) {
             Task { @MainActor in
                 await repository.autoTranslateMediaCaption(
-                    draftCaption,
+                    canonicalCaption,
                     mediaID: currentMedia.id,
                     personIDs: Array(relatedIDs),
                     from: sourceLanguage
                 )
             }
+        }
+        if let translationError {
+            saveError = translationError
         }
         isEditingCaption = false
     }
@@ -3806,6 +4651,8 @@ private struct MemoryDetailView: View {
     }
 
     private func mentionedPersonIDs(in text: String) -> Set<Person.ID> {
+        let storedIDs = Set(MediaMentionToken.personIDs(in: text))
+        if !storedIDs.isEmpty { return storedIDs }
         let candidates = repository.people.flatMap { person in
             [person.displayName, person.sourceDisplayName, person.originalDisplayName]
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -3827,7 +4674,7 @@ private struct MemoryDetailView: View {
     }
 }
 
-private struct MemoriesPagerView: View {
+struct MemoriesPagerView: View {
     let items: [MemoryItem]
     let initialID: String
     let repository: FamilyRepository
@@ -3927,10 +4774,10 @@ private struct MemoriesPagerView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
-                .background(Color(uiColor: .systemBackground))
+                .background(ArchiveTheme.background)
             }
             .foregroundStyle(ArchiveTheme.ink)
-            .background(Color(uiColor: .systemBackground))
+            .background(ArchiveTheme.background)
             .toolbar(.hidden, for: .navigationBar)
         }
     }

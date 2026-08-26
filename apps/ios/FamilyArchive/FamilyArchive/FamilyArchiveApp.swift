@@ -68,6 +68,6 @@ private struct ArchiveLaunchView: View {
                 .accessibilityLabel(ArchiveCopy.text(english: "Loading family archive", russian: "Загрузка семейного архива"))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(uiColor: .systemBackground))
+        .background(ArchiveTheme.background)
     }
 }
