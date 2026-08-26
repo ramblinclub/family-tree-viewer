@@ -16,6 +16,9 @@
 		100000000000000000000008 /* AppIcon-1024.png in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AppIcon-1024.png */; };
 		100000000000000000000010 /* ArchiveLocalizationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* ArchiveLocalizationStore.swift */; };
 		100000000000000000000011 /* archive-locales.json in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* archive-locales.json */; };
+		100000000000000000000012 /* AccountSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* AccountSession.swift */; };
+		100000000000000000000013 /* TopolaTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* TopolaTreeView.swift */; };
+		100000000000000000000014 /* TopolaTree in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* TopolaTree */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +33,9 @@
 		200000000000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		200000000000000000000011 /* ArchiveLocalizationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveLocalizationStore.swift; sourceTree = "<group>"; };
 		200000000000000000000012 /* archive-locales.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "archive-locales.json"; sourceTree = "<group>"; };
+		200000000000000000000013 /* AccountSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSession.swift; sourceTree = "<group>"; };
+		200000000000000000000014 /* TopolaTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopolaTreeView.swift; sourceTree = "<group>"; };
+		200000000000000000000015 /* TopolaTree */ = {isa = PBXFileReference; lastKnownFileType = folder; path = TopolaTree; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +74,7 @@
 			children = (
 				200000000000000000000002 /* ArchiveModels.swift */,
 				200000000000000000000011 /* ArchiveLocalizationStore.swift */,
+				200000000000000000000013 /* AccountSession.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -85,6 +92,7 @@
 			children = (
 				200000000000000000000004 /* PeopleListView.swift */,
 				200000000000000000000005 /* PersonDetailView.swift */,
+				200000000000000000000014 /* TopolaTreeView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -104,6 +112,7 @@
 				200000000000000000000009 /* AppIcon-1024.png */,
 				200000000000000000000010 /* Info.plist */,
 				200000000000000000000012 /* archive-locales.json */,
+				200000000000000000000015 /* TopolaTree */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -169,6 +178,7 @@
 				100000000000000000000006 /* sample-family.json in Resources */,
 				100000000000000000000008 /* AppIcon-1024.png in Resources */,
 				100000000000000000000011 /* archive-locales.json in Resources */,
+				100000000000000000000014 /* TopolaTree in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -182,9 +192,11 @@
 				100000000000000000000001 /* FamilyArchiveApp.swift in Sources */,
 				100000000000000000000002 /* ArchiveModels.swift in Sources */,
 				100000000000000000000010 /* ArchiveLocalizationStore.swift in Sources */,
+				100000000000000000000012 /* AccountSession.swift in Sources */,
 				100000000000000000000003 /* FamilyRepository.swift in Sources */,
 				100000000000000000000004 /* PeopleListView.swift in Sources */,
 				100000000000000000000005 /* PersonDetailView.swift in Sources */,
+				100000000000000000000013 /* TopolaTreeView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -234,6 +246,7 @@
 		800000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FamilyArchive/FamilyArchive.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
@@ -258,6 +271,7 @@
 		800000000000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FamilyArchive/FamilyArchive.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";

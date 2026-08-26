@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import ImageIO
+import AuthenticationServices
+import PhotosUI
 
 enum ArchiveFileResolver {
     nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
@@ -117,6 +119,37 @@ private struct FamilyNameFilterOption: Identifiable {
     let variants: [String]
 }
 
+private enum ConnectionScope: String, CaseIterable, Identifiable {
+    case all
+    case withinOne
+    case withinTwo
+    case withinThree
+
+    var id: String { rawValue }
+
+    var maximumDistance: Int? {
+        switch self {
+        case .all: nil
+        case .withinOne: 1
+        case .withinTwo: 2
+        case .withinThree: 3
+        }
+    }
+
+    func label(count: Int) -> String {
+        switch self {
+        case .all:
+            return ArchiveCopy.text(english: "Everyone · \(count)", russian: "Все · \(count)")
+        case .withinOne:
+            return ArchiveCopy.text(english: "Within 1 · \(count)", russian: "До 1 связи · \(count)")
+        case .withinTwo:
+            return ArchiveCopy.text(english: "Within 2 · \(count)", russian: "До 2 связей · \(count)")
+        case .withinThree:
+            return ArchiveCopy.text(english: "Within 3 · \(count)", russian: "До 3 связей · \(count)")
+        }
+    }
+}
+
 struct PeopleListView: View {
     @ObservedObject var repository: FamilyRepository
     let initialPersonID: Person.ID?
@@ -124,11 +157,37 @@ struct PeopleListView: View {
     @State private var searchText = ""
     @State private var selectedFamilyNameKey: String?
     @State private var storiesOnly = false
+    @State private var selectedConnectionScope: ConnectionScope = .all
     @State private var navigationPath = NavigationPath()
+
+    private var connectionDistances: [Person.ID: Int] {
+        repository.connectionDistances(from: repository.accountHolderID)
+    }
+
+    private var connectionScopeCounts: [ConnectionScope: Int] {
+        let accountID = repository.accountHolderID
+        let distances = connectionDistances
+        return Dictionary(uniqueKeysWithValues: ConnectionScope.allCases.map { scope in
+            if scope == .all {
+                return (scope, repository.people.count)
+            }
+
+            let count = repository.people.reduce(into: 0) { result, person in
+                if person.id == accountID { return }
+                guard let distance = distances[person.id] else { return }
+                if scope.maximumDistance.map({ distance <= $0 }) ?? true {
+                    result += 1
+                }
+            }
+            return (scope, count)
+        })
+    }
 
     private var filteredPeople: [Person] {
         let people = repository.people.sorted(by: birthYearOrder)
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accountID = repository.accountHolderID
+        let distances = connectionDistances
 
         return people.filter { person in
             let matchesSearch = query.isEmpty ||
@@ -138,7 +197,18 @@ struct PeopleListView: View {
             let matchesFamilyName = selectedFamilyNameKey == nil ||
                 normalizedFamilyNameKey(person.familyName) == selectedFamilyNameKey
             let matchesStories = !storiesOnly || person.hasStories
-            return matchesSearch && matchesFamilyName && matchesStories
+            let matchesConnection: Bool
+            if selectedConnectionScope == .all {
+                matchesConnection = true
+            } else if person.id == accountID {
+                matchesConnection = false
+            } else if let distance = distances[person.id],
+                      let maximumDistance = selectedConnectionScope.maximumDistance {
+                matchesConnection = distance <= maximumDistance
+            } else {
+                matchesConnection = false
+            }
+            return matchesSearch && matchesFamilyName && matchesStories && matchesConnection
         }
     }
 
@@ -242,7 +312,7 @@ struct PeopleListView: View {
                                     PersonRow(
                                         person: person,
                                         repository: repository,
-                                        isAccountHolder: repository.document.accountHolderID == person.id
+                                        isAccountHolder: repository.accountHolderID == person.id
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -282,7 +352,8 @@ struct PeopleListView: View {
     }
 
     private var filterControls: some View {
-        HStack(spacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
             Menu {
                 Button {
                     selectedFamilyNameKey = nil
@@ -319,7 +390,26 @@ struct PeopleListView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(storiesOnly ? ArchiveCopy.text(english: "Showing people with stories", russian: "Показаны люди с историями") : ArchiveCopy.text(english: "Show only people with stories", russian: "Показать только людей с историями"))
 
-            Spacer(minLength: 0)
+            Menu {
+                ForEach(ConnectionScope.allCases) { scope in
+                    Button {
+                        selectedConnectionScope = scope
+                    } label: {
+                        filterMenuLabel(
+                            scope.label(count: connectionScopeCounts[scope] ?? 0),
+                            isSelected: selectedConnectionScope == scope
+                        )
+                    }
+                }
+            } label: {
+                filterControlLabel(
+                    title: selectedConnectionScope.label(count: connectionScopeCounts[selectedConnectionScope] ?? 0),
+                    systemImage: "person.2"
+                )
+            }
+            .accessibilityLabel(ArchiveCopy.text(english: "Filter by relationship distance", russian: "Фильтр по расстоянию родства"))
+
+            }
         }
     }
 
@@ -689,6 +779,7 @@ struct MainTabView: View {
     @State private var shouldOpenInitialPerson = true
     @State private var personIDToOpen: Person.ID?
     @State private var homePerson: PresentedPerson?
+    @State private var treePerson: PresentedPerson?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -700,8 +791,11 @@ struct MainTabView: View {
                         // profile returns to the same Home context.
                         homePerson = PresentedPerson(id: personID)
                     }
-                case .tree:
-                    TreePlaceholderView()
+                    case .tree:
+                        TopolaTreeView(repository: repository) { personID in
+                            treePerson = PresentedPerson(id: personID)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .family:
                     PeopleListView(
                         repository: repository,
@@ -725,6 +819,13 @@ struct MainTabView: View {
         }
         .background(Color(uiColor: .systemBackground))
         .sheet(item: $homePerson) { presented in
+            if let person = repository.person(id: presented.id) {
+                NavigationStack {
+                    PersonDetailView(person: person, repository: repository)
+                }
+            }
+        }
+        .sheet(item: $treePerson) { presented in
             if let person = repository.person(id: presented.id) {
                 NavigationStack {
                     PersonDetailView(person: person, repository: repository)
@@ -862,8 +963,7 @@ private struct HomeView: View {
     @State private var showingSettings = false
 
     private var accountHolder: Person? {
-        guard let id = repository.document.accountHolderID else { return nil }
-        return repository.person(id: id)
+        repository.accountHolder
     }
 
     var body: some View {
@@ -1203,7 +1303,7 @@ private struct HomeRelationshipGroupView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(person.displayName)
                                 .font(ArchiveTypography.supportingEmphasis)
-                                .foregroundStyle(ArchiveTheme.ink)
+                                .foregroundStyle(repository.isLiving(person) ? ArchiveTheme.ink : ArchiveTheme.metadata)
                                 .lineLimit(1)
 
                             if !person.lifeDateLine.isEmpty {
@@ -1382,14 +1482,28 @@ private struct SettingsView: View {
     @State private var transferInProgress = false
     @State private var diagnosticRunning = false
     @State private var transferStatus: String?
+    @State private var showingAccountChooser = false
+    @State private var showingPreparationChooser = false
+    @State private var preparedAccountID: Person.ID?
+    @State private var preparedReadOnly = true
+    @State private var exportFilename = "family-archive-private.familyarchive"
+    @StateObject private var accountSession = AccountSessionStore()
+
+    private var activeAccountPerson: Person? {
+        repository?.accountHolder ?? person
+    }
+
+    private var canEdit: Bool {
+        repository?.canEdit ?? true
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 14) {
-                    UserProfilePhotoView(person: person, repository: repository)
+                    UserProfilePhotoView(person: activeAccountPerson, repository: repository)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(person?.displayName ?? "Elena")
+                        Text(activeAccountPerson?.displayName ?? "Elena")
                             .font(.title2.weight(.bold))
                         Text(ArchiveCopy.text(english: "Account profile", russian: "Профиль аккаунта"))
                             .font(.subheadline)
@@ -1403,43 +1517,96 @@ private struct SettingsView: View {
                     .tracking(1.2)
                     .foregroundStyle(ArchiveTheme.accent)
 
-                // These account controls are intentionally read-only until their
-                // editors are implemented. They must not look like tappable rows.
+                if !canEdit {
+                    AccountRow(
+                        title: ArchiveCopy.text(english: "Read-only access", russian: "Доступ только для чтения"),
+                        detail: ArchiveCopy.text(english: "Editing is managed by the family archive owner.", russian: "Изменения управляются владельцем семейного архива.")
+                    )
+                }
+
+                if canEdit, repository != nil {
+                    Button {
+                        showingAccountChooser = true
+                    } label: {
+                        ArchiveTransferRow(
+                            title: ArchiveCopy.text(english: "Account person", russian: "Профиль аккаунта"),
+                            detail: activeAccountPerson?.displayName ?? ArchiveCopy.text(english: "Choose a person", russian: "Выберите человека"),
+                            systemImage: "person.crop.circle"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(transferInProgress)
+                }
+
+                if accountSession.isSignedIn {
+                    AccountRow(
+                        title: ArchiveCopy.text(english: "Apple account", russian: "Учётная запись Apple"),
+                        detail: ArchiveCopy.text(english: "Connected on this device", russian: "Подключена на этом устройстве")
+                    )
+                } else {
+                    SignInWithAppleButton(.signIn) { request in
+                        request.requestedScopes = [.fullName, .email]
+                    } onCompletion: { result in
+                        accountSession.handleAppleAuthorization(result)
+                    }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 44)
+                    .padding(.vertical, 10)
+                }
+
                 AccountRow(title: ArchiveCopy.text(english: "Profile photo", russian: "Фото профиля"), detail: ArchiveCopy.text(english: "Coming soon", russian: "Скоро будет доступно"))
                 AccountRow(title: ArchiveCopy.text(english: "Your relationship view", russian: "Связи с родственниками"), detail: ArchiveCopy.text(english: "Coming soon", russian: "Скоро будет доступно"))
                 AccountRow(title: ArchiveCopy.text(english: "Privacy", russian: "Приватность"), detail: ArchiveCopy.text(english: "Coming soon", russian: "Скоро будет доступно"))
 
-                Text(ArchiveCopy.text(english: "PRIVATE DATA", russian: "ПРИВАТНЫЕ ДАННЫЕ"))
-                    .font(.caption.weight(.semibold))
-                    .tracking(1.2)
-                    .foregroundStyle(ArchiveTheme.accent)
-                    .padding(.top, 28)
-
-                Button {
-                    exportPrivateArchive()
-                } label: {
-                    ArchiveTransferRow(
-                        title: ArchiveCopy.text(english: "Export private archive", russian: "Экспортировать приватный архив"),
-                        detail: ArchiveCopy.text(english: "Save people, relationships, stories, and media", russian: "Сохранить людей, связи, истории и медиа"),
-                        systemImage: "square.and.arrow.up"
-                    )
+                if canEdit, repository != nil {
+                    Button {
+                        showingPreparationChooser = true
+                    } label: {
+                        ArchiveTransferRow(
+                            title: ArchiveCopy.text(english: "Prepare archive for another person", russian: "Подготовить архив для другого человека"),
+                            detail: ArchiveCopy.text(english: "They will see themselves as YOU after import", russian: "После импорта человек увидит себя как ВЫ"),
+                            systemImage: "person.badge.plus"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(transferInProgress)
                 }
-                .buttonStyle(.plain)
-                .disabled(transferInProgress)
-                .opacity(transferInProgress ? 0.5 : 1)
 
-                Button {
-                    showingImporter = true
-                } label: {
-                    ArchiveTransferRow(
-                        title: ArchiveCopy.text(english: "Import private archive", russian: "Импортировать приватный архив"),
-                        detail: ArchiveCopy.text(english: "Replace the current private data after review", russian: "Заменить текущие приватные данные после проверки"),
-                        systemImage: "square.and.arrow.down"
-                    )
+                if repository != nil {
+                    Text(ArchiveCopy.text(english: "PRIVATE DATA", russian: "ПРИВАТНЫЕ ДАННЫЕ"))
+                        .font(.caption.weight(.semibold))
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.accent)
+                        .padding(.top, 28)
+
+                    if canEdit {
+                        Button {
+                            exportPrivateArchive()
+                        } label: {
+                            ArchiveTransferRow(
+                                title: ArchiveCopy.text(english: "Export private archive", russian: "Экспортировать приватный архив"),
+                                detail: ArchiveCopy.text(english: "Save people, relationships, stories, and media", russian: "Сохранить людей, связи, истории и медиа"),
+                                systemImage: "square.and.arrow.up"
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(transferInProgress)
+                        .opacity(transferInProgress ? 0.5 : 1)
+                    }
+
+                    Button {
+                        showingImporter = true
+                    } label: {
+                        ArchiveTransferRow(
+                            title: ArchiveCopy.text(english: "Import private archive", russian: "Импортировать приватный архив"),
+                            detail: ArchiveCopy.text(english: "Replace the current private data after review", russian: "Заменить текущие приватные данные после проверки"),
+                            systemImage: "square.and.arrow.down"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(transferInProgress)
+                    .opacity(transferInProgress ? 0.5 : 1)
                 }
-                .buttonStyle(.plain)
-                .disabled(transferInProgress)
-                .opacity(transferInProgress ? 0.5 : 1)
 
                 if let transferStatus {
                     Text(transferStatus)
@@ -1452,6 +1619,7 @@ private struct SettingsView: View {
                     ImportReviewPanel(
                         personCount: importConfirmation.summary.personCount,
                         relationshipCount: importConfirmation.summary.relationshipCount,
+                        preparedAccountName: importConfirmation.summary.preparedAccountName,
                         onReplace: { replaceImportedArchive(importConfirmation) },
                         onCancel: {
                             cleanupTemporaryImport(at: importConfirmation.url)
@@ -1505,11 +1673,40 @@ private struct SettingsView: View {
             }
         }
         .interactiveDismissDisabled(transferInProgress)
+        .sheet(isPresented: $showingAccountChooser) {
+            AccountChooserView(
+                title: ArchiveCopy.text(english: "Choose account person", russian: "Выберите профиль аккаунта"),
+                repository: repository,
+                selectedID: repository?.accountHolderID,
+                onSelect: { selected in
+                    repository?.setActiveAccountID(selected.id)
+                    showingAccountChooser = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingPreparationChooser) {
+            AccountChooserView(
+                title: ArchiveCopy.text(english: "Prepare archive for", russian: "Подготовить архив для"),
+                repository: repository,
+                selectedID: nil,
+                readOnly: $preparedReadOnly,
+                onSelect: { selected in
+                    showingPreparationChooser = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        exportPrivateArchive(
+                            preparedFor: selected.id,
+                            displayName: selected.sourceDisplayName,
+                            readOnly: preparedReadOnly
+                        )
+                    }
+                }
+            )
+        }
         .fileExporter(
             isPresented: $showingExporter,
             document: transferDocument,
             contentType: .familyArchive,
-            defaultFilename: "family-archive-private.familyarchive"
+            defaultFilename: exportFilename
         ) { result in
             switch result {
             case .success(let url):
@@ -1532,9 +1729,26 @@ private struct SettingsView: View {
         .alert(item: $transferMessage) { message in
             Alert(title: Text(message.message), dismissButton: .default(Text(ArchiveCopy.text(english: "OK", russian: "ОК"))))
         }
+        .alert(
+            ArchiveCopy.text(english: "Apple sign-in", russian: "Вход через Apple"),
+            isPresented: Binding(
+                get: { accountSession.errorMessage != nil },
+                set: { if !$0 { accountSession.errorMessage = nil } }
+            )
+        ) {
+            Button(ArchiveCopy.text(english: "OK", russian: "Хорошо")) {
+                accountSession.errorMessage = nil
+            }
+        } message: {
+            Text(accountSession.errorMessage ?? "")
+        }
     }
 
-    private func exportPrivateArchive() {
+    private func exportPrivateArchive(
+        preparedFor personID: Person.ID? = nil,
+        displayName: String? = nil,
+        readOnly: Bool = true
+    ) {
         guard let repository else { return }
         do {
             // This is intentionally synchronous and limited to resolving the
@@ -1542,6 +1756,14 @@ private struct SettingsView: View {
             // transition occurs before the picker is presented.
             _ = try repository.exportPrivateStoreURL()
             transferDocument = ArchiveTransferDocument(data: Data("Family Archive private export".utf8))
+            preparedAccountID = personID
+            preparedReadOnly = readOnly
+            if let displayName {
+                let safeName = displayName.replacingOccurrences(of: " ", with: "-")
+                exportFilename = "family-archive-for-\(safeName).familyarchive"
+            } else {
+                exportFilename = "family-archive-private.familyarchive"
+            }
             showingExporter = true
         } catch {
             transferMessage = TransferMessage(message: error.localizedDescription)
@@ -1551,6 +1773,8 @@ private struct SettingsView: View {
     private func finishExport(to destinationURL: URL) {
         guard let repository else { return }
         transferInProgress = true
+        let preparedID = preparedAccountID
+        let preparedModeIsReadOnly = preparedReadOnly
         let accessed = destinationURL.startAccessingSecurityScopedResource()
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1562,9 +1786,14 @@ private struct SettingsView: View {
                 // The system picker wrote only the tiny placeholder. Replace
                 // it at the chosen location with the streaming archive file.
                 try? FileManager.default.removeItem(at: destinationURL)
-                try repository.exportPrivateArchiveFile(to: destinationURL)
+                try repository.exportPrivateArchiveFile(
+                    to: destinationURL,
+                    preparedForPersonID: preparedID,
+                    readOnly: preparedModeIsReadOnly
+                )
                 DispatchQueue.main.async {
                     transferInProgress = false
+                    preparedAccountID = nil
                     transferMessage = TransferMessage(message: ArchiveCopy.text(
                         english: "Private archive saved.",
                         russian: "Приватный архив сохранён."
@@ -1709,6 +1938,7 @@ private struct ImportConfirmation: Identifiable {
 private struct ImportReviewPanel: View {
     let personCount: Int
     let relationshipCount: Int
+    let preparedAccountName: String?
     let onReplace: () -> Void
     let onCancel: () -> Void
 
@@ -1725,6 +1955,15 @@ private struct ImportReviewPanel: View {
             ))
                 .font(ArchiveTypography.body)
                 .foregroundStyle(ArchiveTheme.ink)
+
+            if let preparedAccountName {
+                Text(ArchiveCopy.text(
+                    english: "Prepared for \(preparedAccountName). After import, this person will be YOU on this device.",
+                    russian: "Подготовлено для профиля «\(preparedAccountName)». После импорта этот человек будет ВАМИ на этом устройстве."
+                ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
 
             HStack(spacing: 10) {
                 Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена"), action: onCancel)
@@ -1761,6 +2000,153 @@ private struct ArchiveTransferDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct AccountChooserView: View {
+    let title: String
+    let repository: FamilyRepository?
+    let selectedID: Person.ID?
+    let readOnly: Binding<Bool>?
+    let onSelect: (Person) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    init(
+        title: String,
+        repository: FamilyRepository?,
+        selectedID: Person.ID?,
+        readOnly: Binding<Bool>? = nil,
+        onSelect: @escaping (Person) -> Void
+    ) {
+        self.title = title
+        self.repository = repository
+        self.selectedID = selectedID
+        self.readOnly = readOnly
+        self.onSelect = onSelect
+    }
+
+    private var availableAccounts: [Person] {
+        guard let repository else { return [] }
+
+        if readOnly != nil {
+            // Preparing an account is for another living family member, not
+            // the current administrator. Keep this list focused on the
+            // administrator's immediate family.
+            guard let ownerID = repository.document.accountHolderID,
+                  let account = repository.person(id: ownerID) else { return [] }
+            let graph = FamilyRelationshipGraph(repository: repository)
+            let relatives = graph.parents(of: account.id) +
+                graph.partners(of: account.id) +
+                graph.siblings(of: account.id) +
+                graph.children(of: account.id)
+            var seen = Set<Person.ID>()
+            return relatives
+                .filter { $0.id != account.id && repository.isLiving($0) }
+                .filter { seen.insert($0.id).inserted }
+                .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        }
+
+        // The account model is intentionally limited to the two people we
+        // are onboarding in this prototype. Other people remain family
+        // records, but are not yet selectable as app accounts.
+        let accountIDs = [
+            repository.people.first { person in
+                let name = person.sourceDisplayName.lowercased()
+                return name == "елена петрова" || name == "elena petrova"
+            }?.id,
+            repository.people.first { person in
+                let name = person.sourceDisplayName.lowercased()
+                return name == "михаил сапаров" || name == "mikhail saparov"
+            }?.id,
+            repository.document.accountHolderID
+        ].compactMap { $0 }
+
+        return accountIDs.reduce(into: [Person]()) { result, id in
+            guard let person = repository.person(id: id), !result.contains(where: { $0.id == id }) else { return }
+            result.append(person)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if let readOnly {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(
+                                ArchiveCopy.text(english: "Read-only access", russian: "Доступ только для чтения"),
+                                isOn: readOnly
+                            )
+                            Text(ArchiveCopy.text(
+                                english: "When enabled, the recipient can browse the archive but cannot edit or delete profiles, stories, events, captions, or media.",
+                                russian: "При включении получатель сможет просматривать архив, но не сможет изменять или удалять профили, истории, события, подписи и медиа."
+                            ))
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
+                        }
+                        .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                        .padding(.top, ArchiveLayout.pageTop)
+                        .padding(.bottom, 14)
+
+                        Divider()
+                    }
+                    if let repository {
+                        ForEach(availableAccounts) { person in
+                            Button {
+                                onSelect(person)
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 12) {
+                                    FamilyMemberPhotoView(person: person, size: 42, repository: repository)
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(person.displayName)
+                                            .font(ArchiveTypography.contentTitle)
+                                            .foregroundStyle(ArchiveTheme.ink)
+                                            .lineLimit(1)
+                                        Text(person.lifeDateLine(language: .current))
+                                            .font(ArchiveTypography.metadata)
+                                            .foregroundStyle(ArchiveTheme.metadata)
+                                            .lineLimit(1)
+                                    }
+
+                                    Spacer(minLength: 8)
+
+                                    if selectedID == person.id {
+                                        Image(systemName: "checkmark")
+                                            .font(ArchiveTypography.icon)
+                                            .foregroundStyle(ArchiveTheme.action)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                                .padding(.vertical, 11)
+                            }
+                            .buttonStyle(.plain)
+
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
+            }
+            .scrollIndicators(.hidden)
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(ArchiveTypography.icon)
+                    }
+                    .accessibilityLabel(ArchiveCopy.text(english: "Close", russian: "Закрыть"))
+                }
+            }
+        }
     }
 }
 
@@ -1806,30 +2192,222 @@ private struct HomeStat: View {
     }
 }
 
-private struct TreePlaceholderView: View {
+private struct PrimaryTreeView: View {
+    @ObservedObject var repository: FamilyRepository
+
+    private var graph: FamilyRelationshipGraph {
+        FamilyRelationshipGraph(repository: repository)
+    }
+
+    private var account: Person? {
+        repository.accountHolder
+    }
+
+    private var parents: [Person] {
+        guard let account else { return [] }
+        return graph.parents(of: account.id)
+    }
+
+    private var grandparents: [Person] {
+        let parentIDs = Set(parents.map(\.id))
+        return uniquePeople(parents.flatMap { graph.parents(of: $0.id) })
+            .filter { !parentIDs.contains($0.id) }
+    }
+
+    private var siblings: [Person] {
+        guard let account else { return [] }
+        return graph.siblings(of: account.id)
+    }
+
+    private var partners: [Person] {
+        guard let account else { return [] }
+        return graph.partners(of: account.id)
+    }
+
+    private var children: [Person] {
+        guard let account else { return [] }
+        return graph.children(of: account.id)
+    }
+
+    private var grandchildren: [Person] {
+        return uniquePeople(children.flatMap { graph.children(of: $0.id) })
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(ArchiveCopy.text(english: "TREE", russian: "ДЕРЕВО"))
-                    .font(ArchiveTypography.sectionTitle)
-                    .tracking(1.2)
-                    .foregroundStyle(ArchiveTheme.ink)
-                Text(ArchiveCopy.text(english: "Family tree", russian: "Семейное дерево"))
-                    .font(ArchiveTypography.pageTitle)
-                Text(ArchiveCopy.text(english: "The tree viewer is coming soon. Profiles and family links are available from the Family tab.", russian: "Просмотр дерева скоро появится. Профили и семейные связи доступны на вкладке «Семья»."))
-                    .font(ArchiveTypography.paragraph)
-                    .foregroundStyle(ArchiveTheme.muted)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
+            ScrollView([.horizontal, .vertical]) {
+                VStack(spacing: 0) {
+                    treeHeader
+
+                    if let account {
+                        if !grandparents.isEmpty {
+                            treeGeneration(
+                                title: ArchiveCopy.text(english: "Grandparents", russian: "Бабушки и дедушки"),
+                                people: grandparents
+                            )
+                            treeConnector
+                        }
+
+                        if !parents.isEmpty {
+                            treeGeneration(
+                                title: ArchiveCopy.text(english: "Parents", russian: "Родители"),
+                                people: parents
+                            )
+                            treeConnector
+                        }
+
+                        treeGeneration(
+                            title: ArchiveCopy.text(english: "You and your generation", russian: "Вы и ваше поколение"),
+                            people: [account] + partners + siblings,
+                            highlightedIDs: [account.id]
+                        )
+
+                        if !children.isEmpty {
+                            treeConnector
+                            treeGeneration(
+                                title: ArchiveCopy.text(english: "Children", russian: "Дети"),
+                                people: children
+                            )
+                        }
+
+                        if !grandchildren.isEmpty {
+                            treeConnector
+                            treeGeneration(
+                                title: ArchiveCopy.text(english: "Grandchildren", russian: "Внуки"),
+                                people: grandchildren
+                            )
+                        }
+                    } else {
+                        Text(ArchiveCopy.text(
+                            english: "Choose an account person to build the primary tree.",
+                            russian: "Выберите человека аккаунта, чтобы построить основное дерево."
+                        ))
+                        .font(ArchiveTypography.paragraph)
+                        .foregroundStyle(ArchiveTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 30)
+                    }
+                }
+                .frame(minWidth: 340, alignment: .center)
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, ArchiveLayout.pageHorizontal)
-            .padding(.top, ArchiveLayout.pageTop)
-            .padding(.bottom, ArchiveLayout.pageBottom)
+            .scrollIndicators(.hidden)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    private var treeHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ArchiveCopy.text(english: "TREE", russian: "ДЕРЕВО"))
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(1.2)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            Text(ArchiveCopy.text(english: "Primary family tree", russian: "Основное семейное дерево"))
+                .font(ArchiveTypography.pageTitle)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let account {
+                Text(ArchiveCopy.text(
+                    english: "Centered on \(account.displayName). Showing the connected family branch.",
+                    russian: "В центре — \(account.displayName). Показана связанная семейная ветвь."
+                ))
+                .font(ArchiveTypography.paragraph)
+                .foregroundStyle(ArchiveTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 24)
+    }
+
+    private var treeConnector: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(ArchiveTheme.controlBorder)
+                .frame(width: 1, height: 18)
+            Rectangle()
+                .fill(ArchiveTheme.controlBorder)
+                .frame(width: 1, height: 18)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func treeGeneration(
+        title: String,
+        people: [Person],
+        highlightedIDs: Set<Person.ID> = []
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title.uppercased())
+                .font(ArchiveTypography.metadataEmphasis)
+                .tracking(0.8)
+                .foregroundStyle(ArchiveTheme.metadata)
+
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(uniquePeople(people)) { person in
+                    NavigationLink {
+                        PersonDetailView(person: person, repository: repository)
+                    } label: {
+                        TreePersonCard(
+                            person: person,
+                            repository: repository,
+                            isHighlighted: highlightedIDs.contains(person.id)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func uniquePeople(_ people: [Person]) -> [Person] {
+        var seen = Set<Person.ID>()
+        return people.filter { seen.insert($0.id).inserted }
+    }
+}
+
+private struct TreePersonCard: View {
+    let person: Person
+    let repository: FamilyRepository
+    let isHighlighted: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            FamilyMemberPhotoView(person: person, size: 54, repository: repository)
+
+            Text(NameLocalizationStore.shared.displayName(
+                for: person.id,
+                fallback: person.sourceDisplayName,
+                language: .current
+            ))
+            .font(ArchiveTypography.contentTitle)
+            .foregroundStyle(isHighlighted ? ArchiveTheme.action : (repository.isLiving(person) ? ArchiveTheme.ink : ArchiveTheme.metadata))
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Text(person.lifeDateLine(
+                language: .current,
+                includeUnknownDeathDate: repository.hasUnknownDeathDate(person)
+            ))
+            .font(ArchiveTypography.metadata)
+            .foregroundStyle(ArchiveTheme.metadata)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: 136, alignment: .leading)
+        .padding(10)
+        .background(ArchiveTheme.controlBackground)
+        .overlay(
+            Rectangle()
+                .stroke(isHighlighted ? ArchiveTheme.action : ArchiveTheme.controlBorder, lineWidth: isHighlighted ? 2 : 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(person.displayName)
     }
 }
 
@@ -1840,6 +2418,7 @@ private struct MemoriesView: View {
     @State private var filter: MemoryFilter = .photo
     @State private var sort: MemorySort = .newest
     @State private var selectedMemory: MemoryItem?
+    @State private var showingMediaReview = false
 
     private var allMemories: [MemoryItem] {
         repository.people.flatMap { person in
@@ -1883,6 +2462,26 @@ private struct MemoriesView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     memoriesHeader
+
+                    if repository.canEdit {
+                        Button {
+                            showingMediaReview = true
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "tray.and.arrow.down")
+                                Text(ArchiveCopy.text(english: "Review media", russian: "Проверить медиа"))
+                                let stagedCount = repository.stagedMediaItems().count
+                                if stagedCount > 0 {
+                                    Text("· \(stagedCount)")
+                                        .font(ArchiveTypography.metadata)
+                                }
+                            }
+                            .font(ArchiveTypography.action)
+                            .foregroundStyle(ArchiveTheme.action)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 10)
+                    }
 
                     SearchField(text: $searchText, placeholder: ArchiveCopy.text(english: "Search \(filter.searchPlaceholder)", russian: "Поиск: \(filter.searchPlaceholderRussian)"))
                         .padding(.top, 12)
@@ -1965,6 +2564,9 @@ private struct MemoriesView: View {
             .sheet(item: $selectedMemory) { memory in
                 MemoriesPagerView(items: visibleMemories, initialID: memory.id, repository: repository)
             }
+            .sheet(isPresented: $showingMediaReview) {
+                MediaReviewView(repository: repository)
+            }
         }
     }
 
@@ -1974,6 +2576,518 @@ private struct MemoriesView: View {
             .tracking(1.2)
             .foregroundStyle(ArchiveTheme.ink)
         .padding(.top, ArchiveLayout.pageTop)
+    }
+}
+
+private struct MediaReviewView: View {
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var stagedItems: [StagedMediaItem] = []
+    @State private var selectedItem: StagedMediaItem?
+    @State private var showingImporter = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var importError: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(ArchiveCopy.text(
+                        english: "New files stay private until you review and save them.",
+                        russian: "Новые файлы остаются приватными, пока вы не проверите и не сохраните их."
+                    ))
+                    .font(ArchiveTypography.body)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                    if stagedItems.isEmpty {
+                        ContentUnavailableView(
+                            ArchiveCopy.text(english: "No media to review", russian: "Нет медиа для проверки"),
+                            systemImage: "tray",
+                            description: Text(ArchiveCopy.text(
+                                english: "Add photos or documents from Files to begin.",
+                                russian: "Добавьте фотографии или документы из приложения «Файлы»."
+                            ))
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 48)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(stagedItems) { item in
+                                Button {
+                                    selectedItem = item
+                                } label: {
+                                    StagedMediaRow(item: item)
+                                }
+                                .buttonStyle(.plain)
+
+                                if item.id != stagedItems.last?.id {
+                                    Rectangle()
+                                        .fill(ArchiveTheme.controlBorder)
+                                        .frame(height: 1)
+                                }
+                            }
+                        }
+                        .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+                    }
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
+            }
+            .scrollIndicators(.hidden)
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle(ArchiveCopy.text(english: "Review media", russian: "Проверка медиа"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel(ArchiveCopy.text(english: "Close", russian: "Закрыть"))
+                }
+                if repository.canEdit {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showingImporter = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel(ArchiveCopy.text(english: "Add media", russian: "Добавить медиа"))
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        PhotosPicker(
+                            selection: $selectedPhotoItems,
+                            maxSelectionCount: 50,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            Image(systemName: "photo.badge.plus")
+                        }
+                        .accessibilityLabel(ArchiveCopy.text(english: "Choose from Photos", russian: "Выбрать из Фото"))
+                    }
+                }
+            }
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.image, .movie, .audio, .pdf],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    do {
+                        _ = try repository.importMediaFilesToStaging(urls)
+                        reloadItems()
+                    } catch {
+                        importError = error.localizedDescription
+                    }
+                case .failure(let error):
+                    importError = error.localizedDescription
+                }
+            }
+            .sheet(item: $selectedItem) { item in
+                StagedMediaEditor(item: item, repository: repository) {
+                    reloadItems()
+                }
+            }
+            .alert(
+                ArchiveCopy.text(english: "Could not add media", russian: "Не удалось добавить медиа"),
+                isPresented: Binding(
+                    get: { importError != nil },
+                    set: { if !$0 { importError = nil } }
+                )
+            ) {
+                Button(ArchiveCopy.text(english: "OK", russian: "Хорошо")) { importError = nil }
+            } message: {
+                Text(importError ?? "")
+            }
+            .onChange(of: selectedPhotoItems) { _, items in
+                guard !items.isEmpty else { return }
+                Task {
+                    await importPhotos(items)
+                    selectedPhotoItems = []
+                }
+            }
+            .onAppear { reloadItems() }
+        }
+    }
+
+    private func reloadItems() {
+        stagedItems = repository.stagedMediaItems()
+    }
+
+    private func importPhotos(_ items: [PhotosPickerItem]) async {
+        do {
+            for item in items {
+                guard let data = try await item.loadTransferable(type: Data.self) else { continue }
+                let extensionName = item.supportedContentTypes
+                    .first(where: { $0.conforms(to: .image) })?
+                    .preferredFilenameExtension ?? "jpg"
+                _ = try repository.importPhotoDataToStaging(
+                    data,
+                    filename: "photo-\(UUID().uuidString).\(extensionName)"
+                )
+            }
+            reloadItems()
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+}
+
+private struct StagedMediaRow: View {
+    let item: StagedMediaItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            StagedMediaThumbnail(item: item)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.filename)
+                    .font(ArchiveTypography.contentTitle)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(ArchiveCopy.text(english: "Needs review", russian: "Требует проверки"))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
+
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(ArchiveTheme.action)
+        }
+        .padding(12)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct StagedMediaThumbnail: View {
+    let item: StagedMediaItem
+    @StateObject private var loader = ArchiveImageLoader()
+
+    var body: some View {
+        Group {
+            if item.kind == .photo, let image = loader.image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: item.kind.systemImage)
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(ArchiveTheme.action)
+            }
+        }
+        .frame(width: 72, height: 72)
+        .background(ArchiveTheme.controlBackground)
+        .clipped()
+        .onAppear {
+            if item.kind == .photo {
+                loader.load(path: item.url.path, maxPixelSize: 240)
+            }
+        }
+    }
+}
+
+private struct StagedMediaEditor: View {
+    let item: StagedMediaItem
+    @ObservedObject var repository: FamilyRepository
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var caption = ""
+    @State private var date = ""
+    @State private var seededOriginalDate: String?
+    @State private var seededOriginalLocation: String?
+    @State private var mentionSuggestions: [Person] = []
+    @State private var selectedMentionIDs: Set<Person.ID> = []
+    @State private var errorMessage: String?
+    @StateObject private var imageLoader = ArchiveImageLoader()
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    stagedPreview
+
+                    Text(ArchiveCopy.text(english: "EDIT CAPTION", russian: "ИЗМЕНЕНИЕ ПОДПИСИ"))
+                        .font(ArchiveTypography.sectionTitle)
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.ink)
+
+                    TextEditor(text: $caption)
+                        .font(ArchiveTypography.body)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .frame(minHeight: 84, maxHeight: 150)
+                        .padding(.vertical, 2)
+                        .scrollContentBackground(.hidden)
+                        .onChange(of: caption) { _, _ in
+                            updateMentionSuggestions()
+                        }
+
+                    if !mentionSuggestions.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(mentionSuggestions) { person in
+                                    Button {
+                                        insertMention(for: person)
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Text("@\(person.displayName)")
+                                                .font(ArchiveTypography.metadataEmphasis)
+                                                .foregroundStyle(ArchiveTheme.ink)
+                                            if let birthYear = person.birthYear {
+                                                Text("· \(String(birthYear))")
+                                                    .font(ArchiveTypography.metadata)
+                                                    .foregroundStyle(ArchiveTheme.metadata)
+                                            }
+                                        }
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 7)
+                                        .background(ArchiveTheme.actionBackground)
+                                        .clipShape(ArchiveShape.control)
+                                        .overlay(ArchiveShape.control.stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+
+                    Text(ArchiveCopy.text(
+                        english: "Type @ followed by a family member’s name. The mention becomes a profile link and adds the image to that person’s media.",
+                        russian: "Введите @ и имя родственника. Упоминание станет ссылкой на профиль, а изображение появится в его медиа."
+                    ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                    HStack {
+                        Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена")) {
+                            dismiss()
+                        }
+                        .buttonStyle(.plain)
+                        .font(ArchiveTypography.action)
+                        .foregroundStyle(ArchiveTheme.metadata)
+
+                        Spacer()
+
+                        Button(ArchiveCopy.text(english: "Save", russian: "Сохранить")) {
+                            save()
+                        }
+                        .buttonStyle(.plain)
+                        .font(ArchiveTypography.action)
+                        .foregroundStyle(ArchiveTheme.action)
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
+            }
+            .scrollIndicators(.hidden)
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle(ArchiveCopy.text(english: "Review media", russian: "Проверка медиа"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+            }
+            .alert(
+                ArchiveCopy.text(english: "Could not save media", russian: "Не удалось сохранить медиа"),
+                isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } }
+                )
+            ) {
+                Button(ArchiveCopy.text(english: "OK", russian: "Хорошо")) { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+            .onAppear {
+                if item.kind == .photo {
+                    imageLoader.load(path: item.url.path, maxPixelSize: 1400)
+                }
+                if caption.isEmpty, let originalDate = repository.originalMediaDate(for: item) {
+                    seededOriginalDate = originalDate
+                    date = originalDate
+                    caption = originalDate
+                }
+                Task {
+                    guard let originalLocation = await repository.originalMediaLocation(for: item) else { return }
+                    guard caption.isEmpty || caption == seededOriginalDate else { return }
+                    seededOriginalLocation = originalLocation
+                    if let seededOriginalDate {
+                        caption = "\(seededOriginalDate) · \(originalLocation)"
+                    } else {
+                        caption = originalLocation
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var stagedPreview: some View {
+        if item.kind == .photo, let image = imageLoader.image {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity)
+                .clipped()
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: item.kind.systemImage)
+                    .font(.system(size: 42, weight: .medium))
+                    .foregroundStyle(ArchiveTheme.action)
+                Text(item.filename)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
+            .frame(maxWidth: .infinity, minHeight: 180)
+            .background(ArchiveTheme.controlBackground)
+        }
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(ArchiveTypography.metadataEmphasis)
+            .foregroundStyle(ArchiveTheme.ink)
+    }
+
+    private func save() {
+        guard repository.canEdit else {
+            errorMessage = ArchiveCopy.text(
+                english: "This account can view the archive but cannot add or edit media.",
+                russian: "Эта учётная запись может просматривать архив, но не может добавлять или изменять медиа."
+            )
+            return
+        }
+        let mentionedIDs = mentionedPersonIDs(in: caption)
+        let linkedIDs = mentionedIDs.union(selectedMentionIDs)
+        guard !linkedIDs.isEmpty else {
+            errorMessage = ArchiveCopy.text(english: "Type @ and choose at least one family member.", russian: "Введите @ и выберите хотя бы одного родственника.")
+            return
+        }
+        guard !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = ArchiveCopy.text(english: "Add a caption before saving.", russian: "Добавьте подпись перед сохранением.")
+            return
+        }
+        if let languageIssue = ArchiveLanguageValidator.issue(
+            language: repository.appLanguage,
+            fields: [(ArchiveCopy.text(english: "Caption", russian: "Подпись"), caption)]
+        ) {
+            errorMessage = languageIssue
+            return
+        }
+
+        do {
+            let recordDate = dateFromCaption(caption)
+            let mediaID = try repository.reviewStagedMedia(
+                item,
+                caption: caption,
+                date: recordDate,
+                personIDs: Array(linkedIDs),
+                isApproximate: false,
+                captionLanguage: repository.appLanguage
+            )
+            let sourceLanguage = repository.appLanguage
+            #if !os(tvOS)
+            if #available(iOS 26.0, *) {
+                Task { @MainActor in
+                    await repository.autoTranslateMediaCaption(
+                        caption,
+                        mediaID: mediaID,
+                        personIDs: Array(linkedIDs),
+                        from: sourceLanguage
+                    )
+                }
+            }
+            #endif
+            onSaved()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+
+    private func updateMentionSuggestions() {
+        guard let atIndex = caption.lastIndex(of: "@") else {
+            mentionSuggestions = []
+            return
+        }
+
+        let fragmentStart = caption.index(after: atIndex)
+        let fragment = String(caption[fragmentStart...])
+        guard !fragment.contains(where: { $0 == "\n" || ".,;:!?·".contains($0) }) else {
+            mentionSuggestions = []
+            return
+        }
+
+        let query = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        if fragment.last?.isWhitespace == true,
+           repository.people.contains(where: { person in
+               person.displayName.compare(query, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+           }) {
+            mentionSuggestions = []
+            return
+        }
+
+        mentionSuggestions = Array(repository.people.filter { person in
+            personNameVariants(person).contains { name in
+                query.isEmpty || name.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
+            }
+        }.prefix(8))
+    }
+
+    private func insertMention(for person: Person) {
+        guard let atIndex = caption.lastIndex(of: "@") else { return }
+        caption.replaceSubrange(atIndex..<caption.endIndex, with: "@\(person.displayName) ")
+        selectedMentionIDs.insert(person.id)
+        mentionSuggestions = []
+    }
+
+    private func personNameVariants(_ person: Person) -> [String] {
+        [person.displayName, person.sourceDisplayName, person.originalDisplayName]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func mentionedPersonIDs(in text: String) -> Set<Person.ID> {
+        let candidates = repository.people.flatMap { person in
+            personNameVariants(person).map { ($0, person.id) }
+        }
+        .sorted { $0.0.count > $1.0.count }
+
+        var found = Set<Person.ID>()
+        for (name, personID) in candidates {
+            let token = "@\(name)"
+            var searchRange = text.startIndex..<text.endIndex
+            while let range = text.range(of: token, options: [.caseInsensitive, .diacriticInsensitive], range: searchRange) {
+                found.insert(personID)
+                guard range.upperBound < text.endIndex else { break }
+                searchRange = range.upperBound..<text.endIndex
+            }
+        }
+        return found
+    }
+
+    private func dateFromCaption(_ value: String) -> String? {
+        if let seededOriginalDate,
+           value.localizedCaseInsensitiveContains(seededOriginalDate) {
+            return seededOriginalDate
+        }
+
+        guard let range = value.range(of: "\\b(19|20)\\d{2}\\b", options: .regularExpression) else {
+            return nil
+        }
+        return String(value[range])
     }
 }
 
@@ -2317,24 +3431,26 @@ private struct MemoryDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                GalleryMediaVisual(
-                    memory: MemoryItem(person: memory.person, media: currentMedia),
-                    isActive: isActive
-                )
-                    .overlay(alignment: .bottomTrailing) {
-                        Button(role: .destructive) {
-                            showingRemoveConfirmation = true
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(ArchiveTypography.icon)
-                                .foregroundStyle(ArchiveTheme.ink)
-                                .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
-                                .background(ArchiveTheme.actionBackground)
-                                .clipShape(Circle())
+                    GalleryMediaVisual(
+                        memory: MemoryItem(person: memory.person, media: currentMedia),
+                        isActive: isActive
+                    )
+                        .overlay(alignment: .bottomTrailing) {
+                        if repository.canEdit {
+                            Button(role: .destructive) {
+                                showingRemoveConfirmation = true
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(ArchiveTypography.icon)
+                                    .foregroundStyle(ArchiveTheme.ink)
+                                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                                    .background(ArchiveTheme.actionBackground)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(10)
+                            .accessibilityLabel(ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"))
                         }
-                        .buttonStyle(.plain)
-                        .padding(10)
-                        .accessibilityLabel(ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"))
                     }
 
                 if isEditingCaption {
@@ -2356,17 +3472,18 @@ private struct MemoryDetailView: View {
                                 .foregroundStyle(ArchiveTheme.metadata)
                         }
 
-                        VStack(alignment: .leading, spacing: 14) {
-                            Button {
-                                beginCaptionEditing()
-                            } label: {
-                                Text(ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"))
-                                    .font(ArchiveTypography.metadataEmphasis)
-                                    .foregroundStyle(ArchiveTheme.action)
+                        if repository.canEdit {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Button {
+                                    beginCaptionEditing()
+                                } label: {
+                                    Text(ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"))
+                                        .font(ArchiveTypography.metadataEmphasis)
+                                        .foregroundStyle(ArchiveTheme.action)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"))
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(ArchiveCopy.text(english: "Edit caption", russian: "Изменить подпись"))
-
                         }
                     }
                 }
@@ -2418,6 +3535,7 @@ private struct MemoryDetailView: View {
             titleVisibility: .visible
         ) {
             Button(ArchiveCopy.text(english: "Remove image", russian: "Удалить изображение"), role: .destructive) {
+                guard repository.canEdit else { return }
                 repository.removeMedia(currentMedia, from: memory.person.id)
                 dismiss()
             }
@@ -2460,7 +3578,7 @@ private struct MemoryDetailView: View {
                                         .font(ArchiveTypography.metadataEmphasis)
                                         .foregroundStyle(ArchiveTheme.ink)
                                     if let birthYear = person.birthYear {
-                                        Text("· \(birthYear)")
+                                        Text("· \(String(birthYear))")
                                             .font(ArchiveTypography.metadata)
                                             .foregroundStyle(ArchiveTheme.metadata)
                                     }
@@ -2507,6 +3625,7 @@ private struct MemoryDetailView: View {
     }
 
     private func beginCaptionEditing() {
+        guard repository.canEdit else { return }
         let source = currentMedia.caption ?? ""
         let localizedCaption = repository.appLanguage == .english
             ? (NarrativeLocalizationStore.shared.storedMediaCaption(memory.person.id, mediaID: currentMedia.id)
@@ -2591,6 +3710,10 @@ private struct MemoryDetailView: View {
     }
 
     private func saveCaptionEditing() {
+        guard repository.canEdit else {
+            isEditingCaption = false
+            return
+        }
         if let issue = ArchiveLanguageValidator.issue(
             language: repository.appLanguage,
             fields: [("Caption", draftCaption)]
@@ -2662,6 +3785,17 @@ private struct MemoryDetailView: View {
 
         repository.updateMedia(updated, for: ownerID)
         NarrativeLocalizationStore.shared.reload()
+        let sourceLanguage = repository.appLanguage
+        if #available(iOS 26.0, *) {
+            Task { @MainActor in
+                await repository.autoTranslateMediaCaption(
+                    draftCaption,
+                    mediaID: currentMedia.id,
+                    personIDs: Array(relatedIDs),
+                    from: sourceLanguage
+                )
+            }
+        }
         isEditingCaption = false
     }
 

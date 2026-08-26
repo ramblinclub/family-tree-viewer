@@ -20,6 +20,7 @@ struct PersonDetailView: View {
     @State private var showingEventsManager = false
     @State private var showingStoriesManager = false
     @State private var selectedMedia: MediaReference?
+    @State private var selectedFamilyPerson: PresentedFamilyPerson?
 
     init(person: Person, repository: FamilyRepository) {
         initialPerson = person
@@ -86,21 +87,30 @@ struct PersonDetailView: View {
         .sheet(isPresented: $showingStoriesManager) {
             StoriesManagerView(person: person, repository: repository)
         }
+        .sheet(item: $selectedFamilyPerson) { presented in
+            if let familyPerson = repository.person(id: presented.id) {
+                NavigationStack {
+                    PersonDetailView(person: familyPerson, repository: repository)
+                }
+            }
+        }
     }
 
     private var profileActionsMenu: some View {
         VStack(alignment: .leading, spacing: 0) {
-            profileAction(ArchiveCopy.text(english: "Edit profile", russian: "Изменить профиль"), systemImage: "person.crop.circle") {
-                showingActions = false
-                showingEditor = true
-            }
-            profileAction(ArchiveCopy.text(english: "Change profile image", russian: "Изменить фото профиля"), systemImage: "person.crop.square") {
-                showingActions = false
-                showingProfilePhotoEditor = true
-            }
-            profileAction(ArchiveCopy.text(english: "Edit media", russian: "Изменить медиа"), systemImage: "photo") {
-                showingActions = false
-                showingMediaEditor = true
+            if repository.canEdit {
+                profileAction(ArchiveCopy.text(english: "Edit profile", russian: "Изменить профиль"), systemImage: "person.crop.circle") {
+                    showingActions = false
+                    showingEditor = true
+                }
+                profileAction(ArchiveCopy.text(english: "Change profile image", russian: "Изменить фото профиля"), systemImage: "person.crop.square") {
+                    showingActions = false
+                    showingProfilePhotoEditor = true
+                }
+                profileAction(ArchiveCopy.text(english: "Edit media", russian: "Изменить медиа"), systemImage: "photo") {
+                    showingActions = false
+                    showingMediaEditor = true
+                }
             }
             profileAction(ArchiveCopy.text(english: "Share profile", russian: "Поделиться профилем"), systemImage: "square.and.arrow.up") {
                 showingActions = false
@@ -209,7 +219,7 @@ struct PersonDetailView: View {
                             .font(ArchiveTypography.profileName)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        if repository.document.accountHolderID == person.id {
+                        if repository.accountHolderID == person.id {
                             AccountHolderBadge()
                         }
                     }
@@ -463,7 +473,7 @@ struct PersonDetailView: View {
         // Build the relationship tree for every profile that can be reached
         // from the account holder through the recorded family connections.
         // Profiles without a discoverable path simply omit this section.
-        guard let accountID = repository.document.accountHolderID,
+        guard let accountID = repository.accountHolderID,
               let account = repository.person(id: accountID),
               let path = connectionPath(from: account.id, to: person.id) else {
             return nil
@@ -654,7 +664,12 @@ struct PersonDetailView: View {
                 ancestor = ancestorTerm(for: kinds.count, feminine: nil)
             }
             if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
-                return ("\(target.displayName) — ваша \(ancestor).", "\(kinds.count) поколений назад")
+                let possessive: String
+                switch connectionGender(of: target) {
+                case .female: possessive = "ваша"
+                case .male, .unknown: possessive = "ваш"
+                }
+                return ("\(target.displayName) — \(possessive) \(ancestor).", "\(kinds.count) поколений назад")
             }
             return ("\(target.displayName) is your \(ancestor).", "\(kinds.count) generations away")
         }
@@ -747,10 +762,12 @@ struct PersonDetailView: View {
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
                     Spacer()
-                    Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingEventsManager = true }
-                        .font(ArchiveTypography.action)
-                        .foregroundStyle(ArchiveTheme.action)
-                        .buttonStyle(.plain)
+                    if repository.canEdit {
+                        Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingEventsManager = true }
+                            .font(ArchiveTypography.action)
+                            .foregroundStyle(ArchiveTheme.action)
+                            .buttonStyle(.plain)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 0) {
@@ -784,10 +801,12 @@ struct PersonDetailView: View {
                     .tracking(1.2)
                     .foregroundStyle(ArchiveTheme.ink)
                 Spacer()
-                Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingStoriesManager = true }
-                    .font(ArchiveTypography.action)
-                    .foregroundStyle(ArchiveTheme.action)
-                    .buttonStyle(.plain)
+                if repository.canEdit {
+                    Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingStoriesManager = true }
+                        .font(ArchiveTypography.action)
+                        .foregroundStyle(ArchiveTheme.action)
+                        .buttonStyle(.plain)
+                }
             }
 
             if !person.structuredStories.isEmpty {
@@ -897,11 +916,111 @@ struct PersonDetailView: View {
 
     private var familySection: some View {
         detailSection(ArchiveCopy.text(english: "Family", russian: "Семья")) {
-            familyGroup(title: ArchiveCopy.text(english: "Parents", russian: "Родители"), ids: person.immediateFamily.parents)
+            parentsGroup
             familyGroup(title: spouseGroupTitle, ids: person.immediateFamily.partners)
             familyGroup(title: ArchiveCopy.text(english: "Children", russian: "Дети"), ids: person.immediateFamily.children)
-            familyGroup(title: ArchiveCopy.text(english: "Siblings", russian: "Братья и сёстры"), ids: person.immediateFamily.siblings)
+            siblingGroups
         }
+    }
+
+    @ViewBuilder
+    private var parentsGroup: some View {
+        if !person.immediateFamily.parents.isEmpty {
+            Text(ArchiveCopy.text(english: "Parents", russian: "Родители"))
+                .font(ArchiveTypography.contentTitle)
+                .padding(.top, 10)
+
+            if let parentsUnionNote {
+                Text(parentsUnionNote)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+                    .padding(.bottom, 2)
+            }
+
+            ForEach(repository.people(ids: person.immediateFamily.parents)) { relative in
+                FamilyMemberTile(person: relative, repository: repository)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedFamilyPerson = PresentedFamilyPerson(id: relative.id)
+                    }
+                    .accessibilityAddTraits(.isButton)
+                    .padding(.bottom, 6)
+            }
+        }
+    }
+
+    private var parentsUnionNote: String? {
+        guard person.immediateFamily.parentsUnionStatus?.lowercased() == "divorced" else { return nil }
+
+        let status = ArchiveCopy.text(english: "Parents divorced", russian: "Родители в разводе")
+        guard let date = person.immediateFamily.parentsUnionDate?.trimmed,
+              !date.isEmpty else {
+            return status
+        }
+
+        let suffix = person.immediateFamily.parentsUnionDateIsApproximate == true
+            ? ArchiveCopy.text(english: "approx.", russian: "примерно")
+            : nil
+        return [status, date, suffix].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var siblingGroups: some View {
+        let parentIDs = Set(person.immediateFamily.parents)
+        let siblings = repository.people(ids: person.immediateFamily.siblings)
+        let fullSiblingIDs = siblings
+            .filter { parentIDs.intersection($0.immediateFamily.parents).count >= 2 }
+            .map(\.id)
+        let halfSiblingIDs = siblings
+            .filter { parentIDs.intersection($0.immediateFamily.parents).count == 1 }
+            .map(\.id)
+        let otherSiblingIDs = siblings
+            .filter { parentIDs.intersection($0.immediateFamily.parents).isEmpty }
+            .map(\.id)
+
+        if !fullSiblingIDs.isEmpty {
+            familyGroup(
+                title: ArchiveCopy.text(english: "Siblings", russian: "Братья и сёстры"),
+                ids: fullSiblingIDs
+            )
+        }
+        if !halfSiblingIDs.isEmpty {
+            familyGroup(
+                title: halfSiblingGroupTitle(for: halfSiblingIDs),
+                ids: halfSiblingIDs
+            )
+        }
+        if !otherSiblingIDs.isEmpty {
+            familyGroup(
+                title: ArchiveCopy.text(english: "Siblings (relationship to parent unclear)", russian: "Братья и сёстры (связь с родителем не уточнена)"),
+                ids: otherSiblingIDs
+            )
+        }
+    }
+
+    private func halfSiblingGroupTitle(for siblingIDs: [Person.ID]) -> String {
+        let parentIDs = Set(person.immediateFamily.parents)
+        var sharedParentIDs = parentIDs
+        for sibling in repository.people(ids: siblingIDs) {
+            sharedParentIDs.formIntersection(sibling.immediateFamily.parents)
+        }
+
+        guard sharedParentIDs.count == 1,
+              let sharedParentID = sharedParentIDs.first,
+              let sharedParent = repository.person(id: sharedParentID) else {
+            return ArchiveCopy.text(english: "Half-siblings", russian: "Неполнородные братья и сёстры")
+        }
+
+        let through: String
+        switch sharedParent.archiveGender {
+        case .female:
+            through = ArchiveCopy.text(english: "through mother", russian: "по матери")
+        case .male:
+            through = ArchiveCopy.text(english: "through father", russian: "по отцу")
+        case .unknown:
+            through = ArchiveCopy.text(english: "through shared parent", russian: "по общему родителю")
+        }
+        return "\(ArchiveCopy.text(english: "Half-siblings", russian: "Неполнородные братья и сёстры")) · \(through)"
     }
 
     private var spouseGroupTitle: String {
@@ -920,10 +1039,12 @@ struct PersonDetailView: View {
                 .padding(.top, 10)
 
             ForEach(repository.people(ids: ids)) { relative in
-                NavigationLink(value: relative.id) {
-                    FamilyMemberTile(person: relative, repository: repository)
-                }
-                .buttonStyle(.plain)
+                FamilyMemberTile(person: relative, repository: repository)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                    selectedFamilyPerson = PresentedFamilyPerson(id: relative.id)
+                    }
+                    .accessibilityAddTraits(.isButton)
                 .padding(.bottom, 6)
             }
         }
@@ -1185,6 +1306,10 @@ private struct ProfilePhotoView: View {
         guard let path else { return nil }
         return ArchiveFileResolver.image(for: path)
     }
+}
+
+private struct PresentedFamilyPerson: Identifiable {
+    let id: Person.ID
 }
 
 private enum DetailTab: String, CaseIterable, Identifiable {
@@ -2703,8 +2828,22 @@ private struct ProfilePhotoSelectionView: View {
             ))
             _returnToAdjustmentPhoto = State(initialValue: _selectedPhotoForAdjustment.wrappedValue)
         } else {
-            _selectedPhotoForAdjustment = State(initialValue: nil)
-            _returnToAdjustmentPhoto = State(initialValue: nil)
+            // If there is exactly one available photo, there is no useful
+            // choice to make: open it directly in the adjustment screen.
+            // Multiple photos still open the chooser as before.
+            let onlyPhoto = repository.media(for: person.id)
+                .first { $0.kind == .photo && $0.path?.trimmed.isEmpty == false }
+            let photoCount = repository.media(for: person.id)
+                .filter { $0.kind == .photo && $0.path?.trimmed.isEmpty == false }
+                .count
+            if photoCount == 1, let onlyPhoto, let path = onlyPhoto.path?.trimmed {
+                _selectedPath = State(initialValue: path)
+                _selectedPhotoForAdjustment = State(initialValue: onlyPhoto)
+                _returnToAdjustmentPhoto = State(initialValue: onlyPhoto)
+            } else {
+                _selectedPhotoForAdjustment = State(initialValue: nil)
+                _returnToAdjustmentPhoto = State(initialValue: nil)
+            }
         }
     }
 
@@ -2828,9 +2967,12 @@ private struct LifeEventsManagerView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .disabled(!repository.canEdit)
                         .swipeActions {
-                            Button(role: .destructive) { delete(event) } label: {
-                                Label("Delete", systemImage: "trash")
+                            if repository.canEdit {
+                                Button(role: .destructive) { delete(event) } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                     }
@@ -2842,13 +2984,15 @@ private struct LifeEventsManagerView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        addingEvent = true
-                    } label: {
-                        Image(systemName: "plus")
+                if repository.canEdit {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
+                            addingEvent = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Add life event")
                     }
-                    .accessibilityLabel("Add life event")
                 }
             }
             .sheet(isPresented: $addingEvent) {
@@ -2874,6 +3018,7 @@ private struct LifeEventsManagerView: View {
     }
 
     private func delete(_ event: LifeEvent) {
+        guard repository.canEdit else { return }
         var updated = person
         updated.events?.removeAll { $0.id == event.id }
         repository.updatePerson(updated)
@@ -2927,9 +3072,12 @@ private struct StoriesManagerView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .disabled(!repository.canEdit)
                         .swipeActions {
-                            Button(role: .destructive) { delete(story) } label: {
-                                Label("Delete", systemImage: "trash")
+                            if repository.canEdit {
+                                Button(role: .destructive) { delete(story) } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                     }
@@ -2941,13 +3089,15 @@ private struct StoriesManagerView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        addingStory = true
-                    } label: {
-                        Image(systemName: "plus")
+                if repository.canEdit {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
+                            addingStory = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Add story")
                     }
-                    .accessibilityLabel("Add story")
                 }
             }
             .sheet(isPresented: $addingStory) {
@@ -2973,6 +3123,7 @@ private struct StoriesManagerView: View {
     }
 
     private func delete(_ story: StoryChapter) {
+        guard repository.canEdit else { return }
         var updated = person
         updated.storyChapters?.removeAll { $0.id == story.id }
         repository.updatePerson(updated)
@@ -3172,10 +3323,12 @@ private struct PersonMediaEditorView: View {
                         }
                         .buttonStyle(.plain)
                         .swipeActions {
-                            Button(role: .destructive) {
-                                repository.removeMedia(item, from: person.id)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                            if repository.canEdit {
+                                Button(role: .destructive) {
+                                    repository.removeMedia(item, from: person.id)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                     }
@@ -3296,21 +3449,32 @@ struct MediaMetadataEditor: View {
                                     try NarrativeLocalizationStore.shared.updateMediaCaption(
                                         personID: personID,
                                         mediaID: item.id,
-                                        caption: caption
+                                        caption: caption,
+                                        language: .english
                                     )
                                 }
                             } catch {
                                 saveError = error.localizedDescription
                                 return
                             }
-                        } else {
-                            // Russian is the source caption stored with the
-                            // media record itself.
-                            updated.caption = caption.trimmed.isEmpty ? nil : caption.trimmed
                         }
+                        // Keep the entered text on the media record as a
+                        // durable fallback, regardless of the current locale.
+                        updated.caption = caption.trimmed.isEmpty ? nil : caption.trimmed
 
                         repository.updateMedia(updated, for: ownerID)
                         NarrativeLocalizationStore.shared.reload()
+                        let sourceLanguage = repository.appLanguage
+                        if #available(iOS 26.0, *) {
+                            Task { @MainActor in
+                                await repository.autoTranslateMediaCaption(
+                                    caption,
+                                    mediaID: item.id,
+                                    personIDs: updated.personIDs ?? [ownerID],
+                                    from: sourceLanguage
+                                )
+                            }
+                        }
                         dismiss()
                     }
                 }

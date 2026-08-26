@@ -54,6 +54,10 @@ private struct NarrativeEventLocalization: Codable {
 private struct NarrativeMediaLocalization: Codable {
     var title: String?
     var caption: String?
+    /// Captions translated into a locale other than the source locale. The
+    /// older `caption` field remains the English value for backward
+    /// compatibility with existing private sidecars.
+    var captionTranslations: [String: String]?
 }
 
 /// Reads approved English narrative translations from the private app data
@@ -126,7 +130,13 @@ final class NarrativeLocalizationStore {
     }
 
     func mediaCaption(_ personID: String, mediaID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.media?[mediaID]?.caption, pending: "English caption pending")
+        let record = people[personID]?.media?[mediaID]
+        let language = ArchiveLanguage.current
+        let localeTranslation = record?.captionTranslations?[language.rawValue]
+        if let localeTranslation, !localeTranslation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return localeTranslation
+        }
+        return localized(source: source, translation: language == .english ? record?.caption : nil, pending: "English caption pending")
     }
 
     func storedMediaCaption(_ personID: String, mediaID: String) -> String? {
@@ -140,6 +150,7 @@ final class NarrativeLocalizationStore {
         personID: String,
         mediaID: String,
         caption: String,
+        language: ArchiveLanguage = .english,
         fileManager: FileManager = .default
     ) throws {
         let value = caption.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -151,8 +162,15 @@ final class NarrativeLocalizationStore {
             media: nil
         )
         var media = person.media ?? [:]
-        var record = media[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil)
-        record.caption = value.isEmpty ? nil : value
+        var record = media[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil, captionTranslations: nil)
+        var translations = record.captionTranslations ?? [:]
+        translations[language.rawValue] = value.isEmpty ? nil : value
+        record.captionTranslations = translations.isEmpty ? nil : translations
+        // Keep the legacy field populated for English so older builds and
+        // exports continue to display the translated caption.
+        if language == .english {
+            record.caption = value.isEmpty ? nil : value
+        }
         media[mediaID] = record
         person.media = media
         people[personID] = person
@@ -322,11 +340,37 @@ final class NameLocalizationStore {
             reload()
         }
         let selectedLanguage = language ?? ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: Self.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-        guard let localized = namesByID[personID]?.localizedNames[selectedLanguage.rawValue],
-              !localized.isEmpty else {
-            return fallback
+        if let localized = namesByID[personID]?.localizedNames[selectedLanguage.rawValue],
+           !localized.isEmpty {
+            return localizedUnknownName(localized, language: selectedLanguage)
         }
-        return localized
+        // Older private archives used the English literal "Unknown" for an
+        // unnamed given name. Keep those archives readable and make the
+        // placeholder follow the app language without changing the person ID.
+        return localizedUnknownName(fallback, language: selectedLanguage)
+    }
+
+    private func localizedUnknownName(_ value: String, language: ArchiveLanguage) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        let russianPlaceholder = "неизвестное имя"
+        let isUnknown = normalized == "unknown" ||
+            normalized.hasPrefix("unknown ") ||
+            normalized == russianPlaceholder ||
+            normalized.hasPrefix(russianPlaceholder + " ")
+        guard isUnknown else { return value }
+
+        let placeholder = language == .russian ? "Неизвестное имя" : "Unknown name"
+        let suffix: String
+        if normalized == "unknown" || normalized == russianPlaceholder {
+            suffix = ""
+        } else if normalized.hasPrefix("unknown ") {
+            suffix = String(trimmed.dropFirst("Unknown ".count))
+        } else {
+            suffix = String(trimmed.dropFirst(russianPlaceholder.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return suffix.isEmpty ? placeholder : "\(placeholder) \(suffix)"
     }
 
     static let appLanguageKey = "familyArchive.appLanguage"
@@ -888,6 +932,9 @@ struct ImmediateFamily: Codable, Hashable {
     let partners: [String]
     let siblings: [String]
     let children: [String]
+    var parentsUnionStatus: String? = nil
+    var parentsUnionDate: String? = nil
+    var parentsUnionDateIsApproximate: Bool? = nil
 }
 
 struct MediaReference: Codable, Identifiable, Hashable {

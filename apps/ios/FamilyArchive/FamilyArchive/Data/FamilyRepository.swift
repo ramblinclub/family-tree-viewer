@@ -2,12 +2,53 @@ import Foundation
 import Combine
 import ImageIO
 import UIKit
+import UniformTypeIdentifiers
+import CoreLocation
+import Translation
+
+struct StagedMediaItem: Identifiable, Hashable {
+    let url: URL
+    let filename: String
+    let kind: MediaKind
+
+    var id: String { url.path }
+}
 
 /// The app's canonical private document store. Metadata is split into one
 /// file per person so an edit does not rewrite the complete family archive.
 /// Media and documents remain ordinary persistent files and are referenced by
 /// their relative paths from the app's Documents directory.
 private struct PrivateDocumentStore {
+    static let accountHandoffFilename = "account-handoff.json"
+
+    struct AccountHandoff: Codable {
+        let personID: Person.ID
+        let displayName: String
+        let createdAt: String
+        let readOnly: Bool
+
+        init(personID: Person.ID, displayName: String, createdAt: String, readOnly: Bool = true) {
+            self.personID = personID
+            self.displayName = displayName
+            self.createdAt = createdAt
+            self.readOnly = readOnly
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case personID, displayName, createdAt, readOnly
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            personID = try container.decode(Person.ID.self, forKey: .personID)
+            displayName = try container.decode(String.self, forKey: .displayName)
+            createdAt = try container.decode(String.self, forKey: .createdAt)
+            // Older handoffs had no permission field and are safely treated
+            // as read-only recipient archives.
+            readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? true
+        }
+    }
+
     struct Manifest: Codable {
         let format: String
         let version: Int
@@ -127,14 +168,44 @@ private struct PrivateDocumentStore {
         try copyDirectoryContents(from: rootURL, to: destinationURL)
     }
 
-    func exportArchive(to destinationURL: URL) throws {
+    func exportArchive(
+        to destinationURL: URL,
+        preparedForPersonID: Person.ID? = nil,
+        readOnly: Bool = true
+    ) throws {
         guard fileManager.fileExists(atPath: rootURL.path) else { throw StoreError.storeUnavailable }
         if let document = try loadDocument() {
             // Export is also a repair point for records created by older
             // builds, before referenced assets were synchronized on save.
             try copyReferencedAssetsIfNeeded(document: document)
         }
-        try PrivateArchiveFile.write(directory: rootURL, to: destinationURL, fileManager: fileManager)
+
+        guard let preparedForPersonID else {
+            try PrivateArchiveFile.write(directory: rootURL, to: destinationURL, fileManager: fileManager)
+            return
+        }
+
+        guard let document = try loadDocument(),
+              let preparedPerson = document.people.first(where: { $0.id == preparedForPersonID }) else {
+            throw StoreError.invalidAccountID
+        }
+
+        // Handoff metadata belongs to the exported package, not the shared
+        // store. This lets the recipient become the intended account without
+        // changing the administrator's local perspective.
+        let stagingURL = fileManager.temporaryDirectory
+            .appendingPathComponent("FamilyArchiveHandoff-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: stagingURL) }
+        try copyDirectoryContents(from: rootURL, to: stagingURL)
+        let handoff = AccountHandoff(
+            personID: preparedPerson.id,
+            displayName: preparedPerson.sourceDisplayName,
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            readOnly: readOnly
+        )
+        let handoffData = try JSONEncoder.archive.encode(handoff)
+        try handoffData.write(to: stagingURL.appendingPathComponent(Self.accountHandoffFilename), options: .atomic)
+        try PrivateArchiveFile.write(directory: stagingURL, to: destinationURL, fileManager: fileManager)
     }
 
     func replaceContents(with sourceDirectory: URL) throws {
@@ -207,11 +278,13 @@ private struct PrivateDocumentStore {
 
     enum StoreError: LocalizedError {
         case invalidPersonID
+        case invalidAccountID
         case storeUnavailable
 
         var errorDescription: String? {
             switch self {
             case .invalidPersonID: "The private store contains an invalid person identifier."
+            case .invalidAccountID: "The selected account person is not in the private archive."
             case .storeUnavailable: "The private document store is unavailable."
             }
         }
@@ -364,7 +437,15 @@ private enum PrivateArchiveFile {
 }
 
 final class FamilyRepository: ObservableObject {
+    static let activeAccountIDKey = "FamilyArchive.activeAccountID"
+    /// A prepared account handoff is opened on the recipient's device in
+    /// read-only mode. This is device state, not part of the private family
+    /// records, so the administrator's own archive remains editable.
+    static let readOnlyModeKey = "FamilyArchive.readOnlyMode"
+
     @Published private(set) var document: FamilyArchiveDocument
+    @Published private(set) var activeAccountID: Person.ID?
+    @Published private(set) var isReadOnly: Bool
     @Published var appLanguage: ArchiveLanguage {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: NameLocalizationStore.appLanguageKey)
@@ -391,12 +472,30 @@ final class FamilyRepository: ObservableObject {
     init(document: FamilyArchiveDocument, fileManager: FileManager = .default) {
         self.document = document
         self.privateStore = PrivateDocumentStore(fileManager: fileManager)
+        self.activeAccountID = document.accountHolderID
+        self.isReadOnly = UserDefaults.standard.bool(forKey: Self.readOnlyModeKey)
         self.appLanguage = ArchiveLanguage(
             rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue
         ) ?? .russian
         peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
+        if let savedID = UserDefaults.standard.string(forKey: Self.activeAccountIDKey),
+           peopleByID[savedID] != nil {
+            activeAccountID = savedID
+        } else if let documentAccountID = document.accountHolderID,
+                  peopleByID[documentAccountID] != nil {
+            activeAccountID = documentAccountID
+            UserDefaults.standard.set(documentAccountID, forKey: Self.activeAccountIDKey)
+        } else {
+            activeAccountID = nil
+            UserDefaults.standard.removeObject(forKey: Self.activeAccountIDKey)
+        }
         NameLocalizationStore.shared.reload()
     }
+
+    /// Whether this device may change the private family archive. A recipient
+    /// of a prepared account can browse everything, but cannot edit or delete
+    /// profiles, stories, events, captions, or media.
+    var canEdit: Bool { !isReadOnly }
 
     var people: [Person] {
         document.people.sorted {
@@ -410,8 +509,380 @@ final class FamilyRepository: ObservableObject {
         peopleByID[id]
     }
 
+    var accountHolderID: Person.ID? {
+        activeAccountID
+    }
+
+    var accountHolder: Person? {
+        guard let activeAccountID else { return nil }
+        return person(id: activeAccountID)
+    }
+
+    /// The app's private intake area. Files here are unreviewed and are not
+    /// included in a family archive export until they are approved.
+    private var stagingInboxURL: URL {
+        privateStore.rootURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("StagingMedia", isDirectory: true)
+            .appendingPathComponent("inbox", isDirectory: true)
+    }
+
+    private var stagingReviewedURL: URL {
+        stagingInboxURL.deletingLastPathComponent().appendingPathComponent("reviewed", isDirectory: true)
+    }
+
+    func stagedMediaItems() -> [StagedMediaItem] {
+        let fileManager = privateStore.fileManager
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: stagingInboxURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentTypeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return urls.compactMap { url in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let kind = mediaKind(for: url) else { return nil }
+            return StagedMediaItem(url: url, filename: url.lastPathComponent, kind: kind)
+        }
+        .sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+    }
+
+    /// Reads the camera's original capture date when the staged image carries
+    /// EXIF metadata. This is only a convenience for the review form; the
+    /// user can edit the date directly as part of the caption.
+    func originalMediaDate(for item: StagedMediaItem) -> String? {
+        guard item.kind == .photo,
+              let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
+              let rawValue = exif[kCGImagePropertyExifDateTimeOriginal] as? String else { return nil }
+
+        let input = DateFormatter()
+        input.locale = Locale(identifier: "en_US_POSIX")
+        input.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        guard let date = input.date(from: rawValue) else { return nil }
+
+        let output = DateFormatter()
+        output.locale = Locale(identifier: appLanguage == .russian ? "ru_RU" : "en_US_POSIX")
+        output.dateFormat = appLanguage == .russian ? "d MMMM yyyy" : "MMM d, yyyy"
+        return output.string(from: date)
+    }
+
+    /// Reads GPS metadata and turns it into a human-readable place when the
+    /// system geocoder can resolve it. If geocoding is unavailable, the
+    /// coordinates are returned so the user can correct or remove them.
+    @MainActor
+    func originalMediaLocation(for item: StagedMediaItem) async -> String? {
+        guard let coordinate = originalMediaCoordinate(for: item) else { return nil }
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        if let placemark = try? await CLGeocoder().reverseGeocodeLocation(location).first {
+            let parts = [placemark.locality, placemark.administrativeArea, placemark.country]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !parts.isEmpty {
+                return Array(NSOrderedSet(array: parts))
+                    .compactMap { $0 as? String }
+                    .joined(separator: ", ")
+            }
+        }
+        return String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude)
+    }
+
+    private func originalMediaCoordinate(for item: StagedMediaItem) -> CLLocationCoordinate2D? {
+        guard item.kind == .photo,
+              let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
+              let latitude = (gps[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue,
+              let longitude = (gps[kCGImagePropertyGPSLongitude] as? NSNumber)?.doubleValue else { return nil }
+
+        let latitudeSign = (gps[kCGImagePropertyGPSLatitudeRef] as? String) == "S" ? -1.0 : 1.0
+        let longitudeSign = (gps[kCGImagePropertyGPSLongitudeRef] as? String) == "W" ? -1.0 : 1.0
+        return CLLocationCoordinate2D(latitude: latitude * latitudeSign, longitude: longitude * longitudeSign)
+    }
+
+    /// Copies user-selected files into the app's private staging inbox. The
+    /// source files remain where the user selected them.
+    @discardableResult
+    func importMediaFilesToStaging(_ urls: [URL]) throws -> Int {
+        guard canEdit else { return 0 }
+        let fileManager = privateStore.fileManager
+        try fileManager.createDirectory(at: stagingInboxURL, withIntermediateDirectories: true)
+        var imported = 0
+
+        for sourceURL in urls {
+            let accessed = sourceURL.startAccessingSecurityScopedResource()
+            defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
+            guard let kind = mediaKind(for: sourceURL) else { continue }
+
+            var destination = stagingInboxURL.appendingPathComponent(sourceURL.lastPathComponent)
+            if fileManager.fileExists(atPath: destination.path) {
+                let stem = sourceURL.deletingPathExtension().lastPathComponent
+                let suffix = UUID().uuidString.prefix(8)
+                destination = stagingInboxURL.appendingPathComponent("\(stem)-\(suffix).\(sourceURL.pathExtension)")
+            }
+            try fileManager.copyItem(at: sourceURL, to: destination)
+            _ = kind
+            imported += 1
+        }
+        return imported
+    }
+
+    /// Stores image data selected through PhotosPicker in the same private
+    /// staging inbox used by Files imports. The bytes are kept intact so EXIF
+    /// date and GPS metadata can still be reviewed when present.
+    @discardableResult
+    func importPhotoDataToStaging(_ data: Data, filename: String? = nil) throws -> Int {
+        guard canEdit, !data.isEmpty else { return 0 }
+        let fileManager = privateStore.fileManager
+        try fileManager.createDirectory(at: stagingInboxURL, withIntermediateDirectories: true)
+        let baseName = filename?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? filename!
+            : "photo-\(UUID().uuidString).jpg"
+        var destination = stagingInboxURL.appendingPathComponent(baseName)
+        if fileManager.fileExists(atPath: destination.path) {
+            destination = stagingInboxURL.appendingPathComponent("photo-\(UUID().uuidString).jpg")
+        }
+        try data.write(to: destination, options: .atomic)
+        return 1
+    }
+
+    /// Approves one staged file. The file is copied into the canonical private
+    /// media store, its normal media record is written, and only then is the
+    /// staging copy moved to `reviewed`.
+    @discardableResult
+    func reviewStagedMedia(
+        _ item: StagedMediaItem,
+        caption: String,
+        date: String?,
+        personIDs: [Person.ID],
+        isApproximate: Bool = false,
+        captionLanguage: ArchiveLanguage = .russian
+    ) throws -> String {
+        guard canEdit else { return "" }
+        let sourceURL = item.url.standardizedFileURL
+        let fileManager = privateStore.fileManager
+        guard fileManager.fileExists(atPath: sourceURL.path), !personIDs.isEmpty else {
+            throw StagedMediaError.invalidReview
+        }
+
+        let uniquePersonIDs = Array(Set(personIDs)).sorted()
+        guard uniquePersonIDs.allSatisfy({ peopleByID[$0] != nil }) else {
+            throw StagedMediaError.invalidReview
+        }
+
+        let mediaID = "media-\(UUID().uuidString.lowercased())"
+        let extensionName = sourceURL.pathExtension.isEmpty ? "bin" : sourceURL.pathExtension.lowercased()
+        let relativePath = "media/imported/\(mediaID).\(extensionName)"
+        let canonicalURL = privateStore.rootURL.appendingPathComponent(relativePath)
+        try fileManager.createDirectory(at: canonicalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.copyItem(at: sourceURL, to: canonicalURL)
+
+        let cleanedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedDate = date?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let media = MediaReference(
+            id: mediaID,
+            kind: item.kind,
+            title: sourceURL.deletingPathExtension().lastPathComponent,
+            date: cleanedDate?.isEmpty == false ? cleanedDate : nil,
+            path: relativePath,
+            // Keep the entered caption on the media record as the durable
+            // fallback. English captions are also copied to the private
+            // narrative sidecar below, but storing the text here prevents a
+            // newly reviewed image from appearing uncaptioned if the sidecar
+            // is unavailable, stale, or is opened in another locale.
+            caption: cleanedCaption.isEmpty ? nil : cleanedCaption,
+            tags: nil,
+            collection: nil,
+            isApproximate: isApproximate ? true : nil,
+            personIDs: uniquePersonIDs
+        )
+
+        var updatedPeople = document.people
+        for index in updatedPeople.indices where uniquePersonIDs.contains(updatedPeople[index].id) {
+            updatedPeople[index].media.removeAll { $0.id == media.id }
+            updatedPeople[index].media.append(media)
+        }
+
+        do {
+            try privateStore.save(
+                document: FamilyArchiveDocument(
+                    schemaVersion: document.schemaVersion,
+                    title: document.title,
+                    accountHolderID: document.accountHolderID,
+                    people: updatedPeople
+                ),
+                changedPersonIDs: Set(uniquePersonIDs),
+                rebuildGEDCOM: true
+            )
+            document = FamilyArchiveDocument(
+                schemaVersion: document.schemaVersion,
+                title: document.title,
+                accountHolderID: document.accountHolderID,
+                people: updatedPeople
+            )
+            peopleByID = Dictionary(uniqueKeysWithValues: updatedPeople.map { ($0.id, $0) })
+            profilePhotoPathCache.removeAll()
+            coloredPhotoCache.removeAll()
+
+            if captionLanguage == .english, !cleanedCaption.isEmpty {
+                for personID in uniquePersonIDs {
+                    try NarrativeLocalizationStore.shared.updateMediaCaption(
+                        personID: personID,
+                        mediaID: media.id,
+                        caption: cleanedCaption,
+                        language: .english,
+                        fileManager: fileManager
+                    )
+                }
+                NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
+            }
+
+            try fileManager.createDirectory(at: stagingReviewedURL, withIntermediateDirectories: true)
+            var reviewedURL = stagingReviewedURL.appendingPathComponent(sourceURL.lastPathComponent)
+            if fileManager.fileExists(atPath: reviewedURL.path) {
+                reviewedURL = stagingReviewedURL.appendingPathComponent("\(sourceURL.deletingPathExtension().lastPathComponent)-\(UUID().uuidString.prefix(8)).\(extensionName)")
+            }
+            try fileManager.moveItem(at: sourceURL, to: reviewedURL)
+        } catch {
+            try? fileManager.removeItem(at: canonicalURL)
+            throw error
+        }
+        return media.id
+    }
+
+    /// Translates a newly saved caption on-device and stores the result in
+    /// the private narrative sidecar. The source caption and media record are
+    /// already durable before this best-effort step begins, so an unavailable
+    /// language model can never lose the user's text.
+    @available(iOS 26.0, *)
+    @MainActor
+    func autoTranslateMediaCaption(
+        _ caption: String,
+        mediaID: String,
+        personIDs: [Person.ID],
+        from sourceLanguage: ArchiveLanguage,
+        fileManager: FileManager = .default
+    ) async {
+        let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
+        let source = Locale.Language(identifier: sourceLanguage.rawValue)
+        let target = Locale.Language(identifier: targetLanguage.rawValue)
+
+        do {
+            let session = TranslationSession(installedSource: source, target: target)
+            let response = try await session.translate(caption)
+            let translated = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !translated.isEmpty else { return }
+
+            for personID in personIDs {
+                try NarrativeLocalizationStore.shared.updateMediaCaption(
+                    personID: personID,
+                    mediaID: mediaID,
+                    caption: translated,
+                    language: targetLanguage,
+                    fileManager: fileManager
+                )
+            }
+            NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
+        } catch {
+            // Translation is intentionally best effort. The source caption
+            // remains available and can be translated later from an edit.
+        }
+    }
+
+    enum StagedMediaError: LocalizedError {
+        case invalidReview
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidReview:
+                "Choose at least one family member and keep the staged file available before saving."
+            }
+        }
+    }
+
+    private func mediaKind(for url: URL) -> MediaKind? {
+        let values = try? url.resourceValues(forKeys: [.contentTypeKey])
+        let type = values?.contentType
+        if type?.conforms(to: .image) == true { return .photo }
+        if type?.conforms(to: .movie) == true { return .video }
+        if type?.conforms(to: .audio) == true { return .audio }
+        if type?.conforms(to: .pdf) == true { return .document }
+
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "tif", "tiff": return .photo
+        case "mov", "mp4", "m4v": return .video
+        case "m4a", "mp3", "wav", "aiff": return .audio
+        case "pdf": return .document
+        default: return nil
+        }
+    }
+
+    func setActiveAccountID(_ personID: Person.ID) {
+        guard peopleByID[personID] != nil else { return }
+        activeAccountID = personID
+        UserDefaults.standard.set(personID, forKey: Self.activeAccountIDKey)
+    }
+
+    private func restoreActiveAccountAfterImport(
+        importedDocument: FamilyArchiveDocument,
+        preparedAccountID: Person.ID? = nil
+    ) {
+        peopleByID = Dictionary(uniqueKeysWithValues: importedDocument.people.map { ($0.id, $0) })
+        if let preparedAccountID, peopleByID[preparedAccountID] != nil {
+            setActiveAccountID(preparedAccountID)
+        } else if let savedID = UserDefaults.standard.string(forKey: Self.activeAccountIDKey),
+                  peopleByID[savedID] != nil {
+            activeAccountID = savedID
+        } else if let documentAccountID = importedDocument.accountHolderID,
+                  peopleByID[documentAccountID] != nil {
+            setActiveAccountID(documentAccountID)
+        } else {
+            activeAccountID = nil
+            UserDefaults.standard.removeObject(forKey: Self.activeAccountIDKey)
+        }
+    }
+
     func people(ids: [Person.ID]) -> [Person] {
         ids.compactMap { peopleByID[$0] }
+    }
+
+    /// Returns the shortest relationship-link distance from a person to every
+    /// reachable profile. A link is any recorded parent, partner, sibling, or
+    /// child connection. The graph is made bidirectional here so older
+    /// imports with only one side of a relationship still filter correctly.
+    func connectionDistances(from personID: Person.ID?) -> [Person.ID: Int] {
+        guard let personID, peopleByID[personID] != nil else { return [:] }
+
+        var neighbors: [Person.ID: Set<Person.ID>] = [:]
+        for person in peopleByID.values {
+            var relatedIDs = Set<Person.ID>()
+            relatedIDs.formUnion(person.immediateFamily.parents)
+            relatedIDs.formUnion(person.immediateFamily.partners)
+            relatedIDs.formUnion(person.immediateFamily.siblings)
+            relatedIDs.formUnion(person.immediateFamily.children)
+
+            for relatedID in relatedIDs where peopleByID[relatedID] != nil && relatedID != person.id {
+                neighbors[person.id, default: []].insert(relatedID)
+                neighbors[relatedID, default: []].insert(person.id)
+            }
+        }
+
+        var distances: [Person.ID: Int] = [personID: 0]
+        var queue = [personID]
+        var queueIndex = 0
+        while queueIndex < queue.count {
+            let currentID = queue[queueIndex]
+            queueIndex += 1
+            let nextDistance = (distances[currentID] ?? 0) + 1
+
+            for neighborID in neighbors[currentID, default: []] where distances[neighborID] == nil {
+                distances[neighborID] = nextDistance
+                queue.append(neighborID)
+            }
+        }
+
+        return distances
     }
 
     /// Returns the recorded birth year or a family-context estimate used for
@@ -424,6 +895,9 @@ final class FamilyRepository: ObservableObject {
     /// A person with no recorded death date is presumed deceased when their
     /// recorded or family-estimated birth year predates 1921.
     func isLiving(_ person: Person) -> Bool {
+        // Any death fact, including an explicitly unknown date, means the
+        // person is deceased. Unknown dates are represented as "????".
+        if person.deathFact != nil { return false }
         guard !hasRecordedDeathDate(for: person) else { return false }
         guard let birthYear = chronologicalBirthYear(for: person.id),
               birthYear < presumedDeathBeforeBirthYear else {
@@ -465,7 +939,13 @@ final class FamilyRepository: ObservableObject {
     }
 
     private func hasRecordedDeathDate(for person: Person) -> Bool {
-        if person.deathFact != nil { return true }
+        if let deathFact = person.deathFact {
+            let normalized = deathFact.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized == "????" || normalized == "unknown" || normalized == "unknown date" || normalized.isEmpty {
+                return false
+            }
+            return deathFact.value.contains { $0.isNumber }
+        }
 
         let parts = person.lifespan.split { character in
             character == "–" || character == "—" || character == "-"
@@ -672,6 +1152,7 @@ final class FamilyRepository: ObservableObject {
     }
 
     func updatePerson(_ person: Person) {
+        guard canEdit else { return }
         var people = document.people
         guard let index = people.firstIndex(where: { $0.id == person.id }) else { return }
         people[index] = person
@@ -679,6 +1160,7 @@ final class FamilyRepository: ObservableObject {
     }
 
     func updateMedia(_ item: MediaReference, for ownerID: Person.ID) {
+        guard canEdit else { return }
         var people = document.people
         guard let resolvedOwnerID = mediaOwnerID(for: item, preferredID: ownerID),
               let ownerIndex = people.firstIndex(where: { $0.id == resolvedOwnerID }),
@@ -703,6 +1185,7 @@ final class FamilyRepository: ObservableObject {
     }
 
     func removeMedia(_ item: MediaReference, from ownerID: Person.ID) {
+        guard canEdit else { return }
         var people = document.people
         // A shared image may be opened from any tagged profile. Resolve the
         // record that actually owns the media before removing it, otherwise a
@@ -785,8 +1268,17 @@ final class FamilyRepository: ObservableObject {
         try privateStore.copyStore(to: destinationURL)
     }
 
-    func exportPrivateArchiveFile(to destinationURL: URL, fileManager: FileManager = .default) throws {
-        try privateStore.exportArchive(to: destinationURL)
+    func exportPrivateArchiveFile(
+        to destinationURL: URL,
+        preparedForPersonID: Person.ID? = nil,
+        readOnly: Bool = true,
+        fileManager: FileManager = .default
+    ) throws {
+        try privateStore.exportArchive(
+            to: destinationURL,
+            preparedForPersonID: preparedForPersonID,
+            readOnly: readOnly
+        )
     }
 
     /// Builds and reads a tiny synthetic archive without touching the user's
@@ -849,7 +1341,12 @@ final class FamilyRepository: ObservableObject {
         if url.hasDirectoryPath || fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
             let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
             guard let document = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
-            return ArchivePackageSummary(document: document, fileCount: countFiles(at: url, fileManager: fileManager))
+            let handoff = readAccountHandoff(at: url, fileManager: fileManager)
+            return ArchivePackageSummary(
+                document: document,
+                fileCount: countFiles(at: url, fileManager: fileManager),
+                preparedAccountID: handoff?.personID
+            )
         }
         return try Self.previewPrivateArchive(Data(contentsOf: url))
     }
@@ -864,6 +1361,7 @@ final class FamilyRepository: ObservableObject {
         if url.hasDirectoryPath || fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
             let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
             guard let importedDocument = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
+            let handoff = readAccountHandoff(at: url, fileManager: fileManager)
             // Keep the imported media and documents inside the canonical
             // private store so a later export remains complete. The mirrored
             // Documents copies below preserve compatibility with older paths.
@@ -877,12 +1375,21 @@ final class FamilyRepository: ObservableObject {
             }
 
             document = importedDocument
-            peopleByID = Dictionary(uniqueKeysWithValues: importedDocument.people.map { ($0.id, $0) })
+            restoreActiveAccountAfterImport(importedDocument: importedDocument, preparedAccountID: handoff?.personID)
+            // A read-only recipient may import a newer archive, but importing
+            // it must never elevate that device to an editable account.
+            isReadOnly = isReadOnly || (handoff?.readOnly ?? false)
+            UserDefaults.standard.set(isReadOnly, forKey: Self.readOnlyModeKey)
             profilePhotoPathCache.removeAll()
             coloredPhotoCache.removeAll()
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
             NameLocalizationStore.shared.reload(fileManager: fileManager)
-            return ArchivePackageSummary(document: importedDocument, fileCount: countFiles(at: url, fileManager: fileManager))
+            try? fileManager.removeItem(at: privateStore.rootURL.appendingPathComponent(PrivateDocumentStore.accountHandoffFilename))
+            return ArchivePackageSummary(
+                document: importedDocument,
+                fileCount: countFiles(at: url, fileManager: fileManager),
+                preparedAccountID: handoff?.personID
+            )
         }
         return try importPrivateArchive(Data(contentsOf: url), fileManager: fileManager)
     }
@@ -894,6 +1401,12 @@ final class FamilyRepository: ObservableObject {
                   (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return }
             count += 1
         }
+    }
+
+    private func readAccountHandoff(at url: URL, fileManager: FileManager) -> PrivateDocumentStore.AccountHandoff? {
+        let handoffURL = url.appendingPathComponent(PrivateDocumentStore.accountHandoffFilename)
+        guard let data = try? Data(contentsOf: handoffURL) else { return nil }
+        return try? JSONDecoder.archive.decode(PrivateDocumentStore.AccountHandoff.self, from: data)
     }
 
     private func copyDirectoryContents(from source: URL, to destination: URL, fileManager: FileManager) throws {
@@ -922,6 +1435,9 @@ final class FamilyRepository: ObservableObject {
         guard let archiveData = entries["family-archive.json"] else {
             throw ArchivePackageError.missingArchiveJSON
         }
+        let handoff = entries[PrivateDocumentStore.accountHandoffFilename].flatMap {
+            try? JSONDecoder.archive.decode(PrivateDocumentStore.AccountHandoff.self, from: $0)
+        }
         let importedDocument = try JSONDecoder().decode(FamilyArchiveDocument.self, from: archiveData)
         guard !importedDocument.people.isEmpty else { throw ArchivePackageError.emptyArchive }
 
@@ -943,6 +1459,14 @@ final class FamilyRepository: ObservableObject {
 
         document = importedDocument
         peopleByID = Dictionary(uniqueKeysWithValues: importedDocument.people.map { ($0.id, $0) })
+        if let handoff, peopleByID[handoff.personID] != nil {
+            setActiveAccountID(handoff.personID)
+        }
+        // Preserve recipient read-only mode when a later owner export has no
+        // handoff marker. The recipient can refresh data without gaining edit
+        // access.
+        isReadOnly = isReadOnly || (handoff?.readOnly ?? false)
+        UserDefaults.standard.set(isReadOnly, forKey: Self.readOnlyModeKey)
         profilePhotoPathCache.removeAll()
         coloredPhotoCache.removeAll()
         try privateStore.bootstrap(document: importedDocument)
@@ -1036,8 +1560,10 @@ struct ArchivePackageSummary: Identifiable {
     let mediaCount: Int
     let documentCount: Int
     let fileCount: Int
+    let preparedAccountID: Person.ID?
+    let preparedAccountName: String?
 
-    init(document: FamilyArchiveDocument, fileCount: Int) {
+    init(document: FamilyArchiveDocument, fileCount: Int, preparedAccountID: Person.ID? = nil) {
         personCount = document.people.count
         relationshipCount = document.people.reduce(0) { partial, person in
             partial + person.immediateFamily.parents.count +
@@ -1052,6 +1578,10 @@ struct ArchivePackageSummary: Identifiable {
             partial + person.media.filter { $0.kind == .document }.count
         }
         self.fileCount = fileCount
+        self.preparedAccountID = preparedAccountID
+        self.preparedAccountName = preparedAccountID.flatMap { id in
+            document.people.first(where: { $0.id == id })?.sourceDisplayName
+        }
     }
 }
 
