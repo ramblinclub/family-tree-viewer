@@ -1751,12 +1751,25 @@ private struct HomeView: View {
         let grandparents = Set(directParents.flatMap { graph.parents(of: $0.id) })
         let auntsAndUncles = Set(directParents.flatMap { graph.siblings(of: $0.id) })
         let cousins = Set(auntsAndUncles.flatMap { graph.children(of: $0.id) })
-        let niecesAndNephews = Set(directSiblings.flatMap { graph.children(of: $0.id) })
+        // A niece or nephew is any descendant of a sibling, not only the
+        // sibling's immediate children. Include grandnieces/nephews and
+        // every later generation so the category does not silently stop at
+        // the first level.
+        let niecesAndNephews = Set(directSiblings.flatMap { graph.descendants(of: $0.id) })
         let grandchildren = Set(directChildren.flatMap { graph.children(of: $0.id) })
         let greatGrandparents = Set(grandparents.flatMap { graph.parents(of: $0.id) })
         let greatAuntsAndUncles = Set(grandparents.flatMap { graph.siblings(of: $0.id) })
-        let firstCousinsOnceRemoved = Set(greatAuntsAndUncles.flatMap { graph.children(of: $0.id) })
-        let secondCousins = Set(firstCousinsOnceRemoved.flatMap { graph.children(of: $0.id) })
+        let olderGenerationCousinsOnceRemoved = Set(greatAuntsAndUncles.flatMap { graph.children(of: $0.id) })
+        // Children (and later descendants) of the account holder's first
+        // cousins are also first cousins once removed. The previous logic
+        // only followed the great-aunt/uncle branch, which omitted people
+        // such as Andrei Nosov's and Anna Fedotova's children.
+        let cousinsOnceRemoved = Set(cousins.flatMap { graph.descendants(of: $0.id) })
+        let firstCousinsOnceRemoved = olderGenerationCousinsOnceRemoved
+            .union(cousinsOnceRemoved)
+        // Keep the second-cousin calculation tied to the older-generation
+        // branch; descendants of a first cousin are not second cousins.
+        let secondCousins = Set(olderGenerationCousinsOnceRemoved.flatMap { graph.children(of: $0.id) })
         // In-laws are connected through the selected person's own marriage:
         // the partner's immediate family, plus partners of the selected
         // person's siblings and children. Parents' partners are not in-laws
@@ -1783,9 +1796,9 @@ private struct HomeView: View {
             ("in-laws", ArchiveCopy.text(english: "In-laws", russian: "Связи через брак"), repository.people(ids: Array(inLaws))),
             ("aunts-uncles", ArchiveCopy.text(english: "Aunts and uncles", russian: "Тёти и дяди"), Array(auntsAndUncles)),
             ("first-cousins", ArchiveCopy.text(english: "First cousins", russian: "Двоюродные братья и сёстры"), Array(cousins)),
+            ("nieces-nephews", ArchiveCopy.text(english: "Nieces and nephews", russian: "Племянники и племянницы"), Array(niecesAndNephews)),
             ("cousins-once-removed", ArchiveCopy.text(english: "First cousins once removed", russian: "Двоюродные родственники через поколение"), Array(firstCousinsOnceRemoved)),
             ("second-cousins", ArchiveCopy.text(english: "Second cousins", russian: "Троюродные братья и сёстры"), Array(secondCousins)),
-            ("nieces-nephews", ArchiveCopy.text(english: "Nieces and nephews", russian: "Племянники и племянницы"), Array(niecesAndNephews)),
             ("grandchildren", ArchiveCopy.text(english: "Grandchildren", russian: "Внуки"), Array(grandchildren)),
             ("great-grandparents", ArchiveCopy.text(english: "Great-grandparents", russian: "Прадедушки и прабабушки"), Array(greatGrandparents)),
             ("great-aunts-uncles", ArchiveCopy.text(english: "Great-aunts and great-uncles", russian: "Двоюродные бабушки и дедушки"), Array(greatAuntsAndUncles))
@@ -1969,6 +1982,23 @@ private struct FamilyRelationshipGraph {
 
     func children(of personID: Person.ID) -> [Person] {
         people(for: childrenByParent[personID] ?? [])
+    }
+
+    /// Returns every descendant, walking through all child generations.
+    /// This is intentionally blood-line traversal only; spouses are not
+    /// nieces/nephews and therefore are not added to this category.
+    func descendants(of personID: Person.ID) -> [Person] {
+        var result: [Person] = []
+        var visited: Set<Person.ID> = []
+        var pending = children(of: personID)
+
+        while let next = pending.popLast() {
+            guard visited.insert(next.id).inserted else { continue }
+            result.append(next)
+            pending.append(contentsOf: children(of: next.id))
+        }
+
+        return result
     }
 
     func partners(of personID: Person.ID) -> [Person] {
