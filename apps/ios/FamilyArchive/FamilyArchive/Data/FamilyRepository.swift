@@ -1381,6 +1381,15 @@ final class FamilyRepository: ObservableObject {
     }
 
     private func replaceDocument(people: [Person], changedPersonIDs: Set<Person.ID> = []) {
+        let previousPeopleByID = peopleByID
+        let profileImageChanged = changedPersonIDs.contains { personID in
+            guard let previous = previousPeopleByID[personID],
+                  let updated = people.first(where: { $0.id == personID }) else { return false }
+            return previous.profileImagePath != updated.profileImagePath ||
+                previous.profileImageScale != updated.profileImageScale ||
+                previous.profileImageOffsetX != updated.profileImageOffsetX ||
+                previous.profileImageOffsetY != updated.profileImageOffsetY
+        }
         document = FamilyArchiveDocument(
             schemaVersion: document.schemaVersion,
             title: document.title,
@@ -1390,6 +1399,9 @@ final class FamilyRepository: ObservableObject {
         peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
         profilePhotoPathCache.removeAll()
         coloredPhotoCache.removeAll()
+        if profileImageChanged {
+            ArchiveFileResolver.invalidateImages()
+        }
         try? privateStore.save(document: document, changedPersonIDs: changedPersonIDs, rebuildGEDCOM: true)
     }
 

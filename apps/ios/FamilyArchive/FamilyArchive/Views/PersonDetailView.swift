@@ -1286,21 +1286,21 @@ private struct ProfilePhotoView: View {
                 Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                        .scaleEffect(CGFloat(person.profileImageScale ?? 1))
+                        .scaleEffect(CGFloat(currentPerson.profileImageScale ?? 1))
                         // Crop offsets are authored in the 300-point editor;
                         // scale them for the actual avatar size so a saved
                         // adjustment remains visible in every context.
                         .offset(
-                            x: CGFloat(person.profileImageOffsetX ?? 0) * size / 300,
-                            y: CGFloat(person.profileImageOffsetY ?? 0) * size / 300
+                            x: CGFloat(currentPerson.profileImageOffsetX ?? 0) * size / 300,
+                            y: CGFloat(currentPerson.profileImageOffsetY ?? 0) * size / 300
                         )
-                    .grayscale((repository?.isLiving(person) ?? person.isLiving) ? 0 : 1)
+                    .grayscale((repository?.isLiving(currentPerson) ?? currentPerson.isLiving) ? 0 : 1)
             } else {
                 ZStack(alignment: .bottomLeading) {
                     MonogramView(
-                        person: person,
+                        person: currentPerson,
                         size: size,
-                        isLiving: repository?.isLiving(person) ?? person.isLiving
+                        isLiving: repository?.isLiving(currentPerson) ?? currentPerson.isLiving
                     )
                     Image(systemName: "photo")
                         .font(ArchiveTypography.metadataEmphasis)
@@ -1320,12 +1320,16 @@ private struct ProfilePhotoView: View {
             // The repository resolver enforces that the path belongs to this
             // person's tagged media collection. Do not fall back to a stale
             // profileImagePath when that check rejects it.
-            path = repository.photoPath(for: person.id)
+            path = repository.photoPath(for: currentPerson.id)
         } else {
-            path = person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+            path = currentPerson.profileImagePath ?? currentPerson.media.first(where: { $0.kind == .photo })?.path
         }
         guard let path else { return nil }
         return ArchiveFileResolver.image(for: path)
+    }
+
+    private var currentPerson: Person {
+        repository?.person(id: person.id) ?? person
     }
 }
 

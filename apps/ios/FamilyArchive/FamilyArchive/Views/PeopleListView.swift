@@ -56,6 +56,14 @@ enum ArchiveFileResolver {
         return image
     }
 
+    /// Profile selections can point at a path that was already decoded before
+    /// the selection was saved (for example after replacing an imported asset
+    /// in the private store). Clear the shared decoded cache so every screen
+    /// picks up the current image immediately.
+    static func invalidateImages() {
+        cache.removeAllObjects()
+    }
+
     private static func cacheKey(path: String, maxPixelSize: Int?) -> NSString {
         "\(path)|\(maxPixelSize ?? 0)" as NSString
     }
@@ -1111,14 +1119,14 @@ private struct FamilyMemberPhotoView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(CGFloat(person.profileImageScale ?? 1))
+                    .scaleEffect(CGFloat(currentPerson.profileImageScale ?? 1))
                     .offset(
-                        x: CGFloat(person.profileImageOffsetX ?? 0) * size / 300,
-                        y: CGFloat(person.profileImageOffsetY ?? 0) * size / 300
+                        x: CGFloat(currentPerson.profileImageOffsetX ?? 0) * size / 300,
+                        y: CGFloat(currentPerson.profileImageOffsetY ?? 0) * size / 300
                     )
-                    .grayscale((repository?.isLiving(person) ?? person.isLiving) ? 0 : 1)
+                    .grayscale((repository?.isLiving(currentPerson) ?? currentPerson.isLiving) ? 0 : 1)
             } else {
-                MonogramView(person: person, size: size, isLiving: repository?.isLiving(person) ?? person.isLiving)
+                MonogramView(person: currentPerson, size: size, isLiving: repository?.isLiving(currentPerson) ?? currentPerson.isLiving)
             }
         }
         .frame(width: size, height: size)
@@ -1127,9 +1135,13 @@ private struct FamilyMemberPhotoView: View {
     }
 
     private var loadedImage: UIImage? {
-        let path = repository?.photoPath(for: person.id) ?? person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path
+        let path = repository?.photoPath(for: currentPerson.id) ?? currentPerson.profileImagePath ?? currentPerson.media.first(where: { $0.kind == .photo })?.path
         guard let path else { return nil }
         return ArchiveFileResolver.image(for: path)
+    }
+
+    private var currentPerson: Person {
+        repository?.person(id: person.id) ?? person
     }
 }
 
@@ -2054,10 +2066,10 @@ private struct UserProfilePhotoView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(CGFloat(person?.profileImageScale ?? 1))
+                    .scaleEffect(CGFloat(currentPerson?.profileImageScale ?? 1))
                     .offset(
-                        x: CGFloat(person?.profileImageOffsetX ?? 0) * size / 300,
-                        y: CGFloat(person?.profileImageOffsetY ?? 0) * size / 300
+                        x: CGFloat(currentPerson?.profileImageOffsetX ?? 0) * size / 300,
+                        y: CGFloat(currentPerson?.profileImageOffsetY ?? 0) * size / 300
                     )
             } else {
                 Rectangle()
@@ -2068,7 +2080,7 @@ private struct UserProfilePhotoView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                Text(person?.initials ?? "EL")
+                    Text(currentPerson?.initials ?? "EL")
                     .font(.system(size: size * 0.35, weight: .semibold))
                     .foregroundStyle(.white)
             }
@@ -2081,14 +2093,19 @@ private struct UserProfilePhotoView: View {
     }
 
     private var isLiving: Bool {
-        guard let person else { return true }
+        guard let person = currentPerson else { return true }
         return repository?.isLiving(person) ?? person.isLiving
     }
 
     private var loadedImage: UIImage? {
-        guard let person,
+        guard let person = currentPerson,
               let path = repository?.photoPath(for: person.id) ?? person.profileImagePath ?? person.media.first(where: { $0.kind == .photo })?.path else { return nil }
         return ArchiveFileResolver.image(for: path)
+    }
+
+    private var currentPerson: Person? {
+        guard let person else { return nil }
+        return repository?.person(id: person.id) ?? person
     }
 }
 
@@ -4748,7 +4765,11 @@ struct MemoriesPagerView: View {
                         MemoryDetailView(
                             memory: items[index],
                             repository: repository,
-                            isActive: slot == 1
+                            // A single-item pager has only slot 0; treating
+                            // it as inactive prevents its image loader from
+                            // ever starting and leaves an orange placeholder
+                            // beside an otherwise valid caption.
+                            isActive: items.count == 1 ? true : slot == 1
                         )
                             .tag(slot)
                     }
