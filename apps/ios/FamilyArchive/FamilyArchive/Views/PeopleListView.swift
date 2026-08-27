@@ -1690,7 +1690,9 @@ private struct HomeView: View {
                         id: "birthday-\(person.id)",
                         personID: person.id,
                         daysUntil: occurrence.daysUntil,
-                        title: ArchiveCopy.text(english: "\(person.displayName)’s birthday", russian: "День рождения: \(person.displayName)"),
+                        kind: .birthday,
+                        eventLabel: ArchiveCopy.text(english: "Birthday", russian: "День рождения"),
+                        personName: person.displayName,
                         detail: [fullDate(month: parts.month, day: parts.day, year: parts.year), birth.place.map(ArchiveCopy.place)].compactMap { $0 }.joined(separator: " · "),
                         occurrence: occurrence.date
                     ))
@@ -1702,7 +1704,9 @@ private struct HomeView: View {
                     id: "remembrance-\(person.id)",
                     personID: person.id,
                     daysUntil: occurrence.daysUntil,
-                    title: ArchiveCopy.text(english: "\(person.displayName)’s remembrance day", russian: "День памяти: \(person.displayName)"),
+                    kind: .remembrance,
+                    eventLabel: ArchiveCopy.text(english: "Remembrance day", russian: "День памяти"),
+                    personName: person.displayName,
                     detail: [fullDate(month: parts.month, day: parts.day, year: parts.year), death.place.map(ArchiveCopy.place)].compactMap { $0 }.joined(separator: " · "),
                     occurrence: occurrence.date
                 ))
@@ -1843,9 +1847,31 @@ private struct RememberedDate: Identifiable {
     let id: String
     let personID: Person.ID
     let daysUntil: Int
-    let title: String
+    let kind: Kind
+    let eventLabel: String
+    let personName: String
     let detail: String
     let occurrence: Date
+
+    enum Kind {
+        case birthday
+        case remembrance
+
+        var iconName: String {
+            switch self {
+            case .birthday: "birthday.cake.fill"
+            case .remembrance: "flame.fill"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .birthday: ArchiveTheme.accent
+            case .remembrance: ArchiveTheme.accent.opacity(0.55)
+            }
+        }
+
+    }
 }
 
 private struct RememberedDateRow: View {
@@ -1855,14 +1881,27 @@ private struct RememberedDateRow: View {
         HStack(spacing: 14) {
             VStack(spacing: 1) {
                 Text(ArchiveCopy.countdown(days: date.daysUntil))
-                    .font(.subheadline.weight(.bold))
+                    .font(ArchiveTypography.metadataEmphasis)
                     .foregroundStyle(ArchiveTheme.accent)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
             }
-            .frame(width: 70, alignment: .leading)
+            .frame(width: 84, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(date.title)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: date.kind.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(date.kind.tint)
+                        .accessibilityHidden(true)
+
+                    Text(date.eventLabel)
+                        .font(ArchiveTypography.metadataEmphasis)
+                        .foregroundStyle(date.kind.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(date.personName)
                     .font(.subheadline.weight(.medium))
                     .fixedSize(horizontal: false, vertical: true)
                 Text(date.detail)

@@ -629,7 +629,7 @@ enum ArchiveCopy {
 
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         guard language == .russian else {
-            return remaining == 1 ? "1 day" : "\(remaining) days"
+            return remaining == 1 ? "In 1 day" : "In \(remaining) days"
         }
 
         let lastTwo = remaining % 100
@@ -644,7 +644,7 @@ enum ArchiveCopy {
             default: unit = "дней"
             }
         }
-        return "\(remaining) \(unit)"
+        return "Через \(remaining) \(unit)"
     }
 
     static func relationshipLabel(_ value: String, gender: ArchiveGender = .unknown) -> String {
