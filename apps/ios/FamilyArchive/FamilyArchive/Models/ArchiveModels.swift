@@ -621,6 +621,32 @@ enum ArchiveCopy {
         return language == .russian ? russian : english
     }
 
+    static func countdown(days: Int) -> String {
+        let remaining = max(0, days)
+        if remaining == 0 {
+            return text(english: "Today", russian: "Сегодня")
+        }
+
+        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
+        guard language == .russian else {
+            return remaining == 1 ? "1 day" : "\(remaining) days"
+        }
+
+        let lastTwo = remaining % 100
+        let last = remaining % 10
+        let unit: String
+        if (11...14).contains(lastTwo) {
+            unit = "дней"
+        } else {
+            switch last {
+            case 1: unit = "день"
+            case 2...4: unit = "дня"
+            default: unit = "дней"
+            }
+        }
+        return "\(remaining) \(unit)"
+    }
+
     static func relationshipLabel(_ value: String, gender: ArchiveGender = .unknown) -> String {
         switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "me", "you": return text(english: "You", russian: "Вы")

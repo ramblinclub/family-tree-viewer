@@ -1685,29 +1685,31 @@ private struct HomeView: View {
             if repository.isLiving(person) {
                 if let birth = person.birthFact,
                    let parts = calendarParts(from: birth.value) {
+                    let occurrence = upcomingOccurrence(month: parts.month, day: parts.day)
                     dates.append(RememberedDate(
                         id: "birthday-\(person.id)",
                         personID: person.id,
-                        date: shortMonthDay(month: parts.month, day: parts.day),
+                        daysUntil: occurrence.daysUntil,
                         title: ArchiveCopy.text(english: "\(person.displayName)’s birthday", russian: "День рождения: \(person.displayName)"),
                         detail: [fullDate(month: parts.month, day: parts.day, year: parts.year), birth.place.map(ArchiveCopy.place)].compactMap { $0 }.joined(separator: " · "),
-                        sortKey: upcomingSortKey(month: parts.month, day: parts.day)
+                        occurrence: occurrence.date
                     ))
                 }
             } else if let death = person.deathFact,
                       let parts = calendarParts(from: death.value) {
+                let occurrence = upcomingOccurrence(month: parts.month, day: parts.day)
                 dates.append(RememberedDate(
                     id: "remembrance-\(person.id)",
                     personID: person.id,
-                    date: shortMonthDay(month: parts.month, day: parts.day),
+                    daysUntil: occurrence.daysUntil,
                     title: ArchiveCopy.text(english: "\(person.displayName)’s remembrance day", russian: "День памяти: \(person.displayName)"),
                     detail: [fullDate(month: parts.month, day: parts.day, year: parts.year), death.place.map(ArchiveCopy.place)].compactMap { $0 }.joined(separator: " · "),
-                    sortKey: upcomingSortKey(month: parts.month, day: parts.day)
+                    occurrence: occurrence.date
                 ))
             }
         }
 
-        return dates.sorted { $0.sortKey < $1.sortKey }.prefix(5).map { $0 }
+        return dates.sorted { $0.occurrence < $1.occurrence }.prefix(5).map { $0 }
     }
 
     private func calendarParts(from value: String) -> (year: Int?, month: Int, day: Int)? {
@@ -1726,13 +1728,6 @@ private struct HomeView: View {
         return nil
     }
 
-    private func shortMonthDay(month: Int, day: Int) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: repository.appLanguage == .russian ? "ru_RU" : "en_US_POSIX")
-        formatter.dateFormat = repository.appLanguage == .russian ? "d MMM" : "MMM d"
-        return formatter.string(from: Calendar.current.date(from: DateComponents(year: 2000, month: month, day: day)) ?? Date())
-    }
-
     private func fullDate(month: Int, day: Int, year: Int?) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: repository.appLanguage == .russian ? "ru_RU" : "en_US_POSIX")
@@ -1742,14 +1737,16 @@ private struct HomeView: View {
         return formatter.string(from: Calendar.current.date(from: DateComponents(year: year ?? 2000, month: month, day: day)) ?? Date())
     }
 
-    private func upcomingSortKey(month: Int, day: Int) -> Int {
+    private func upcomingOccurrence(month: Int, day: Int) -> (date: Date, daysUntil: Int) {
         let calendar = Calendar(identifier: .gregorian)
-        let now = Date()
-        let today = calendar.startOfDay(for: now)
-        let year = calendar.component(.year, from: now)
-        let candidate = calendar.date(from: DateComponents(year: year, month: month, day: day)) ?? now
-        let offset = candidate < today ? 10_000 : 0
-        return offset + month * 100 + day
+        let today = calendar.startOfDay(for: Date())
+        let year = calendar.component(.year, from: today)
+        var candidate = calendar.date(from: DateComponents(year: year, month: month, day: day)) ?? today
+        if candidate < today {
+            candidate = calendar.date(byAdding: .year, value: 1, to: candidate) ?? candidate
+        }
+        let daysUntil = max(0, calendar.dateComponents([.day], from: today, to: candidate).day ?? 0)
+        return (candidate, daysUntil)
     }
 
     private var relationshipGroups: [HomeRelationshipGroup] {
@@ -1845,10 +1842,10 @@ private struct HomeView: View {
 private struct RememberedDate: Identifiable {
     let id: String
     let personID: Person.ID
-    let date: String
+    let daysUntil: Int
     let title: String
     let detail: String
-    let sortKey: Int
+    let occurrence: Date
 }
 
 private struct RememberedDateRow: View {
@@ -1857,9 +1854,10 @@ private struct RememberedDateRow: View {
     var body: some View {
         HStack(spacing: 14) {
             VStack(spacing: 1) {
-                Text(date.date)
+                Text(ArchiveCopy.countdown(days: date.daysUntil))
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(ArchiveTheme.accent)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(width: 70, alignment: .leading)
 
