@@ -1005,11 +1005,18 @@ struct FamilyMemberTile: View {
     let person: Person
     let repository: FamilyRepository?
     var isAccountHolder = false
+    var relationshipDetail: String? = nil
 
-    init(person: Person, repository: FamilyRepository? = nil, isAccountHolder: Bool = false) {
+    init(
+        person: Person,
+        repository: FamilyRepository? = nil,
+        isAccountHolder: Bool = false,
+        relationshipDetail: String? = nil
+    ) {
         self.person = person
         self.repository = repository
         self.isAccountHolder = isAccountHolder
+        self.relationshipDetail = relationshipDetail
     }
 
     private var isLiving: Bool {
@@ -1059,6 +1066,13 @@ struct FamilyMemberTile: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
                         .layoutPriority(1)
+                }
+
+                if let relationshipDetail, !relationshipDetail.isEmpty {
+                    Text(relationshipDetail)
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .lineLimit(2)
                 }
             }
 

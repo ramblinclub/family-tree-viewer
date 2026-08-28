@@ -680,6 +680,17 @@ enum ArchiveCopy {
         gendered(englishMale: "Husband", englishFemale: "Wife", englishNeutral: "Spouse", russianMale: "Супруг", russianFemale: "Супруга", russianNeutral: "Супруги", gender: gender)
     }
 
+    static func relationshipStatus(_ value: String) -> String {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "married": return text(english: "Married", russian: "В браке")
+        case "divorced": return text(english: "Divorced", russian: "В разводе")
+        case "separated": return text(english: "Separated", russian: "Раздельно")
+        case "partner": return text(english: "Partners", russian: "Партнёры")
+        case "widowed": return text(english: "Widowed", russian: "Вдовство")
+        default: return value
+        }
+    }
+
     static func livingLabel(gender: ArchiveGender) -> String {
         gendered(englishMale: "Living", englishFemale: "Living", englishNeutral: "Living", russianMale: "Жив", russianFemale: "Жива", russianNeutral: "Жив", gender: gender)
     }
@@ -904,6 +915,126 @@ struct FamilyArchiveDocument: Codable {
     let title: String
     let accountHolderID: Person.ID?
     let people: [Person]
+    /// Canonical couple/family records. Older archives omit this field and
+    /// continue to use the person-scoped immediate-family compatibility index.
+    /// New stores persist the same records separately as `family-unions.json`.
+    let familyUnions: [FamilyUnion]?
+
+    init(
+        schemaVersion: Int,
+        title: String,
+        accountHolderID: Person.ID?,
+        people: [Person],
+        familyUnions: [FamilyUnion]? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.title = title
+        self.accountHolderID = accountHolderID
+        self.people = people
+        self.familyUnions = familyUnions
+    }
+}
+
+/// One explicit spouse/partner union and the children who belong to that
+/// union. Parentage and partnership are intentionally stored together here so
+/// a later spouse cannot accidentally become a parent of an earlier child.
+struct FamilyUnion: Codable, Identifiable, Hashable {
+    let id: String
+    let partnerIDs: [Person.ID]
+    let childIDs: [Person.ID]
+    let relationshipStatus: String?
+    let marriageDate: String?
+    let statusDate: String?
+    let marriageDateIsApproximate: Bool?
+    /// Per-person ordinal for display such as first, second, or third spouse.
+    /// A union can be first for one partner and second for the other.
+    let partnerSequence: [Person.ID: Int]?
+    let sourceFamilyID: String?
+    let provenance: String?
+
+    init(
+        id: String,
+        partnerIDs: [Person.ID],
+        childIDs: [Person.ID] = [],
+        relationshipStatus: String? = nil,
+        marriageDate: String? = nil,
+        statusDate: String? = nil,
+        marriageDateIsApproximate: Bool? = nil,
+        partnerSequence: [Person.ID: Int]? = nil,
+        sourceFamilyID: String? = nil,
+        provenance: String? = nil
+    ) {
+        self.id = id
+        self.partnerIDs = Array(Set(partnerIDs)).sorted()
+        self.childIDs = Array(Set(childIDs)).sorted()
+        self.relationshipStatus = relationshipStatus
+        self.marriageDate = marriageDate
+        self.statusDate = statusDate
+        self.marriageDateIsApproximate = marriageDateIsApproximate
+        self.partnerSequence = partnerSequence
+        self.sourceFamilyID = sourceFamilyID
+        self.provenance = provenance
+    }
+}
+
+extension FamilyArchiveDocument {
+    /// Explicit unions are authoritative. Legacy documents get a conservative
+    /// best-effort projection that refuses to invent pairings for a child with
+    /// more than two recorded parents.
+    var resolvedFamilyUnions: [FamilyUnion] {
+        if let familyUnions, !familyUnions.isEmpty {
+            return familyUnions
+        }
+        return FamilyUnion.deriveLegacyUnions(from: people)
+    }
+}
+
+extension FamilyUnion {
+    fileprivate static func deriveLegacyUnions(from people: [Person]) -> [FamilyUnion] {
+        let validIDs = Set(people.map(\.id))
+        var childrenByPair: [String: Set<Person.ID>] = [:]
+        var partnersByPair: [String: [Person.ID]] = [:]
+        var metadataByPair: [String: (status: String?, date: String?, approximate: Bool?)] = [:]
+
+        func pairKey(_ ids: [Person.ID]) -> String {
+            ids.sorted().joined(separator: "|")
+        }
+
+        for person in people {
+            let parents = Array(Set(person.immediateFamily.parents.filter { validIDs.contains($0) })).sorted()
+            if !parents.isEmpty, parents.count <= 2 {
+                let key = pairKey(parents)
+                partnersByPair[key] = parents
+                childrenByPair[key, default: []].insert(person.id)
+                if metadataByPair[key] == nil {
+                    metadataByPair[key] = (
+                        person.immediateFamily.parentsUnionStatus,
+                        person.immediateFamily.parentsUnionDate,
+                        person.immediateFamily.parentsUnionDateIsApproximate
+                    )
+                }
+            }
+
+            for partnerID in person.immediateFamily.partners where validIDs.contains(partnerID) {
+                let partners = [person.id, partnerID].sorted()
+                partnersByPair[pairKey(partners)] = partners
+            }
+        }
+
+        return partnersByPair.keys.sorted().enumerated().map { offset, key in
+            let metadata = metadataByPair[key]
+            return FamilyUnion(
+                id: "legacy-family-\(offset + 1)",
+                partnerIDs: partnersByPair[key] ?? [],
+                childIDs: Array(childrenByPair[key] ?? []).sorted(),
+                relationshipStatus: metadata?.status,
+                marriageDate: metadata?.status?.lowercased() == "divorced" ? nil : metadata?.date,
+                statusDate: metadata?.status?.lowercased() == "divorced" ? metadata?.date : nil,
+                marriageDateIsApproximate: metadata?.approximate,
+                provenance: "legacy-immediate-family"
+            )
+        }
+    }
 }
 
 struct Person: Codable, Identifiable, Hashable {

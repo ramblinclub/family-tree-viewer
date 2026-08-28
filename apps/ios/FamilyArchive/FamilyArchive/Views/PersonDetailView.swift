@@ -915,7 +915,7 @@ struct PersonDetailView: View {
     private var familySection: some View {
         detailSection(ArchiveCopy.text(english: "Family", russian: "Семья")) {
             parentsGroup
-            familyGroup(title: spouseGroupTitle, ids: person.immediateFamily.partners)
+            spousesGroup
             familyGroup(title: ArchiveCopy.text(english: "Children", russian: "Дети"), ids: person.immediateFamily.children)
             siblingGroups
         }
@@ -1022,11 +1022,82 @@ struct PersonDetailView: View {
     }
 
     private var spouseGroupTitle: String {
-        let partners = repository.people(ids: person.immediateFamily.partners)
+        let partners = repository.partnerRelationships(for: person.id).map(\.partner)
         guard partners.count == 1, let partner = partners.first else {
             return ArchiveCopy.spouseLabel(gender: .unknown)
         }
         return ArchiveCopy.spouseLabel(gender: partner.archiveGender)
+    }
+
+    @ViewBuilder
+    private var spousesGroup: some View {
+        let relationships = repository.partnerRelationships(for: person.id)
+        if !relationships.isEmpty {
+            Text(spouseGroupTitle)
+                .font(ArchiveTypography.contentTitle)
+                .padding(.top, 10)
+
+            ForEach(relationships) { relationship in
+                FamilyMemberTile(
+                    person: relationship.partner,
+                    repository: repository,
+                    relationshipDetail: spouseRelationshipDetail(relationship)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    selectedFamilyPerson = PresentedFamilyPerson(id: relationship.partner.id)
+                }
+                .accessibilityAddTraits(.isButton)
+                .padding(.bottom, 6)
+            }
+        }
+    }
+
+    private func spouseRelationshipDetail(_ relationship: FamilyPartnerRelationship) -> String? {
+        var parts: [String] = []
+        if let sequence = relationship.sequence {
+            parts.append(orderedSpouseLabel(sequence, gender: relationship.partner.archiveGender))
+        }
+        if let date = relationship.union.marriageDate?.trimmed, !date.isEmpty {
+            parts.append(ArchiveCopy.text(english: "Married \(date)", russian: "Брак · \(date)"))
+        }
+        if let status = relationship.union.relationshipStatus?.trimmed,
+           !status.isEmpty,
+           status.lowercased() != "married" {
+            let statusLabel = ArchiveCopy.text(english: status.capitalized, russian: ArchiveCopy.relationshipStatus(status))
+            if let statusDate = relationship.union.statusDate?.trimmed, !statusDate.isEmpty {
+                parts.append("\(statusLabel) · \(statusDate)")
+            } else {
+                parts.append(statusLabel)
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func orderedSpouseLabel(_ sequence: Int, gender: ArchiveGender) -> String {
+        let englishOrdinal: String
+        let russianOrdinal: String
+        switch sequence {
+        case 1: (englishOrdinal, russianOrdinal) = ("First", gender == .male ? "Первый" : "Первая")
+        case 2: (englishOrdinal, russianOrdinal) = ("Second", gender == .male ? "Второй" : "Вторая")
+        case 3: (englishOrdinal, russianOrdinal) = ("Third", gender == .male ? "Третий" : "Третья")
+        default: (englishOrdinal, russianOrdinal) = ("Spouse #\(sequence)", "Супруг(а) №\(sequence)")
+        }
+
+        let englishRole: String
+        let russianRole: String
+        switch gender {
+        case .male: (englishRole, russianRole) = ("husband", "муж")
+        case .female: (englishRole, russianRole) = ("wife", "жена")
+        case .unknown: (englishRole, russianRole) = ("spouse", "супруг(а)")
+        }
+        if sequence > 3 {
+            return ArchiveCopy.text(english: englishOrdinal, russian: russianOrdinal)
+        }
+        return ArchiveCopy.text(
+            english: "\(englishOrdinal) \(englishRole)",
+            russian: "\(russianOrdinal) \(russianRole)"
+        )
     }
 
     @ViewBuilder

@@ -134,11 +134,11 @@ private struct TopolaTreePayloadBuilder {
 
     func makePayload() -> TopolaTreePayload? {
         guard let account = repository.accountHolder else { return nil }
-        let index = TreeRelationshipIndex(people: repository.people)
+        let index = TreeRelationshipIndex(document: repository.document)
         let people = primaryPeople(account: account, index: index)
         guard !people.isEmpty else { return nil }
 
-        let data = makeGedcomData(people: people, index: index)
+        let data = makeGedcomData(people: people)
         return TopolaTreePayload(
             data: data,
             selectionID: account.id,
@@ -168,40 +168,28 @@ private struct TopolaTreePayloadBuilder {
         }
     }
 
-    private func makeGedcomData(people: [Person], index: TreeRelationshipIndex) -> TopolaGedcomData {
+    private func makeGedcomData(people: [Person]) -> TopolaGedcomData {
         let peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
         let includedIDs = Set(peopleByID.keys)
-        var familyBuilders: [String: FamilyBuilder] = [:]
         var famcByChild: [Person.ID: String] = [:]
         var famsByPerson: [Person.ID: Set<String>] = [:]
+        var familyBuilders: [FamilyBuilder] = []
 
-        for child in people {
-            let parents = index.parents(of: child.id).filter { includedIDs.contains($0.id) }
-            guard !parents.isEmpty else { continue }
-            let key = "parents-" + parents.map(\.id).sorted().joined(separator: "-")
-            var family = familyBuilders[key] ?? FamilyBuilder(id: key)
-            family.children.insert(child.id)
-            for parent in parents {
-                family.assign(parent: parent)
+        for union in repository.familyUnions.sorted(by: { $0.id < $1.id }) {
+            let partners = union.partnerIDs.compactMap { peopleByID[$0] }
+            let children = union.childIDs.filter { includedIDs.contains($0) }
+            guard !partners.isEmpty, !children.isEmpty || partners.count > 1 else { continue }
+
+            var family = FamilyBuilder(id: union.id)
+            family.children.formUnion(children)
+            partners.forEach { family.assign(parent: $0) }
+            familyBuilders.append(family)
+
+            for partner in partners {
+                famsByPerson[partner.id, default: []].insert(union.id)
             }
-            familyBuilders[key] = family
-            famcByChild[child.id] = key
-        }
-
-        for person in people {
-            for partner in index.partners(of: person.id) where includedIDs.contains(partner.id) {
-                let pair = [person.id, partner.id].sorted()
-                let key = "partners-" + pair.joined(separator: "-")
-                var family = familyBuilders[key] ?? FamilyBuilder(id: key)
-                family.assign(parent: person)
-                family.assign(parent: partner)
-                familyBuilders[key] = family
-            }
-        }
-
-        for family in familyBuilders.values {
-            for personID in family.peopleIDs {
-                famsByPerson[personID, default: []].insert(family.id)
+            for childID in children where famcByChild[childID] == nil {
+                famcByChild[childID] = union.id
             }
         }
 
@@ -219,7 +207,7 @@ private struct TopolaTreePayloadBuilder {
             )
         }
 
-        let families = familyBuilders.values.sorted { $0.id < $1.id }.map {
+        let families = familyBuilders.sorted { $0.id < $1.id }.map {
             TopolaFamily(id: $0.id, children: $0.children.sorted(), wife: $0.wife, husb: $0.husb)
         }
         return TopolaGedcomData(indis: individuals, fams: families)
@@ -261,10 +249,6 @@ private struct TopolaTreePayloadBuilder {
         var wife: Person.ID?
         var husb: Person.ID?
 
-        var peopleIDs: Set<Person.ID> {
-            children.union([wife, husb].compactMap { $0 })
-        }
-
         mutating func assign(parent: Person) {
             switch parent.archiveGender {
             case .female:
@@ -285,23 +269,28 @@ private struct TreeRelationshipIndex {
     private var partnersByPerson: [Person.ID: Set<Person.ID>] = [:]
     private var siblingsByPerson: [Person.ID: Set<Person.ID>] = [:]
 
-    init(people: [Person]) {
+    init(document: FamilyArchiveDocument) {
+        let people = document.people
         peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
 
+        for union in document.resolvedFamilyUnions {
+            let partners = union.partnerIDs.filter { peopleByID[$0] != nil }
+            let children = union.childIDs.filter { peopleByID[$0] != nil }
+            for childID in children {
+                parentsByChild[childID, default: []].formUnion(partners)
+                for parentID in partners {
+                    childrenByParent[parentID, default: []].insert(childID)
+                }
+            }
+            for partnerID in partners {
+                partnersByPerson[partnerID, default: []].formUnion(partners.filter { $0 != partnerID })
+            }
+        }
+
+        // Preserve explicit sibling evidence for legacy/partial records while
+        // also deriving full and half siblings from canonical parent unions.
         for person in people {
-            for parentID in person.immediateFamily.parents {
-                parentsByChild[person.id, default: []].insert(parentID)
-                childrenByParent[parentID, default: []].insert(person.id)
-            }
-            for childID in person.immediateFamily.children {
-                childrenByParent[person.id, default: []].insert(childID)
-                parentsByChild[childID, default: []].insert(person.id)
-            }
-            for partnerID in person.immediateFamily.partners {
-                partnersByPerson[person.id, default: []].insert(partnerID)
-                partnersByPerson[partnerID, default: []].insert(person.id)
-            }
-            for siblingID in person.immediateFamily.siblings {
+            for siblingID in person.immediateFamily.siblings where peopleByID[siblingID] != nil {
                 siblingsByPerson[person.id, default: []].insert(siblingID)
                 siblingsByPerson[siblingID, default: []].insert(person.id)
             }

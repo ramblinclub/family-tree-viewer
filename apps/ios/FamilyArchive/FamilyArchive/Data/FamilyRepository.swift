@@ -103,6 +103,7 @@ private struct PrivateDocumentStore {
 
     var manifestURL: URL { rootURL.appendingPathComponent("manifest.json") }
     var peopleURL: URL { rootURL.appendingPathComponent("people", isDirectory: true) }
+    var familyUnionsURL: URL { rootURL.appendingPathComponent("family-unions.json") }
     var privateDataURL: URL { rootURL.appendingPathComponent("PrivateData", isDirectory: true) }
     var gedcomURL: URL { rootURL.appendingPathComponent("family.ged") }
 
@@ -120,12 +121,21 @@ private struct PrivateDocumentStore {
             people.append(try JSONDecoder.archive.decode(Person.self, from: data))
         }
 
+        let familyUnions: [FamilyUnion]?
+        if fileManager.fileExists(atPath: familyUnionsURL.path) {
+            let data = try Data(contentsOf: familyUnionsURL)
+            familyUnions = try JSONDecoder.archive.decode([FamilyUnion].self, from: data)
+        } else {
+            familyUnions = nil
+        }
+
         guard !people.isEmpty else { return nil }
         return FamilyArchiveDocument(
             schemaVersion: manifest.schemaVersion,
             title: manifest.title,
             accountHolderID: manifest.accountHolderID,
-            people: people
+            people: people,
+            familyUnions: familyUnions
         )
     }
 
@@ -169,7 +179,7 @@ private struct PrivateDocumentStore {
 
         let manifest = Manifest(
             format: "family-archive-private-store",
-            version: 1,
+            version: 2,
             schemaVersion: document.schemaVersion,
             title: document.title,
             accountHolderID: document.accountHolderID,
@@ -178,6 +188,13 @@ private struct PrivateDocumentStore {
         )
         let manifestData = try JSONEncoder.archive.encode(manifest)
         try manifestData.write(to: manifestURL, options: .atomic)
+
+        if let familyUnions = document.familyUnions {
+            let familyData = try JSONEncoder.archive.encode(familyUnions)
+            try familyData.write(to: familyUnionsURL, options: .atomic)
+        } else if fileManager.fileExists(atPath: familyUnionsURL.path) {
+            try fileManager.removeItem(at: familyUnionsURL)
+        }
 
         if rebuildGEDCOM {
             try GEDCOMExporter(document: document).makeGEDCOM().write(to: gedcomURL, options: .atomic)
@@ -638,6 +655,32 @@ final class FamilyRepository: ObservableObject {
         }
     }
 
+    var familyUnions: [FamilyUnion] {
+        document.resolvedFamilyUnions
+    }
+
+    func partnerRelationships(for personID: Person.ID) -> [FamilyPartnerRelationship] {
+        familyUnions.compactMap { union in
+            guard union.partnerIDs.contains(personID),
+                  let partnerID = union.partnerIDs.first(where: { $0 != personID }),
+                  let partner = peopleByID[partnerID] else { return nil }
+            return FamilyPartnerRelationship(
+                union: union,
+                partner: partner,
+                sequence: union.partnerSequence?[personID]
+            )
+        }
+        .sorted { left, right in
+            let leftSequence = left.sequence ?? Int.max
+            let rightSequence = right.sequence ?? Int.max
+            if leftSequence != rightSequence { return leftSequence < rightSequence }
+            if left.union.marriageDate != right.union.marriageDate {
+                return (left.union.marriageDate ?? "") < (right.union.marriageDate ?? "")
+            }
+            return left.partner.displayName.localizedStandardCompare(right.partner.displayName) == .orderedAscending
+        }
+    }
+
     func person(id: Person.ID) -> Person? {
         peopleByID[id]
     }
@@ -849,7 +892,8 @@ final class FamilyRepository: ObservableObject {
                     schemaVersion: document.schemaVersion,
                     title: document.title,
                     accountHolderID: document.accountHolderID,
-                    people: updatedPeople
+                    people: updatedPeople,
+                    familyUnions: document.familyUnions
                 ),
                 changedPersonIDs: Set(uniquePersonIDs),
                 rebuildGEDCOM: true
@@ -858,7 +902,8 @@ final class FamilyRepository: ObservableObject {
                 schemaVersion: document.schemaVersion,
                 title: document.title,
                 accountHolderID: document.accountHolderID,
-                people: updatedPeople
+                people: updatedPeople,
+                familyUnions: document.familyUnions
             )
             peopleByID = Dictionary(uniqueKeysWithValues: updatedPeople.map { ($0.id, $0) })
             profilePhotoPathCache.removeAll()
@@ -1392,7 +1437,8 @@ final class FamilyRepository: ObservableObject {
             schemaVersion: document.schemaVersion,
             title: document.title,
             accountHolderID: document.accountHolderID,
-            people: people
+            people: people,
+            familyUnions: document.familyUnions
         )
         // Persist before publishing the new document. The old implementation
         // discarded write errors, allowing the UI to appear saved while the
@@ -1529,7 +1575,8 @@ final class FamilyRepository: ObservableObject {
             schemaVersion: document.schemaVersion,
             title: document.title,
             accountHolderID: document.accountHolderID,
-            people: people
+            people: people,
+            familyUnions: document.familyUnions
         )
         applyDocument(updatedDocument, changedPersonIDs: changedPersonIDs)
         try? privateStore.save(document: updatedDocument, changedPersonIDs: changedPersonIDs, rebuildGEDCOM: true)
@@ -1840,6 +1887,13 @@ final class FamilyRepository: ObservableObject {
     }
 }
 
+struct FamilyPartnerRelationship: Identifiable {
+    var id: String { union.id }
+    let union: FamilyUnion
+    let partner: Person
+    let sequence: Int?
+}
+
 private extension JSONEncoder {
     static var archive: JSONEncoder {
         let encoder = JSONEncoder()
@@ -1999,50 +2053,30 @@ private struct GEDCOMExporter {
 
     func makeGEDCOM() -> Data {
         let peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
-        var parentsByChild: [String: Set<String>] = [:]
-        var partnerPairs = Set<[String]>()
-
-        for person in document.people {
-            let validParents = person.immediateFamily.parents.filter { peopleByID[$0] != nil }
-            if !validParents.isEmpty { parentsByChild[person.id] = Set(validParents) }
-            for partnerID in person.immediateFamily.partners where peopleByID[partnerID] != nil {
-                partnerPairs.insert([person.id, partnerID].sorted())
-            }
+        let families = document.resolvedFamilyUnions.compactMap { union -> FamilyUnion? in
+            let partners = union.partnerIDs.filter { peopleByID[$0] != nil }
+            let children = union.childIDs.filter { peopleByID[$0] != nil }
+            guard !partners.isEmpty, !children.isEmpty || partners.count > 1 else { return nil }
+            return FamilyUnion(
+                id: union.id,
+                partnerIDs: partners,
+                childIDs: children,
+                relationshipStatus: union.relationshipStatus,
+                marriageDate: union.marriageDate,
+                statusDate: union.statusDate,
+                marriageDateIsApproximate: union.marriageDateIsApproximate,
+                partnerSequence: union.partnerSequence,
+                sourceFamilyID: union.sourceFamilyID,
+                provenance: union.provenance
+            )
         }
+        .sorted { $0.id < $1.id }
 
-        var familyParents: [String: [String]] = [:]
-        var familyChildren: [String: Set<String>] = [:]
-        func addFamily(parents: [String], child: String? = nil) {
-            let normalized = parents.sorted()
-            guard !normalized.isEmpty else { return }
-            let key = normalized.joined(separator: "|")
-            familyParents[key] = normalized
-            if let child { familyChildren[key, default: []].insert(child) }
-        }
-
-        for (childID, parents) in parentsByChild {
-            let parentList = Array(parents).sorted()
-            if parentList.count <= 2 {
-                addFamily(parents: parentList, child: childID)
-            } else {
-                for firstIndex in 0..<(parentList.count - 1) {
-                    for secondIndex in (firstIndex + 1)..<parentList.count {
-                        addFamily(parents: [parentList[firstIndex], parentList[secondIndex]], child: childID)
-                    }
-                }
-            }
-        }
-
-        for pair in partnerPairs { addFamily(parents: pair) }
-
-        let familyKeys = familyParents.keys.sorted()
-        let familyIDs = Dictionary(uniqueKeysWithValues: familyKeys.enumerated().map { (key: $0.element, value: "F\($0.offset + 1)") })
         var familiesForPerson: [String: [String]] = [:]
         var childFamilyForPerson: [String: [String]] = [:]
-        for key in familyKeys {
-            guard let familyID = familyIDs[key], let parents = familyParents[key] else { continue }
-            for parent in parents { familiesForPerson[parent, default: []].append(familyID) }
-            for child in familyChildren[key] ?? [] { childFamilyForPerson[child, default: []].append(familyID) }
+        for family in families {
+            for partnerID in family.partnerIDs { familiesForPerson[partnerID, default: []].append(family.id) }
+            for childID in family.childIDs { childFamilyForPerson[childID, default: []].append(family.id) }
         }
 
         var lines = ["0 HEAD", "1 SOUR FamilyArchive", "1 CHAR UTF-8", "1 GEDC", "2 VERS 5.5.1", "0 @U1@ SUBM", "1 NAME Family Archive"]
@@ -2052,6 +2086,7 @@ private struct GEDCOMExporter {
             let family = gedcomSafe(person.familyName)
             let name = family.isEmpty ? given : "\(given) /\(family)/"
             lines.append("1 NAME \(name.isEmpty ? "Unknown" : name)")
+            if let sex = gedcomSex(person.archiveGender) { lines.append("1 SEX \(sex)") }
             if let birth = person.birthFact {
                 lines.append("1 BIRT")
                 lines.append("2 DATE \(gedcomSafe(birth.value))")
@@ -2067,15 +2102,24 @@ private struct GEDCOMExporter {
             for familyID in childFamilyForPerson[person.id] ?? [] { lines.append("1 FAMC @\(familyID)@") }
         }
 
-        for key in familyKeys {
-            guard let familyID = familyIDs[key], let parents = familyParents[key] else { continue }
-            lines.append("0 @\(familyID)@ FAM")
-            if let first = parents.first { lines.append("1 HUSB @\(first)@") }
-            if parents.count > 1 { lines.append("1 WIFE @\(parents[1])@") }
-            if parents.count > 2 {
-                for parent in parents.dropFirst(2) { lines.append("1 NOTE Additional parent @\(parent)@") }
+        for family in families {
+            lines.append("0 @\(family.id)@ FAM")
+            let roles = gedcomPartnerRoles(family.partnerIDs, peopleByID: peopleByID)
+            if let husband = roles.husband { lines.append("1 HUSB @\(husband)@") }
+            if let wife = roles.wife { lines.append("1 WIFE @\(wife)@") }
+            for childID in family.childIDs { lines.append("1 CHIL @\(childID)@") }
+            if let marriageDate = family.marriageDate, !marriageDate.isEmpty {
+                lines.append("1 MARR")
+                lines.append("2 DATE \(gedcomSafe(marriageDate))")
+            } else if family.relationshipStatus?.lowercased() == "married" {
+                lines.append("1 MARR")
             }
-            for child in (familyChildren[key] ?? []).sorted() { lines.append("1 CHIL @\(child)@") }
+            if family.relationshipStatus?.lowercased() == "divorced" {
+                lines.append("1 DIV")
+                if let statusDate = family.statusDate, !statusDate.isEmpty {
+                    lines.append("2 DATE \(gedcomSafe(statusDate))")
+                }
+            }
         }
 
         var mediaObjects: [(id: String, path: String)] = []
@@ -2114,6 +2158,32 @@ private struct GEDCOMExporter {
 
     private func gedcomSafe(_ value: String) -> String {
         value.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func gedcomSex(_ gender: ArchiveGender) -> String? {
+        switch gender {
+        case .male: "M"
+        case .female: "F"
+        case .unknown: nil
+        }
+    }
+
+    private func gedcomPartnerRoles(
+        _ partnerIDs: [Person.ID],
+        peopleByID: [Person.ID: Person]
+    ) -> (husband: Person.ID?, wife: Person.ID?) {
+        var husband: Person.ID?
+        var wife: Person.ID?
+        for partnerID in partnerIDs {
+            switch peopleByID[partnerID]?.archiveGender ?? .unknown {
+            case .male where husband == nil: husband = partnerID
+            case .female where wife == nil: wife = partnerID
+            default:
+                if husband == nil { husband = partnerID }
+                else if wife == nil { wife = partnerID }
+            }
+        }
+        return (husband, wife)
     }
 }
 
