@@ -239,15 +239,27 @@ final class NarrativeLocalizationStore {
         source: String
     ) -> String {
         let record = mediaByID[mediaID]
+        let expectedPersonIDs = Set(MediaMentionToken.personIDs(in: source))
         let localeTranslation = record?.captionTranslations?[language.rawValue]
-        if let localeTranslation, !localeTranslation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let localeTranslation,
+           !localeTranslation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           Set(MediaMentionToken.personIDs(in: localeTranslation)) == expectedPersonIDs {
             return localeTranslation
         }
-        return localized(source: source, translation: language == .english ? record?.caption : nil, pending: "English caption pending")
+        if language == .english,
+           let legacyEnglishCaption = record?.caption,
+           !legacyEnglishCaption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           Set(MediaMentionToken.personIDs(in: legacyEnglishCaption)) == expectedPersonIDs {
+            return legacyEnglishCaption
+        }
+        return source
     }
 
-    func storedMediaCaption(mediaID: String) -> String? {
-        mediaByID[mediaID]?.caption
+    func storedMediaCaption(mediaID: String, source: String) -> String? {
+        let expectedPersonIDs = Set(MediaMentionToken.personIDs(in: source))
+        guard let caption = mediaByID[mediaID]?.caption,
+              Set(MediaMentionToken.personIDs(in: caption)) == expectedPersonIDs else { return nil }
+        return caption
     }
 
     /// Upgrades legacy visible `@Name` captions to ID-backed mention tokens.
@@ -259,9 +271,13 @@ final class NarrativeLocalizationStore {
         fileManager: FileManager = .default
     ) -> Bool {
         var preferredIDsByMediaID: [String: Set<Person.ID>] = [:]
+        var authoritativeIDsByMediaID: [String: Set<Person.ID>] = [:]
         for person in people {
             for media in person.media {
                 preferredIDsByMediaID[media.id, default: []].formUnion(media.personIDs ?? [person.id])
+                authoritativeIDsByMediaID[media.id, default: []].formUnion(
+                    MediaMentionToken.personIDs(in: media.caption ?? "")
+                )
             }
         }
 
@@ -269,22 +285,32 @@ final class NarrativeLocalizationStore {
         for mediaID in mediaByID.keys {
             guard var record = mediaByID[mediaID] else { continue }
             let preferredIDs = preferredIDsByMediaID[mediaID] ?? []
+            let authoritativeIDs = authoritativeIDsByMediaID[mediaID] ?? []
             if let caption = record.caption {
+                var normalizedCaption = caption
                 if MediaMentionToken.hasUnstructuredMention(in: caption) {
-                    let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
-                    if canonical != caption {
-                        record.caption = canonical
-                        changed = true
-                    }
+                    normalizedCaption = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
+                }
+                if Set(MediaMentionToken.personIDs(in: normalizedCaption)) != authoritativeIDs {
+                    normalizedCaption = ""
+                }
+                if normalizedCaption != caption {
+                    record.caption = normalizedCaption.isEmpty ? nil : normalizedCaption
+                    changed = true
                 }
             }
             if var translations = record.captionTranslations {
                 for language in translations.keys {
                     guard let caption = translations[language] else { continue }
-                    guard MediaMentionToken.hasUnstructuredMention(in: caption) else { continue }
-                    let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
-                    if canonical != caption {
-                        translations[language] = canonical
+                    var normalizedCaption = caption
+                    if MediaMentionToken.hasUnstructuredMention(in: caption) {
+                        normalizedCaption = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
+                    }
+                    if Set(MediaMentionToken.personIDs(in: normalizedCaption)) != authoritativeIDs {
+                        normalizedCaption = ""
+                    }
+                    if normalizedCaption != caption {
+                        translations[language] = normalizedCaption.isEmpty ? nil : normalizedCaption
                         changed = true
                     }
                 }
@@ -305,9 +331,13 @@ final class NarrativeLocalizationStore {
         mediaID: String,
         caption: String,
         language: ArchiveLanguage = .english,
+        expectedPersonIDs: Set<Person.ID>,
         fileManager: FileManager = .default
     ) throws {
         let value = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.isEmpty || Set(MediaMentionToken.personIDs(in: value)) == expectedPersonIDs else {
+            throw CocoaError(.validationMissingMandatoryProperty)
+        }
         var record = mediaByID[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil, captionTranslations: nil)
         var translations = record.captionTranslations ?? [:]
         translations[language.rawValue] = value.isEmpty ? nil : value
@@ -2080,6 +2110,19 @@ enum MediaMentionToken {
             restored = restored.replacingOccurrences(of: "FAMILYMENTIONTOKEN\(index)X", with: token)
         }
         return restored
+    }
+}
+
+enum MediaCaptionMetadata {
+    /// Media dates are an internal sorting index derived from caption prose.
+    /// Mention labels have already been converted to ID tokens before this
+    /// runs, so a person's birth year cannot be mistaken for the photo date.
+    static func sortingDate(in canonicalCaption: String) -> String? {
+        guard let range = canonicalCaption.range(
+            of: #"\b(1\d{3}|20\d{2}|2100)\b"#,
+            options: .regularExpression
+        ) else { return nil }
+        return String(canonicalCaption[range])
     }
 }
 

@@ -1790,14 +1790,9 @@ private struct PersonMediaGalleryTile: View {
                 let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: item.id, source: item.caption ?? "")
                 if !caption.isEmpty {
                     Text(MediaMentionToken.visibleText(
-                        captionWithDate(caption),
+                        caption,
                         people: people
                     ))
-                        .font(ArchiveTypography.metadata)
-                        .foregroundStyle(ArchiveTheme.metadata)
-                        .lineLimit(2)
-                } else if let date = item.date {
-                    Text(ArchiveDateFormatter.displayRange(date) ?? date)
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(2)
@@ -1810,9 +1805,6 @@ private struct PersonMediaGalleryTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func captionWithDate(_ caption: String) -> String {
-        caption
-    }
 }
 
 private struct PersonMediaVisual: View {
@@ -2098,16 +2090,12 @@ private struct PersonMediaDetailContent: View {
                 let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: item.id, source: item.caption ?? "")
                 if !caption.isEmpty {
                     Text(MediaMentionToken.visibleText(
-                        mediaCaptionWithDate(caption, date: item.date),
+                        caption,
                         people: repository?.people ?? []
                     ))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .fixedSize(horizontal: false, vertical: true)
-                } else if let date = item.date {
-                    Text(ArchiveDateFormatter.displayRange(date) ?? date)
-                        .font(ArchiveTypography.metadata)
-                        .foregroundStyle(ArchiveTheme.metadata)
                 }
 
                 if let repository, repository.canEdit {
@@ -2163,10 +2151,6 @@ private struct PersonMediaDetailContent: View {
             ))
         }
     }
-}
-
-private func mediaCaptionWithDate(_ caption: String, date: String?) -> String {
-    caption
 }
 
 private struct PersonMediaLargeVisual: View {
@@ -2259,12 +2243,6 @@ private struct MediaTile: View {
                 .font(ArchiveTypography.supportingEmphasis)
                 .lineLimit(2)
 
-            if let date = item.date {
-                Text(ArchiveDateFormatter.displayRange(date) ?? date)
-                    .font(ArchiveTypography.metadata)
-                    .foregroundStyle(ArchiveTheme.metadata)
-            }
-
             if let caption = item.caption, !caption.isEmpty {
                 Text(MediaMentionToken.visibleText(caption, people: people))
                     .font(ArchiveTypography.metadata)
@@ -2286,11 +2264,6 @@ private struct MediaTile: View {
                     .lineLimit(1)
             }
 
-            if item.isApproximate == true {
-                Text("Date approximate")
-                    .font(ArchiveTypography.metadata)
-                    .foregroundStyle(ArchiveTheme.metadata)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 14)
@@ -3926,11 +3899,6 @@ private struct PersonMediaEditorView: View {
                                         ? MediaMentionToken.visibleText(item.caption!, people: repository.people)
                                         : item.kind.rawValue.capitalized)
                                         .foregroundStyle(ArchiveTheme.ink)
-                                    if let date = item.date, !date.isEmpty {
-                                        Text(ArchiveDateFormatter.displayRange(date) ?? date)
-                                            .font(ArchiveTypography.metadata)
-                                            .foregroundStyle(ArchiveTheme.metadata)
-                                    }
                                     Text("Related to \(MediaMentionToken.personIDs(in: item.caption ?? "").count) people")
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
@@ -3974,7 +3942,6 @@ struct MediaMetadataEditor: View {
     @ObservedObject var repository: FamilyRepository
     @Environment(\.dismiss) private var dismiss
     @State private var caption: String
-    @State private var date: String
     @State private var selectedMentionIDs: Set<Person.ID>
     @State private var saveError: String?
 
@@ -3984,7 +3951,8 @@ struct MediaMetadataEditor: View {
         _repository = ObservedObject(wrappedValue: repository)
         let sourceCaption = item.caption ?? ""
         let englishCaption = NarrativeLocalizationStore.shared.storedMediaCaption(
-            mediaID: item.id
+            mediaID: item.id,
+            source: sourceCaption
         ) ?? (sourceCaption.range(of: "[А-Яа-яЁё]", options: .regularExpression) == nil ? sourceCaption : "")
         let localizedCaption = repository.appLanguage == .english ? englishCaption : sourceCaption
         _caption = State(initialValue: MediaMentionToken.visibleText(
@@ -3992,17 +3960,12 @@ struct MediaMetadataEditor: View {
             people: repository.people,
             language: repository.appLanguage
         ))
-        _date = State(initialValue: item.date ?? "")
         _selectedMentionIDs = State(initialValue: Set(MediaMentionToken.personIDs(in: localizedCaption)))
         _saveError = State(initialValue: nil)
     }
 
     private var captionLabel: String {
         ArchiveCopy.text(english: "Caption", russian: "Подпись")
-    }
-
-    private var dateLabel: String {
-        ArchiveCopy.text(english: "Date", russian: "Дата")
     }
 
     var body: some View {
@@ -4020,13 +3983,6 @@ struct MediaMetadataEditor: View {
                         onCancel: { dismiss() },
                         onSave: save
                     )
-
-                    Text(dateLabel.uppercased())
-                        .font(ArchiveTypography.sectionTitle)
-                        .tracking(1.2)
-                        .foregroundStyle(ArchiveTheme.ink)
-                    TextField(dateLabel, text: $date)
-                        .textFieldStyle(.roundedBorder)
                 }
                 .padding(.horizontal, ArchiveLayout.pageHorizontal)
                 .padding(.top, ArchiveLayout.pageTop)
@@ -4056,7 +4012,6 @@ struct MediaMetadataEditor: View {
             for: item,
             ownerID: ownerID,
             preferredPersonIDs: selectedMentionIDs,
-            date: date,
             language: repository.appLanguage
         )
 

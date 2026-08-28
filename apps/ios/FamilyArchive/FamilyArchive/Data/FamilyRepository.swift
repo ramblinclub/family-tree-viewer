@@ -1179,9 +1179,7 @@ final class FamilyRepository: ObservableObject {
     func reviewStagedMedia(
         _ item: StagedMediaItem,
         caption: String,
-        date: String?,
         personIDs: [Person.ID],
-        isApproximate: Bool = false,
         captionLanguage: ArchiveLanguage = .russian
     ) throws -> String {
         guard canEdit else { return "" }
@@ -1209,12 +1207,11 @@ final class FamilyRepository: ObservableObject {
             MediaMentionToken.personIDs(in: cleanedCaption).filter { peopleByID[$0] != nil }
         )).sorted()
         guard !uniquePersonIDs.isEmpty else { throw StagedMediaError.invalidReview }
-        let cleanedDate = date?.trimmingCharacters(in: .whitespacesAndNewlines)
         let media = MediaReference(
             id: mediaID,
             kind: item.kind,
             title: sourceURL.deletingPathExtension().lastPathComponent,
-            date: cleanedDate?.isEmpty == false ? cleanedDate : nil,
+            date: MediaCaptionMetadata.sortingDate(in: cleanedCaption),
             path: relativePath,
             // Keep the entered caption on the media record as the durable
             // fallback. English captions are also copied to the private
@@ -1224,7 +1221,7 @@ final class FamilyRepository: ObservableObject {
             caption: cleanedCaption.isEmpty ? nil : cleanedCaption,
             tags: nil,
             collection: nil,
-            isApproximate: isApproximate ? true : nil,
+            isApproximate: nil,
             needsMentionReview: nil,
             personIDs: uniquePersonIDs
         )
@@ -1267,12 +1264,14 @@ final class FamilyRepository: ObservableObject {
                 mediaID: media.id,
                 caption: cleanedCaption,
                 language: captionLanguage,
+                expectedPersonIDs: Set(uniquePersonIDs),
                 fileManager: fileManager
             )
             try? NarrativeLocalizationStore.shared.updateMediaCaption(
                 mediaID: media.id,
                 caption: "",
                 language: targetLanguage,
+                expectedPersonIDs: Set(uniquePersonIDs),
                 fileManager: fileManager
             )
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
@@ -1308,7 +1307,7 @@ final class FamilyRepository: ObservableObject {
         let expectedIDs = Set(personIDs)
         guard let currentMedia = mediaItem(withID: mediaID),
               currentMedia.caption?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCaption,
-              !Set(MediaMentionToken.personIDs(in: currentMedia.caption ?? "")).intersection(expectedIDs).isEmpty else { return }
+              Set(MediaMentionToken.personIDs(in: currentMedia.caption ?? "")) == expectedIDs else { return }
 
         let source = Locale.Language(identifier: sourceLanguage.rawValue)
         let target = Locale.Language(identifier: targetLanguage.rawValue)
@@ -1321,18 +1320,20 @@ final class FamilyRepository: ObservableObject {
                 response.targetText,
                 tokens: protected.tokens
             ).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !translated.isEmpty else { return }
+            guard !translated.isEmpty,
+                  Set(MediaMentionToken.personIDs(in: translated)) == expectedIDs else { return }
 
             // Re-check the source text and links after translation; the user
             // may have edited or removed the media while the model ran.
             guard let latestMedia = mediaItem(withID: mediaID),
                   latestMedia.caption?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCaption,
-                  !Set(MediaMentionToken.personIDs(in: latestMedia.caption ?? "")).intersection(expectedIDs).isEmpty else { return }
+                  Set(MediaMentionToken.personIDs(in: latestMedia.caption ?? "")) == expectedIDs else { return }
 
             try NarrativeLocalizationStore.shared.updateMediaCaption(
                 mediaID: mediaID,
                 caption: translated,
                 language: targetLanguage,
+                expectedPersonIDs: expectedIDs,
                 fileManager: fileManager
             )
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
@@ -1809,7 +1810,6 @@ final class FamilyRepository: ObservableObject {
         for item: MediaReference,
         ownerID: Person.ID,
         preferredPersonIDs: Set<Person.ID>,
-        date: String?,
         language: ArchiveLanguage
     ) throws -> SavedMediaCaption {
         let canonicalCaption = MediaMentionToken.canonicalize(
@@ -1818,11 +1818,11 @@ final class FamilyRepository: ObservableObject {
             preferredPersonIDs: preferredPersonIDs
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         let personIDs = Set(MediaMentionToken.personIDs(in: canonicalCaption))
-        let cleanedDate = date?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         var updated = item
         updated.caption = canonicalCaption.isEmpty ? nil : canonicalCaption
-        updated.date = cleanedDate.isEmpty ? nil : cleanedDate
+        updated.date = MediaCaptionMetadata.sortingDate(in: canonicalCaption)
+        updated.isApproximate = nil
         updated.personIDs = Array(personIDs).sorted()
         updated.needsMentionReview = personIDs.isEmpty ? true : nil
         let savedMedia = try updateMedia(updated, for: ownerID)
@@ -1834,12 +1834,14 @@ final class FamilyRepository: ObservableObject {
             mediaID: item.id,
             caption: canonicalCaption,
             language: language,
+            expectedPersonIDs: personIDs,
             fileManager: privateStore.fileManager
         )
         try? NarrativeLocalizationStore.shared.updateMediaCaption(
             mediaID: item.id,
             caption: "",
             language: targetLanguage,
+            expectedPersonIDs: personIDs,
             fileManager: privateStore.fileManager
         )
         NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)

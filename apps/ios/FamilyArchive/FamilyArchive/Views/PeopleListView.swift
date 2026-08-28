@@ -3531,7 +3531,6 @@ private struct StagedMediaEditor: View {
     let onSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var caption = ""
-    @State private var date = ""
     @State private var seededOriginalDate: String?
     @State private var seededOriginalLocation: String?
     @State private var mentionSuggestions: [Person] = []
@@ -3655,7 +3654,6 @@ private struct StagedMediaEditor: View {
                 }
                 if caption.isEmpty, let originalDate = repository.originalMediaDate(for: item) {
                     seededOriginalDate = originalDate
-                    date = originalDate
                     caption = originalDate
                 }
                 Task {
@@ -3713,7 +3711,6 @@ private struct StagedMediaEditor: View {
             return
         }
         do {
-            let recordDate = dateFromCaption(caption)
             let canonicalCaption = MediaMentionToken.canonicalize(
                 caption,
                 people: repository.people,
@@ -3727,9 +3724,7 @@ private struct StagedMediaEditor: View {
             let mediaID = try repository.reviewStagedMedia(
                 item,
                 caption: canonicalCaption,
-                date: recordDate,
                 personIDs: Array(linkedIDs),
-                isApproximate: false,
                 captionLanguage: repository.appLanguage
             )
             let sourceLanguage = repository.appLanguage
@@ -3824,17 +3819,6 @@ private struct StagedMediaEditor: View {
         return found
     }
 
-    private func dateFromCaption(_ value: String) -> String? {
-        if let seededOriginalDate,
-           value.localizedCaseInsensitiveContains(seededOriginalDate) {
-            return seededOriginalDate
-        }
-
-        guard let range = value.range(of: "\\b(19|20)\\d{2}\\b", options: .regularExpression) else {
-            return nil
-        }
-        return String(value[range])
-    }
 }
 
 struct MemoryItem: Identifiable {
@@ -3945,14 +3929,9 @@ private struct GalleryMemoryTile: View {
                 let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: memory.media.id, source: memory.media.caption ?? "")
                 if !caption.isEmpty {
                     Text(MediaMentionToken.visibleText(
-                        memoryCaptionWithDate(caption, date: memory.media.date),
+                        caption,
                         people: people
                     ))
-                        .font(ArchiveTypography.metadata)
-                        .foregroundStyle(ArchiveTheme.metadata)
-                        .lineLimit(2)
-                } else if let date = memory.media.date {
-                    Text(ArchiveDateFormatter.displayRange(date) ?? date)
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                         .lineLimit(2)
@@ -3964,26 +3943,6 @@ private struct GalleryMemoryTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-}
-
-private func memoryCaptionWithDate(_ caption: String, date: String?) -> String {
-    let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let date, !date.isEmpty else { return trimmedCaption }
-    let displayedDate = ArchiveDateFormatter.displayRange(date) ?? date
-    guard !displayedDate.isEmpty else { return trimmedCaption }
-
-    // Captions edited in newer builds already contain the year. Avoid adding
-    // the same date a second time when rendering those records.
-    let year = date
-        .split(whereSeparator: { !$0.isNumber })
-        .first(where: { $0.count == 4 })
-        .map(String.init)
-    if let year, trimmedCaption.range(of: year) != nil {
-        return trimmedCaption
-    }
-
-    guard !trimmedCaption.isEmpty else { return displayedDate }
-    return "\(trimmedCaption) · \(displayedDate)"
 }
 
 private struct GalleryMediaVisual: View {
@@ -4685,11 +4644,10 @@ private struct MemoryDetailView: View {
                     captionEditor
                 } else {
                     let caption = NarrativeLocalizationStore.shared.mediaCaption(mediaID: currentMedia.id, source: currentMedia.caption ?? "")
-                    let captionWithDate = memoryCaptionWithDate(caption, date: currentMedia.date)
                     VStack(alignment: .leading, spacing: 10) {
-                        if !captionWithDate.isEmpty {
+                        if !caption.isEmpty {
                             CaptionPeopleText(
-                                text: captionWithDate,
+                                text: caption,
                                 people: repository.people,
                                 preferredPersonIDs: Set(MediaMentionToken.personIDs(in: currentMedia.caption ?? "")),
                                 onSelect: { selectedPerson = $0 }
@@ -4714,13 +4672,6 @@ private struct MemoryDetailView: View {
                             }
                         }
                     }
-                }
-
-                if currentMedia.isApproximate == true {
-                    MemoryDetailRow(
-                        label: ArchiveCopy.text(english: "Date", russian: "Дата"),
-                        value: ArchiveCopy.text(english: "Approximate", russian: "Примерно")
-                    )
                 }
 
             }
@@ -4846,14 +4797,11 @@ private struct MemoryDetailView: View {
         guard repository.canEdit else { return }
         let source = currentMedia.caption ?? ""
         let localizedCaption = repository.appLanguage == .english
-            ? (NarrativeLocalizationStore.shared.storedMediaCaption(mediaID: currentMedia.id)
+            ? (NarrativeLocalizationStore.shared.storedMediaCaption(mediaID: currentMedia.id, source: source)
                 ?? (source.range(of: "[А-Яа-яЁё]", options: .regularExpression) == nil ? source : ""))
             : source
-        // The year is part of the user-facing caption. The media date remains
-        // a separate field for sorting and filtering, but is included here so
-        // it is visible and editable with the rest of the caption text.
         draftCaption = MediaMentionToken.visibleText(
-            memoryCaptionWithDate(localizedCaption, date: currentMedia.date),
+            localizedCaption,
             people: repository.people,
             language: repository.appLanguage
         )
@@ -4886,7 +4834,6 @@ private struct MemoryDetailView: View {
             for: currentMedia,
             ownerID: ownerID,
             preferredPersonIDs: selectedMentionIDs,
-            date: currentMedia.date,
             language: repository.appLanguage
         )
         let sourceLanguage = repository.appLanguage
