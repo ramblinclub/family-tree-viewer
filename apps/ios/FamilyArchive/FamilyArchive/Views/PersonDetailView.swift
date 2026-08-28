@@ -775,12 +775,7 @@ struct PersonDetailView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if !timelineEntries.isEmpty {
                         ForEach(Array(timelineEntries.enumerated()), id: \.element.id) { index, entry in
-                            switch entry {
-                            case .fact(let fact):
-                                TimelineRow(fact: fact, isLast: index == timelineEntries.count - 1)
-                            case .event(let event):
-                                LifeEventRow(personID: person.id, event: event, isLast: index == timelineEntries.count - 1)
-                            }
+                            LifeEventRow(timelineEvent: entry, isLast: index == timelineEntries.count - 1)
                         }
                     } else {
                         Text(ArchiveCopy.text(english: "No additional dated events recorded.", russian: "Дополнительные события с датами не записаны."))
@@ -888,21 +883,12 @@ struct PersonDetailView: View {
         "\(person.media.filter { $0.kind == kind }.count)"
     }
 
-    private var timelineEvents: [LifeEvent] {
-        person.orderedEvents
+    private var timelineEvents: [FamilyTimelineEvent] {
+        repository.timelineEvents(for: person.id)
     }
 
-    private var timelineEntries: [TimelineEntry] {
-        let facts = person.facts
-            .filter { !$0.value.trimmed.isEmpty && $0.coreEventCategory == nil }
-            .map(TimelineEntry.fact)
-        let events = timelineEvents.map(TimelineEntry.event)
-        return (facts + events).sorted { left, right in
-            if left.sortValue != right.sortValue {
-                return left.sortValue > right.sortValue
-            }
-            return left.id < right.id
-        }
+    private var timelineEntries: [FamilyTimelineEvent] {
+        timelineEvents
     }
 
     private var hasFamily: Bool {
@@ -1602,64 +1588,11 @@ private struct FactRow: View {
     }
 }
 
-private enum TimelineEntry: Identifiable {
-    case fact(PersonFact)
-    case event(LifeEvent)
-
-    var id: String {
-        switch self {
-        case .fact(let fact): return "fact-\(fact.id)"
-        case .event(let event): return "event-\(event.id)"
-        }
-    }
-
-    var sortValue: Int {
-        switch self {
-        case .fact(let fact): return editorSortKey(fact.value) ?? 0
-        case .event(let event): return event.sortKey ?? editorSortKey(event.date) ?? 0
-        }
-    }
-}
-
-private struct TimelineRow: View {
-    let fact: PersonFact
-    let isLast: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 0) {
-                Rectangle()
-                    .fill(ArchiveTheme.ink)
-                    .frame(width: 10, height: 10)
-                    .padding(.top, 15)
-
-                if !isLast {
-                    Rectangle()
-                        .fill(ArchiveTheme.ink.opacity(0.25))
-                        .frame(width: 1)
-                }
-            }
-            .frame(width: 10)
-
-            VStack(alignment: .leading, spacing: 4) {
-                ArchiveContentTitle(fact.localizedLabel)
-                let rawDate = fact.localizedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                ArchiveParagraph(ArchiveDateFormatter.displayRange(rawDate) ?? (rawDate.isEmpty ? "????" : rawDate))
-                if let place = fact.place {
-                    Text(ArchiveCopy.place(place))
-                        .font(ArchiveTypography.metadata)
-                        .foregroundStyle(ArchiveTheme.metadata)
-                }
-            }
-            .padding(.vertical, 11)
-        }
-    }
-}
-
 private struct LifeEventRow: View {
-    let personID: Person.ID
-    let event: LifeEvent
+    let timelineEvent: FamilyTimelineEvent
     let isLast: Bool
+
+    private var event: LifeEvent { timelineEvent.event }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -1680,8 +1613,18 @@ private struct LifeEventRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ArchiveDatedContentBlock(
                     date: event.date,
-                    title: NarrativeLocalizationStore.shared.eventTitle(personID, eventID: event.id, source: event.localizedTitle),
-                    body: NarrativeLocalizationStore.shared.eventSummary(personID, eventID: event.id, source: event.localizedSummary),
+                    title: timelineEvent.isFamilyProjection
+                        ? event.localizedTitle
+                        : NarrativeLocalizationStore.shared.eventTitle(
+                            timelineEvent.sourcePersonID,
+                            eventID: timelineEvent.sourceEventID,
+                            source: event.localizedTitle
+                        ),
+                    body: NarrativeLocalizationStore.shared.eventSummary(
+                        timelineEvent.sourcePersonID,
+                        eventID: timelineEvent.sourceEventID,
+                        source: event.localizedSummary
+                    ),
                     note: event.isApproximate == true ? ArchiveCopy.text(english: "Approximate", russian: "Примерно") : nil
                 )
                 if let place = event.place {
@@ -3048,7 +2991,7 @@ private struct LifeEventsManagerView: View {
     @ObservedObject var repository: FamilyRepository
     @Environment(\.dismiss) private var dismiss
     @State private var addingEvent = false
-    @State private var editingEvent: LifeEvent?
+    @State private var editingEvent: ManagedLifeEvent?
 
     init(person: Person, repository: FamilyRepository) {
         initialPerson = person
@@ -3057,6 +3000,7 @@ private struct LifeEventsManagerView: View {
     }
 
     private var person: Person { repository.person(id: personID) ?? initialPerson }
+    private var managedEvents: [ManagedLifeEvent] { repository.managedEvents(for: personID) }
 
     private func copy(_ english: String, _ russian: String) -> String {
         repository.appLanguage == .russian ? russian : english
@@ -3081,7 +3025,7 @@ private struct LifeEventsManagerView: View {
                 .padding(.top, 14)
                 .padding(.bottom, 6)
 
-                if person.structuredEvents.isEmpty {
+                if managedEvents.isEmpty {
                     emptyState
                 } else {
                     eventsList
@@ -3096,8 +3040,8 @@ private struct LifeEventsManagerView: View {
                 }
             }
             .sheet(item: $editingEvent) { event in
-                EventEditorView(event: event, language: repository.appLanguage) { updatedEvent in
-                    save(updatedEvent)
+                EventEditorView(event: event.event, language: repository.appLanguage) { updatedEvent in
+                    save(updatedEvent, scope: event.scope)
                     editingEvent = nil
                 }
             }
@@ -3155,9 +3099,9 @@ private struct LifeEventsManagerView: View {
 
     private var eventsList: some View {
         List {
-            ForEach(person.orderedEvents) { event in
-                Button { editingEvent = event } label: {
-                    LifeEventManagerRow(personID: person.id, event: event)
+            ForEach(managedEvents) { managedEvent in
+                Button { editingEvent = managedEvent } label: {
+                    LifeEventManagerRow(personID: person.id, event: managedEvent.event)
                 }
                 .buttonStyle(.plain)
                 .disabled(!repository.canEdit)
@@ -3166,7 +3110,7 @@ private struct LifeEventsManagerView: View {
                 .listRowBackground(ArchiveTheme.background)
                 .swipeActions {
                     if repository.canEdit {
-                        Button(role: .destructive) { delete(event) } label: {
+                        Button(role: .destructive) { delete(managedEvent) } label: {
                             Label(copy("Delete", "Удалить"), systemImage: "trash")
                         }
                     }
@@ -3229,7 +3173,7 @@ private struct LifeEventsManagerView: View {
     }
 
     private var eventCountText: String {
-        let count = person.structuredEvents.count
+        let count = managedEvents.count
         guard repository.appLanguage == .russian else {
             return count == 1 ? "1 event" : "\(count) events"
         }
@@ -3248,15 +3192,23 @@ private struct LifeEventsManagerView: View {
         return "\(count) \(noun)"
     }
 
-    private func delete(_ event: LifeEvent) {
+    private func delete(_ managedEvent: ManagedLifeEvent) {
         guard repository.canEdit else { return }
+        if case .familyUnion(let unionID, let recordID) = managedEvent.scope {
+            repository.deleteSharedEvent(unionID: unionID, recordID: recordID, editorID: personID)
+            return
+        }
         var updated = person
-        updated.events?.removeAll { $0.id == event.id }
+        updated.events?.removeAll { $0.id == managedEvent.event.id }
         repository.updatePerson(updated)
     }
 
-    private func save(_ event: LifeEvent) {
+    private func save(_ event: LifeEvent, scope: ManagedLifeEvent.Scope = .person) {
         guard repository.canEdit else { return }
+        if case .familyUnion(let unionID, let recordID) = scope {
+            repository.updateSharedEvent(event, unionID: unionID, recordID: recordID, editorID: personID)
+            return
+        }
         var updated = person
         var events = updated.events ?? []
 

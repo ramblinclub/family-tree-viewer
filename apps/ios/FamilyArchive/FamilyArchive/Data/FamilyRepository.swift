@@ -41,6 +41,50 @@ struct SavedMediaCaption {
     let media: MediaReference
 }
 
+/// One event as it appears on a person's timeline. Canonical events remain
+/// owned by their subject; close relatives receive read-only projections that
+/// point back to the same source event instead of storing editable copies.
+struct FamilyTimelineEvent: Identifiable, Hashable {
+    let id: String
+    let event: LifeEvent
+    let sourcePersonID: Person.ID
+    let sourceEventID: LifeEvent.ID
+    let isFamilyProjection: Bool
+
+    init(canonical event: LifeEvent, ownerID: Person.ID) {
+        id = "canonical-\(ownerID)-\(event.id)"
+        self.event = event
+        sourcePersonID = ownerID
+        sourceEventID = event.id
+        isFamilyProjection = false
+    }
+
+    init(projected event: LifeEvent, viewerID: Person.ID, sourcePersonID: Person.ID, sourceEventID: LifeEvent.ID) {
+        id = "family-\(viewerID)-\(sourcePersonID)-\(sourceEventID)"
+        self.event = event
+        self.sourcePersonID = sourcePersonID
+        self.sourceEventID = sourceEventID
+        isFamilyProjection = true
+    }
+}
+
+struct ManagedLifeEvent: Identifiable, Hashable {
+    enum Scope: Hashable {
+        case person
+        case familyUnion(unionID: FamilyUnion.ID, recordID: FamilyEventRecord.ID)
+    }
+
+    let event: LifeEvent
+    let scope: Scope
+
+    var id: String {
+        switch scope {
+        case .person: "person-\(event.id)"
+        case .familyUnion(let unionID, let recordID): "union-\(unionID)-\(recordID)"
+        }
+    }
+}
+
 /// The app's canonical private document store. Metadata is split into one
 /// file per person so an edit does not rewrite the complete family archive.
 /// Media and documents remain ordinary persistent files and are referenced by
@@ -721,6 +765,273 @@ final class FamilyRepository: ObservableObject {
 
     func person(id: Person.ID) -> Person? {
         peopleByID[id]
+    }
+
+    /// Builds the display timeline without copying events into relative
+    /// profiles. Births are projected to recorded parents. Deaths are
+    /// projected to recorded parents, children, and partners. Explicit family
+    /// unions are authoritative, so a later spouse never receives an event
+    /// belonging to a child from an earlier relationship.
+    func timelineEvents(for personID: Person.ID) -> [FamilyTimelineEvent] {
+        guard let person = peopleByID[personID] else { return [] }
+
+        var projections: [FamilyTimelineEvent] = []
+        var seenSourceEvents = Set<String>()
+
+        func addProjection(source: Person, event: LifeEvent, role: FamilyProjectionRole) {
+            let sourceKey = "\(source.id)|\(event.id)|\(role.rawValue)"
+            guard seenSourceEvents.insert(sourceKey).inserted else { return }
+            let projected = projectedFamilyEvent(
+                event,
+                source: source,
+                viewerID: personID,
+                role: role
+            )
+            projections.append(FamilyTimelineEvent(
+                projected: projected,
+                viewerID: personID,
+                sourcePersonID: source.id,
+                sourceEventID: event.id
+            ))
+        }
+
+        for union in familyUnions {
+            if union.partnerIDs.contains(personID) {
+                for record in union.events ?? [] {
+                    guard let category = LifeEventCategory.category(for: record.event.category),
+                          category == .marriage || category == .partnership else { continue }
+                    let projected = projectedRelationshipEvent(record.event, union: union, viewerID: personID)
+                    projections.append(FamilyTimelineEvent(
+                        projected: projected,
+                        viewerID: personID,
+                        sourcePersonID: record.sourcePersonID ?? personID,
+                        sourceEventID: record.sourceEventID ?? record.event.id
+                    ))
+                }
+
+                for childID in union.childIDs where childID != personID {
+                    guard let child = peopleByID[childID] else { continue }
+                    if let birth = child.birthEvent {
+                        addProjection(source: child, event: birth, role: .childBirth)
+                    }
+                    if let death = child.deathEvent {
+                        addProjection(source: child, event: death, role: .childDeath)
+                    }
+                }
+
+                for partnerID in union.partnerIDs where partnerID != personID {
+                    guard let partner = peopleByID[partnerID], let death = partner.deathEvent else { continue }
+                    addProjection(source: partner, event: death, role: .partnerDeath)
+                }
+            }
+
+            if union.childIDs.contains(personID) {
+                for parentID in union.partnerIDs where parentID != personID {
+                    guard let parent = peopleByID[parentID], let death = parent.deathEvent else { continue }
+                    addProjection(source: parent, event: death, role: .parentDeath)
+                }
+            }
+        }
+
+        // Older records sometimes contain a manually written Family event
+        // for the same relative birth/death. Prefer the linked projection in
+        // display while retaining the legacy record in storage until it can
+        // be reviewed, so no narrative text is destructively discarded.
+        let canonical = person.structuredEvents
+            .filter { event in
+                !projections.contains { projection in
+                    isLegacyDuplicate(event, of: projection.event, sourcePersonID: projection.sourcePersonID)
+                }
+            }
+            .map { FamilyTimelineEvent(canonical: $0, ownerID: personID) }
+
+        return (canonical + projections).sorted { left, right in
+            let leftSort = left.event.sortKey ?? LifeEvent.sortKey(for: left.event.date) ?? 0
+            let rightSort = right.event.sortKey ?? LifeEvent.sortKey(for: right.event.date) ?? 0
+            if leftSort != rightSort { return leftSort > rightSort }
+            return left.id < right.id
+        }
+    }
+
+    private enum FamilyProjectionRole: String {
+        case childBirth
+        case childDeath
+        case parentDeath
+        case partnerDeath
+    }
+
+    private func projectedRelationshipEvent(
+        _ sourceEvent: LifeEvent,
+        union: FamilyUnion,
+        viewerID: Person.ID
+    ) -> LifeEvent {
+        let partners = union.partnerIDs.compactMap { peopleByID[$0] }.filter { $0.id != viewerID }
+        let englishNames = partners.map { localizedDisplayName($0, language: .english) }.joined(separator: " & ")
+        let russianNames = partners.map { localizedDisplayName($0, language: .russian) }.joined(separator: " и ")
+        let category = LifeEventCategory.category(for: sourceEvent.category) ?? .marriage
+        let englishTitle: String
+        let russianTitle: String
+        if category == .partnership {
+            englishTitle = "Partnership with \(englishNames)"
+            russianTitle = "Партнёрство с \(russianNames)"
+        } else {
+            englishTitle = "Married \(englishNames)"
+            russianTitle = "Брак с \(russianNames)"
+        }
+
+        var projected = sourceEvent
+        projected.id = "projection-\(viewerID)-\(sourceEvent.id)"
+        projected.title = englishTitle
+        projected.titleTranslations = [
+            ArchiveLanguage.english.rawValue: englishTitle,
+            ArchiveLanguage.russian.rawValue: russianTitle
+        ]
+        return projected
+    }
+
+    private func projectedFamilyEvent(
+        _ sourceEvent: LifeEvent,
+        source: Person,
+        viewerID: Person.ID,
+        role: FamilyProjectionRole
+    ) -> LifeEvent {
+        let englishName = localizedGivenName(source, language: .english)
+        let russianName = localizedGivenName(source, language: .russian)
+        let englishTitle: String
+        let russianTitle: String
+
+        switch role {
+        case .childBirth:
+            englishTitle = "Birth of child \(englishName)"
+            russianTitle = "Рождение ребёнка: \(russianName)"
+        case .childDeath:
+            englishTitle = "Death of child \(englishName)"
+            russianTitle = "Смерть ребёнка: \(russianName)"
+        case .parentDeath:
+            englishTitle = "Death of parent \(englishName)"
+            russianTitle = "Смерть родителя: \(russianName)"
+        case .partnerDeath:
+            englishTitle = "Death of partner \(englishName)"
+            russianTitle = "Смерть партнёра: \(russianName)"
+        }
+
+        return LifeEvent(
+            id: "projection-\(viewerID)-\(source.id)-\(sourceEvent.id)",
+            date: sourceEvent.date,
+            sortKey: sourceEvent.sortKey,
+            title: englishTitle,
+            summary: sourceEvent.summary,
+            place: sourceEvent.place,
+            category: LifeEventCategory.family.rawValue,
+            isApproximate: sourceEvent.isApproximate,
+            sourceIDs: sourceEvent.sourceIDs,
+            titleTranslations: [
+                ArchiveLanguage.english.rawValue: englishTitle,
+                ArchiveLanguage.russian.rawValue: russianTitle
+            ],
+            summaryTranslations: sourceEvent.summaryTranslations
+        )
+    }
+
+    private func localizedGivenName(_ person: Person, language: ArchiveLanguage) -> String {
+        let displayName = localizedDisplayName(person, language: language)
+        return displayName.split(separator: " ").first.map(String.init) ?? displayName
+    }
+
+    private func localizedDisplayName(_ person: Person, language: ArchiveLanguage) -> String {
+        NameLocalizationStore.shared.displayName(
+            for: person.id,
+            fallback: person.sourceDisplayName,
+            language: language
+        )
+    }
+
+    private func isLegacyDuplicate(
+        _ candidate: LifeEvent,
+        of projection: LifeEvent,
+        sourcePersonID: Person.ID
+    ) -> Bool {
+        guard LifeEventCategory.category(for: candidate.category) == .family,
+              equivalentEventDate(candidate, projection),
+              let source = peopleByID[sourcePersonID] else { return false }
+
+        let text = [candidate.title, candidate.summary]
+            .joined(separator: " ")
+            .lowercased()
+        let names = ArchiveLanguage.allCases.flatMap { language -> [String] in
+            let fullName = NameLocalizationStore.shared.displayName(
+                for: source.id,
+                fallback: source.sourceDisplayName,
+                language: language
+            )
+            return [fullName, fullName.split(separator: " ").first.map(String.init) ?? ""]
+        }
+        .map { $0.lowercased() }
+        .filter { !$0.isEmpty }
+
+        let refersToSource = names.contains(where: text.contains)
+        let relativeLifeTerms = [
+            "birth", "born", "death", "died", "рожд", "родил", "смерт", "умер", "погиб"
+        ]
+        return refersToSource && relativeLifeTerms.contains(where: text.contains)
+    }
+
+    private func equivalentEventDate(_ left: LifeEvent, _ right: LifeEvent) -> Bool {
+        let leftDate = left.date.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let rightDate = right.date.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !leftDate.isEmpty, leftDate == rightDate { return true }
+        guard let leftSort = left.sortKey ?? LifeEvent.sortKey(for: left.date),
+              let rightSort = right.sortKey ?? LifeEvent.sortKey(for: right.date) else { return false }
+        return leftSort == rightSort
+    }
+
+    /// Events editable from this profile. Family projections such as a
+    /// child's birth stay read-only and are edited on the subject's profile;
+    /// shared marriage/partnership events are editable by either participant.
+    func managedEvents(for personID: Person.ID) -> [ManagedLifeEvent] {
+        guard let person = peopleByID[personID] else { return [] }
+        let personEvents = person.structuredEvents.map {
+            ManagedLifeEvent(event: $0, scope: .person)
+        }
+        let unionEvents = familyUnions
+            .filter { $0.partnerIDs.contains(personID) }
+            .flatMap { union in
+                (union.events ?? []).map {
+                    ManagedLifeEvent(
+                        event: projectedRelationshipEvent($0.event, union: union, viewerID: personID),
+                        scope: .familyUnion(unionID: union.id, recordID: $0.id)
+                    )
+                }
+            }
+        return (personEvents + unionEvents).sorted { left, right in
+            let leftSort = left.event.sortKey ?? LifeEvent.sortKey(for: left.event.date) ?? 0
+            let rightSort = right.event.sortKey ?? LifeEvent.sortKey(for: right.event.date) ?? 0
+            if leftSort != rightSort { return leftSort > rightSort }
+            return left.id < right.id
+        }
+    }
+
+    func updateSharedEvent(_ event: LifeEvent, unionID: FamilyUnion.ID, recordID: FamilyEventRecord.ID, editorID: Person.ID) {
+        guard canEdit, var unions = document.familyUnions,
+              let unionIndex = unions.firstIndex(where: { $0.id == unionID }),
+              unions[unionIndex].partnerIDs.contains(editorID) else { return }
+        var records = unions[unionIndex].events ?? []
+        guard let recordIndex = records.firstIndex(where: { $0.id == recordID }) else { return }
+        var canonicalEvent = event
+        canonicalEvent.id = records[recordIndex].event.id
+        records[recordIndex].event = canonicalEvent
+        unions[unionIndex] = unions[unionIndex].replacing(events: records)
+        replaceDocument(people: document.people, familyUnions: unions, changedPersonIDs: [editorID])
+    }
+
+    func deleteSharedEvent(unionID: FamilyUnion.ID, recordID: FamilyEventRecord.ID, editorID: Person.ID) {
+        guard canEdit, var unions = document.familyUnions,
+              let unionIndex = unions.firstIndex(where: { $0.id == unionID }),
+              unions[unionIndex].partnerIDs.contains(editorID) else { return }
+        var records = unions[unionIndex].events ?? []
+        records.removeAll { $0.id == recordID }
+        unions[unionIndex] = unions[unionIndex].replacing(events: records.isEmpty ? nil : records)
+        replaceDocument(people: document.people, familyUnions: unions, changedPersonIDs: [editorID])
     }
 
     var accountHolderID: Person.ID? {
@@ -1608,13 +1919,17 @@ final class FamilyRepository: ObservableObject {
         try? privateStore.fileManager.removeItem(at: assetURL)
     }
 
-    private func replaceDocument(people: [Person], changedPersonIDs: Set<Person.ID> = []) {
+    private func replaceDocument(
+        people: [Person],
+        familyUnions: [FamilyUnion]? = nil,
+        changedPersonIDs: Set<Person.ID> = []
+    ) {
         let proposedDocument = FamilyArchiveDocument(
             schemaVersion: document.schemaVersion,
             title: document.title,
             accountHolderID: document.accountHolderID,
             people: people,
-            familyUnions: document.familyUnions
+            familyUnions: familyUnions ?? document.familyUnions
         )
         let normalization = proposedDocument.canonicalizingCoreEvents()
         let updatedDocument = normalization.document
@@ -2111,7 +2426,8 @@ private struct GEDCOMExporter {
                 marriageDateIsApproximate: union.marriageDateIsApproximate,
                 partnerSequence: union.partnerSequence,
                 sourceFamilyID: union.sourceFamilyID,
-                provenance: union.provenance
+                provenance: union.provenance,
+                events: union.events
             )
         }
         .sorted { $0.id < $1.id }

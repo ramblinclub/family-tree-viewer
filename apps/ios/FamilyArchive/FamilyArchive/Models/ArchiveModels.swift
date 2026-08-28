@@ -951,6 +951,10 @@ struct FamilyUnion: Codable, Identifiable, Hashable {
     let partnerSequence: [Person.ID: Int]?
     let sourceFamilyID: String?
     let provenance: String?
+    /// Relationship events belong to the union rather than either partner.
+    /// `sourcePersonID` and `sourceEventID` preserve access to older private
+    /// narrative translations after duplicate spouse records are consolidated.
+    let events: [FamilyEventRecord]?
 
     init(
         id: String,
@@ -962,7 +966,8 @@ struct FamilyUnion: Codable, Identifiable, Hashable {
         marriageDateIsApproximate: Bool? = nil,
         partnerSequence: [Person.ID: Int]? = nil,
         sourceFamilyID: String? = nil,
-        provenance: String? = nil
+        provenance: String? = nil,
+        events: [FamilyEventRecord]? = nil
     ) {
         self.id = id
         self.partnerIDs = Array(Set(partnerIDs)).sorted()
@@ -974,27 +979,316 @@ struct FamilyUnion: Codable, Identifiable, Hashable {
         self.partnerSequence = partnerSequence
         self.sourceFamilyID = sourceFamilyID
         self.provenance = provenance
+        self.events = events
+    }
+}
+
+struct FamilyEventRecord: Codable, Identifiable, Hashable {
+    let id: String
+    var event: LifeEvent
+    let sourcePersonID: Person.ID?
+    let sourceEventID: LifeEvent.ID?
+}
+
+extension FamilyUnion {
+    func replacing(events: [FamilyEventRecord]?) -> FamilyUnion {
+        FamilyUnion(
+            id: id,
+            partnerIDs: partnerIDs,
+            childIDs: childIDs,
+            relationshipStatus: relationshipStatus,
+            marriageDate: marriageDate,
+            statusDate: statusDate,
+            marriageDateIsApproximate: marriageDateIsApproximate,
+            partnerSequence: partnerSequence,
+            sourceFamilyID: sourceFamilyID,
+            provenance: provenance,
+            events: events
+        )
     }
 }
 
 extension FamilyArchiveDocument {
     func canonicalizingCoreEvents() -> (document: FamilyArchiveDocument, changedPersonIDs: Set<Person.ID>) {
         var changedPersonIDs = Set<Person.ID>()
-        let normalizedPeople = people.map { person in
+        var normalizedPeople = people.map { person in
             let result = person.canonicalizingCoreEvents()
             if result.changed { changedPersonIDs.insert(person.id) }
             return result.person
         }
+        var normalizedUnions = familyUnions
+
+        if var unions = normalizedUnions, !unions.isEmpty {
+            let migration = Self.consolidateRelationshipEvents(people: normalizedPeople, unions: unions)
+            normalizedPeople = migration.people
+            unions = migration.unions
+            let familyCleanup = Self.removingLegacyFamilyEventCopies(people: normalizedPeople, unions: unions)
+            normalizedPeople = familyCleanup.people
+            normalizedUnions = unions
+            changedPersonIDs.formUnion(migration.changedPersonIDs)
+            changedPersonIDs.formUnion(familyCleanup.changedPersonIDs)
+        }
+        let factCleanup = Self.removingEventBackedFactCopies(people: normalizedPeople)
+        normalizedPeople = factCleanup.people
+        changedPersonIDs.formUnion(factCleanup.changedPersonIDs)
         return (
             FamilyArchiveDocument(
                 schemaVersion: schemaVersion,
                 title: title,
                 accountHolderID: accountHolderID,
                 people: normalizedPeople,
-                familyUnions: familyUnions
+                familyUnions: normalizedUnions
             ),
             changedPersonIDs
         )
+    }
+
+    private static func consolidateRelationshipEvents(
+        people: [Person],
+        unions: [FamilyUnion]
+    ) -> (people: [Person], unions: [FamilyUnion], changedPersonIDs: Set<Person.ID>) {
+        var updatedPeople = people
+        var updatedUnions = unions
+        var changedPersonIDs = Set<Person.ID>()
+        let peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
+
+        struct Candidate {
+            let personIndex: Int
+            let event: LifeEvent
+        }
+        var candidatesByUnion: [Int: [Candidate]] = [:]
+
+        for personIndex in updatedPeople.indices {
+            let person = updatedPeople[personIndex]
+            for event in person.structuredEvents {
+                guard let category = LifeEventCategory.category(for: event.category),
+                      category == .marriage || category == .partnership,
+                      let unionIndex = matchingUnionIndex(
+                        for: event,
+                        owner: person,
+                        unions: unions,
+                        peopleByID: peopleByID
+                      ) else { continue }
+                candidatesByUnion[unionIndex, default: []].append(Candidate(personIndex: personIndex, event: event))
+            }
+        }
+
+        for (unionIndex, candidates) in candidatesByUnion {
+            guard !candidates.isEmpty else { continue }
+            let preferred = candidates.max { left, right in
+                relationshipEventQuality(left.event) < relationshipEventQuality(right.event)
+            } ?? candidates[0]
+            var canonical = preferred.event
+            for candidate in candidates where candidate.event.id != preferred.event.id {
+                canonical.mergeMissingValues(from: candidate.event)
+            }
+            let category: LifeEventCategory = candidates.contains {
+                LifeEventCategory.category(for: $0.event.category) == .marriage
+            } ? .marriage : .partnership
+            canonical.category = category.rawValue
+            canonical.id = "\(updatedUnions[unionIndex].id)-event-\(category.rawValue)"
+
+            var records = updatedUnions[unionIndex].events ?? []
+            if let existingIndex = records.firstIndex(where: {
+                LifeEventCategory.category(for: $0.event.category) == category
+            }) {
+                var merged = records[existingIndex].event
+                merged.mergeMissingValues(from: canonical)
+                records[existingIndex].event = merged
+            } else {
+                records.append(FamilyEventRecord(
+                    id: canonical.id,
+                    event: canonical,
+                    sourcePersonID: preferred.personIndex < updatedPeople.count ? updatedPeople[preferred.personIndex].id : nil,
+                    sourceEventID: preferred.event.id
+                ))
+            }
+
+            let union = updatedUnions[unionIndex]
+            updatedUnions[unionIndex] = FamilyUnion(
+                id: union.id,
+                partnerIDs: union.partnerIDs,
+                childIDs: union.childIDs,
+                relationshipStatus: union.relationshipStatus,
+                marriageDate: union.marriageDate ?? (category == .marriage ? canonical.date : nil),
+                statusDate: union.statusDate,
+                marriageDateIsApproximate: union.marriageDateIsApproximate ?? canonical.isApproximate,
+                partnerSequence: union.partnerSequence,
+                sourceFamilyID: union.sourceFamilyID,
+                provenance: union.provenance,
+                events: records
+            )
+
+            let migratedIDs = Set(candidates.map(\.event.id))
+            for personIndex in Set(candidates.map(\.personIndex)) {
+                updatedPeople[personIndex].events?.removeAll { migratedIDs.contains($0.id) }
+                changedPersonIDs.insert(updatedPeople[personIndex].id)
+            }
+        }
+
+        return (updatedPeople, updatedUnions, changedPersonIDs)
+    }
+
+    /// Removes person-scoped Family records only when an explicit union links
+    /// the owner to a canonical relative birth/death with the same sort date,
+    /// the text names that relative, and the event kind also matches. This is
+    /// intentionally stricter than display deduplication because it mutates
+    /// stored data.
+    private static func removingLegacyFamilyEventCopies(
+        people: [Person],
+        unions: [FamilyUnion]
+    ) -> (people: [Person], changedPersonIDs: Set<Person.ID>) {
+        var updatedPeople = people
+        let peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
+        var changedPersonIDs = Set<Person.ID>()
+
+        for personIndex in updatedPeople.indices {
+            let owner = updatedPeople[personIndex]
+            var relatedIDs = Set<Person.ID>()
+            for union in unions {
+                if union.partnerIDs.contains(owner.id) {
+                    relatedIDs.formUnion(union.childIDs)
+                    relatedIDs.formUnion(union.partnerIDs.filter { $0 != owner.id })
+                }
+                if union.childIDs.contains(owner.id) {
+                    relatedIDs.formUnion(union.partnerIDs)
+                }
+            }
+
+            let canonicalRelativeEvents = relatedIDs.compactMap { peopleByID[$0] }.flatMap { relative in
+                relative.structuredEvents.compactMap { event -> (Person, LifeEvent)? in
+                    guard event.coreCategory == .birth || event.coreCategory == .death else { return nil }
+                    return (relative, event)
+                }
+            }
+            guard !canonicalRelativeEvents.isEmpty else { continue }
+
+            let originalCount = updatedPeople[personIndex].structuredEvents.count
+            updatedPeople[personIndex].events?.removeAll { candidate in
+                guard LifeEventCategory.category(for: candidate.category) == .family else { return false }
+                return canonicalRelativeEvents.contains { relative, canonical in
+                    isStrictLegacyFamilyDuplicate(candidate, canonical: canonical, relative: relative)
+                }
+            }
+            if updatedPeople[personIndex].structuredEvents.count != originalCount {
+                changedPersonIDs.insert(owner.id)
+            }
+        }
+
+        return (updatedPeople, changedPersonIDs)
+    }
+
+    /// Earlier normalized records sometimes retained a fact after creating a
+    /// structured event from it. Remove only the unambiguous `fact-id` →
+    /// `fact-id-event` copies; looser semantic matches remain untouched for
+    /// manual review.
+    private static func removingEventBackedFactCopies(
+        people: [Person]
+    ) -> (people: [Person], changedPersonIDs: Set<Person.ID>) {
+        var updatedPeople = people
+        var changedPersonIDs = Set<Person.ID>()
+
+        for index in updatedPeople.indices {
+            let eventIDs = Set(updatedPeople[index].structuredEvents.map(\.id))
+            let originalCount = updatedPeople[index].facts.count
+            updatedPeople[index].facts.removeAll { fact in
+                eventIDs.contains("\(fact.id)-event")
+            }
+            if updatedPeople[index].facts.count != originalCount {
+                changedPersonIDs.insert(updatedPeople[index].id)
+            }
+        }
+
+        return (updatedPeople, changedPersonIDs)
+    }
+
+    private static func isStrictLegacyFamilyDuplicate(
+        _ candidate: LifeEvent,
+        canonical: LifeEvent,
+        relative: Person
+    ) -> Bool {
+        let candidateSort = candidate.sortKey ?? LifeEvent.sortKey(for: candidate.date)
+        let canonicalSort = canonical.sortKey ?? LifeEvent.sortKey(for: canonical.date)
+        guard let candidateSort, candidateSort == canonicalSort else { return false }
+
+        let text = [candidate.title, candidate.summary].joined(separator: " ").lowercased()
+        var nameVariants = ArchiveLanguage.allCases.flatMap { language -> [String] in
+            let fullName = NameLocalizationStore.shared.displayName(
+                for: relative.id,
+                fallback: relative.sourceDisplayName,
+                language: language
+            )
+            return [fullName, fullName.split(separator: " ").first.map(String.init) ?? ""]
+        } + [relative.sourceDisplayName, relative.givenName, relative.familyName]
+        nameVariants += [relative.sourceDisplayName, relative.givenName].map {
+            NameLocalizationStore.shared.suggestedCounterpart(for: $0, language: .russian)
+        }
+        let refersToRelative = nameVariants
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+            .contains(where: text.contains)
+        guard refersToRelative else { return false }
+
+        let birthTerms = ["birth", "born", "рожд", "родил"]
+        let deathTerms = ["death", "died", "смерт", "умер", "погиб"]
+        switch canonical.coreCategory {
+        case .birth: return birthTerms.contains(where: text.contains)
+        case .death: return deathTerms.contains(where: text.contains)
+        default: return false
+        }
+    }
+
+    private static func matchingUnionIndex(
+        for event: LifeEvent,
+        owner: Person,
+        unions: [FamilyUnion],
+        peopleByID: [Person.ID: Person]
+    ) -> Int? {
+        let candidateIndexes = unions.indices.filter {
+            unions[$0].partnerIDs.contains(owner.id) && unions[$0].partnerIDs.count > 1
+        }
+        guard !candidateIndexes.isEmpty else { return nil }
+
+        let searchable = [event.id, event.title, event.summary]
+            .joined(separator: " ")
+            .lowercased()
+        let scored = candidateIndexes.map { index -> (index: Int, score: Int) in
+            let union = unions[index]
+            var score = candidateIndexes.count == 1 ? 5 : 0
+            if let unionDate = union.marriageDate,
+               comparableEventDate(event.date) == comparableEventDate(unionDate) {
+                score += 50
+            }
+            for partnerID in union.partnerIDs where partnerID != owner.id {
+                if searchable.contains(partnerID.lowercased()) { score += 100 }
+                guard let partner = peopleByID[partnerID] else { continue }
+                let nameVariants = ArchiveLanguage.allCases.map {
+                    NameLocalizationStore.shared.displayName(
+                        for: partner.id,
+                        fallback: partner.sourceDisplayName,
+                        language: $0
+                    )
+                } + [partner.sourceDisplayName, partner.givenName, partner.familyName]
+                if nameVariants
+                    .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+                    .filter({ !$0.isEmpty })
+                    .contains(where: searchable.contains) {
+                    score += 75
+                }
+            }
+            return (index, score)
+        }
+        guard let best = scored.max(by: { $0.score < $1.score }), best.score > 0 else { return nil }
+        let tied = scored.filter { $0.score == best.score }
+        return tied.count == 1 ? best.index : nil
+    }
+
+    private static func comparableEventDate(_ value: String) -> String {
+        String(value.lowercased().filter { $0.isLetter || $0.isNumber })
+    }
+
+    private static func relationshipEventQuality(_ event: LifeEvent) -> Int {
+        event.title.count + event.summary.count + (event.place?.count ?? 0) + (event.sourceIDs?.count ?? 0) * 20
     }
 
     /// Explicit unions are authoritative. Legacy documents get a conservative
