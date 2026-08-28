@@ -2478,7 +2478,7 @@ private struct SettingsView: View {
                     readOnly: readOnly
                 )
                 DispatchQueue.main.async {
-                    exportItem = ArchiveTransferItem(url: preparedURL)
+                    exportItem = ArchiveTransferItem(url: preparedURL, suggestedFilename: exportFilename)
                     transferStatus = ArchiveCopy.text(
                         english: "Archive ready. Choose where to save it.",
                         russian: "Архив готов. Выберите место сохранения."
@@ -2688,11 +2688,13 @@ private struct TransferMessage: Identifiable {
 
 private struct ArchiveTransferItem: Transferable {
     let url: URL
+    let suggestedFilename: String
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .familyArchive) { item in
             SentTransferredFile(item.url)
         }
+        .suggestedFileName { item in item.suggestedFilename }
     }
 }
 
