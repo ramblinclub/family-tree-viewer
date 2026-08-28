@@ -270,15 +270,18 @@ final class NarrativeLocalizationStore {
             guard var record = mediaByID[mediaID] else { continue }
             let preferredIDs = preferredIDsByMediaID[mediaID] ?? []
             if let caption = record.caption {
-                let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
-                if canonical != caption {
-                    record.caption = canonical
-                    changed = true
+                if MediaMentionToken.hasUnstructuredMention(in: caption) {
+                    let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
+                    if canonical != caption {
+                        record.caption = canonical
+                        changed = true
+                    }
                 }
             }
             if var translations = record.captionTranslations {
                 for language in translations.keys {
                     guard let caption = translations[language] else { continue }
+                    guard MediaMentionToken.hasUnstructuredMention(in: caption) else { continue }
                     let canonical = MediaMentionToken.canonicalize(caption, people: people, preferredPersonIDs: preferredIDs)
                     if canonical != caption {
                         translations[language] = canonical
@@ -1119,12 +1122,18 @@ struct MediaReference: Codable, Identifiable, Hashable {
     var tags: [String]?
     var collection: String?
     var isApproximate: Bool?
+    /// True when the caption contains no valid person mention. Such media is
+    /// kept in the archive but is shown only in the media-review queue until
+    /// a mention establishes which profile(s) should display it.
+    var needsMentionReview: Bool? = nil
+    /// Compatibility index derived from the caption's mention tokens. It is
+    /// never an independent source of profile visibility.
     var personIDs: [Person.ID]?
 }
 
 /// Stable, language-independent mention references used inside media
 /// captions. The marker is an implementation detail: it is converted to a
-/// visible `@Name` label whenever a caption is rendered or edited. Keeping the
+/// visible `@name_year` label whenever a caption is rendered or edited. Keeping the
 /// ID in the caption means a name edit or locale switch never breaks a link.
 enum MediaMentionToken {
     static let prefix = "[[person:"
@@ -1149,6 +1158,90 @@ enum MediaMentionToken {
         return result
     }
 
+    static func hasUnstructuredMention(in text: String) -> Bool {
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            if let tokenStart = text.range(of: prefix, range: cursor..<text.endIndex),
+               tokenStart.lowerBound == cursor,
+               let tokenEnd = text.range(of: suffix, range: tokenStart.upperBound..<text.endIndex) {
+                cursor = tokenEnd.upperBound
+                continue
+            }
+            if text[cursor] == "@" { return true }
+            cursor = text.index(after: cursor)
+        }
+        return false
+    }
+
+    /// Builds the human-readable mention from current profile data. The
+    /// immutable ID remains in storage; this label is deliberately computed
+    /// at render time so corrected names and dates cannot leave stale text in
+    /// existing captions.
+    static func displayLabel(
+        for person: Person,
+        people: [Person],
+        language: ArchiveLanguage? = nil
+    ) -> String {
+        displayLabels(for: people, language: language)[person.id]
+            ?? baseDisplayLabel(for: person, language: language)
+    }
+
+    /// Computes every label in one pass. Editors and migrations call this
+    /// when presenting many people so uniqueness checks do not repeatedly
+    /// scan the complete family.
+    static func displayLabels(
+        for people: [Person],
+        language: ArchiveLanguage? = nil
+    ) -> [Person.ID: String] {
+        let bases = Dictionary(uniqueKeysWithValues: people.map { person in
+            (person.id, baseDisplayLabel(for: person, language: language))
+        })
+        let groups = Dictionary(grouping: people, by: { person in
+            (bases[person.id] ?? person.id).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        })
+        return Dictionary(uniqueKeysWithValues: people.map { person in
+            let base = bases[person.id] ?? person.id
+            guard groups[base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current), default: []].count > 1 else {
+                return (person.id, base)
+            }
+            // This suffix disambiguates the visible label only. It is derived
+            // from, and never replaces or mutates, the stable Person.id.
+            return (person.id, "\(base)_\(person.id)")
+        })
+    }
+
+    private static func baseDisplayLabel(
+        for person: Person,
+        language: ArchiveLanguage?
+    ) -> String {
+        let fallback = person.sourceDisplayName
+        let localizedName = NameLocalizationStore.shared.displayName(
+            for: person.id,
+            fallback: fallback,
+            language: language
+        )
+        let normalizedName = localizedName
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: "_")
+        let year = recordedBirthYear(for: person).map(String.init) ?? "unknown"
+        return "\(normalizedName)_\(year)"
+    }
+
+    private static func recordedBirthYear(for person: Person) -> Int? {
+        if let value = person.birthFact?.value {
+            return value
+                .split(whereSeparator: { !$0.isNumber })
+                .compactMap { Int($0) }
+                .first(where: { (1000...2100).contains($0) })
+        }
+        let lifespan = person.lifespan.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lifespan.hasPrefix("?") else { return nil }
+        return lifespan
+            .split(whereSeparator: { !$0.isNumber })
+            .compactMap { Int($0) }
+            .first(where: { (1000...2100).contains($0) })
+    }
+
     /// Converts a stored tokenized caption to the current visible language.
     /// Unknown IDs are retained as an explicit `@ID` rather than silently
     /// dropping a reference from an imported private archive.
@@ -1157,6 +1250,7 @@ enum MediaMentionToken {
         people: [Person],
         language: ArchiveLanguage? = nil
     ) -> String {
+        let labels = displayLabels(for: people, language: language)
         var result = ""
         var cursor = text.startIndex
         while cursor < text.endIndex {
@@ -1168,13 +1262,7 @@ enum MediaMentionToken {
             result += text[cursor..<start.lowerBound]
             let id = String(text[start.upperBound..<end.lowerBound])
             if let person = people.first(where: { $0.id == id }) {
-                let fallback = person.sourceDisplayName
-                let name = NameLocalizationStore.shared.displayName(
-                    for: person.id,
-                    fallback: fallback,
-                    language: language
-                )
-                result += "@\(name)"
+                result += "@\(labels[person.id] ?? person.id)"
             } else {
                 result += "@\(id)"
             }
@@ -1192,14 +1280,23 @@ enum MediaMentionToken {
         people: [Person],
         preferredPersonIDs: Set<Person.ID> = []
     ) -> String {
+        let defaultLabels = displayLabels(for: people, language: nil)
+        let localizedLabels = Dictionary(uniqueKeysWithValues: ArchiveLanguage.allCases.map { language in
+            (language, displayLabels(for: people, language: language))
+        })
         let candidates = people.flatMap { person in
+            let localizedNames = ArchiveLanguage.allCases.compactMap {
+                NameLocalizationStore.shared.localizedName(for: person.id, language: $0)
+            }
+            let mentionLabels = ArchiveLanguage.allCases.compactMap {
+                localizedLabels[$0]?[person.id]
+            }
             let names = [
                 person.displayName,
                 person.sourceDisplayName,
-                person.originalDisplayName
-            ] + ArchiveLanguage.allCases.compactMap {
-                NameLocalizationStore.shared.localizedName(for: person.id, language: $0)
-            }
+                person.originalDisplayName,
+                defaultLabels[person.id] ?? person.id
+            ] + localizedNames + mentionLabels
             return names
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }

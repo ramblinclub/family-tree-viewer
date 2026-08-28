@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import CoreTransferable
 import ImageIO
 import AuthenticationServices
 import PhotosUI
@@ -2150,7 +2151,7 @@ private struct SettingsView: View {
     let person: Person?
     let repository: FamilyRepository?
     @Environment(\.dismiss) private var dismiss
-    @State private var transferDocument = ArchiveTransferDocument(data: Data())
+    @State private var exportItem: ArchiveTransferItem?
     @State private var showingExporter = false
     @State private var showingImporter = false
     @State private var importConfirmation: ImportConfirmation?
@@ -2380,16 +2381,27 @@ private struct SettingsView: View {
         }
         .fileExporter(
             isPresented: $showingExporter,
-            document: transferDocument,
-            contentType: .familyArchive,
+            item: exportItem,
+            contentTypes: [.familyArchive],
             defaultFilename: exportFilename
         ) { result in
+            cleanupPreparedExport()
+            transferInProgress = false
+            preparedAccountID = nil
             switch result {
-            case .success(let url):
-                finishExport(to: url)
+            case .success:
+                transferMessage = TransferMessage(message: ArchiveCopy.text(
+                    english: "Private archive saved.",
+                    russian: "Приватный архив сохранён."
+                ))
             case .failure(let error):
                 transferMessage = TransferMessage(message: error.localizedDescription)
             }
+        } onCancellation: {
+            cleanupPreparedExport()
+            transferInProgress = false
+            preparedAccountID = nil
+            transferStatus = ArchiveCopy.text(english: "Export cancelled.", russian: "Экспорт отменён.")
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -2426,62 +2438,58 @@ private struct SettingsView: View {
         readOnly: Bool = true
     ) {
         guard let repository else { return }
-        do {
-            // This is intentionally synchronous and limited to resolving the
-            // already-persistent store URL. No media scan, copy, or state
-            // transition occurs before the picker is presented.
-            _ = try repository.exportPrivateStoreURL()
-            transferDocument = ArchiveTransferDocument(data: Data("Family Archive private export".utf8))
-            preparedAccountID = personID
-            preparedReadOnly = readOnly
-            if let displayName {
-                let safeName = displayName.replacingOccurrences(of: " ", with: "-")
-                exportFilename = "family-archive-for-\(safeName).familyarchive"
-            } else {
-                exportFilename = "family-archive-private.familyarchive"
-            }
-            showingExporter = true
-        } catch {
-            transferMessage = TransferMessage(message: error.localizedDescription)
+        cleanupPreparedExport()
+        preparedAccountID = personID
+        preparedReadOnly = readOnly
+        if let displayName {
+            let safeName = displayName.replacingOccurrences(of: " ", with: "-")
+            exportFilename = "family-archive-for-\(safeName).familyarchive"
+        } else {
+            exportFilename = "family-archive-private.familyarchive"
         }
-    }
-
-    private func finishExport(to destinationURL: URL) {
-        guard let repository else { return }
         transferInProgress = true
-        let preparedID = preparedAccountID
-        let preparedModeIsReadOnly = preparedReadOnly
-        let accessed = destinationURL.startAccessingSecurityScopedResource()
+        transferStatus = ArchiveCopy.text(
+            english: "Preparing private archive… Keep the app open.",
+            russian: "Подготовка приватного архива… Не закрывайте приложение."
+        )
+        let preparedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FamilyArchivePrepared-\(UUID().uuidString)")
+            .appendingPathExtension("familyarchive")
 
         DispatchQueue.global(qos: .userInitiated).async {
-            defer {
-                if accessed { destinationURL.stopAccessingSecurityScopedResource() }
-            }
-
             do {
-                // The system picker wrote only the tiny placeholder. Replace
-                // it at the chosen location with the streaming archive file.
-                try? FileManager.default.removeItem(at: destinationURL)
                 try repository.exportPrivateArchiveFile(
-                    to: destinationURL,
-                    preparedForPersonID: preparedID,
-                    readOnly: preparedModeIsReadOnly
+                    to: preparedURL,
+                    preparedForPersonID: personID,
+                    readOnly: readOnly
                 )
                 DispatchQueue.main.async {
-                    transferInProgress = false
-                    preparedAccountID = nil
-                    transferMessage = TransferMessage(message: ArchiveCopy.text(
-                        english: "Private archive saved.",
-                        russian: "Приватный архив сохранён."
-                    ))
+                    exportItem = ArchiveTransferItem(url: preparedURL)
+                    transferStatus = ArchiveCopy.text(
+                        english: "Archive ready. Choose where to save it.",
+                        russian: "Архив готов. Выберите место сохранения."
+                    )
+                    showingExporter = true
                 }
             } catch {
+                try? FileManager.default.removeItem(at: preparedURL)
                 DispatchQueue.main.async {
                     transferInProgress = false
                     transferMessage = TransferMessage(message: error.localizedDescription)
                 }
             }
         }
+    }
+
+    private func cleanupPreparedExport() {
+        guard let url = exportItem?.url else { return }
+        let temporaryRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        let candidate = url.standardizedFileURL.path
+        if candidate.hasPrefix(temporaryRoot + "/"),
+           url.lastPathComponent.hasPrefix("FamilyArchivePrepared-") {
+            try? FileManager.default.removeItem(at: url)
+        }
+        exportItem = nil
     }
 
     private func replaceImportedArchive(_ confirmation: ImportConfirmation) {
@@ -2664,18 +2672,13 @@ private struct TransferMessage: Identifiable {
     let message: String
 }
 
-private struct ArchiveTransferDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.familyArchive] }
-    var data: Data
+private struct ArchiveTransferItem: Transferable {
+    let url: URL
 
-    init(data: Data) { self.data = data }
-
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .familyArchive) { item in
+            SentTransferredFile(item.url)
+        }
     }
 }
 
@@ -3113,6 +3116,7 @@ private struct MemoriesView: View {
             for item in person.media {
                 let identity = item.path ?? item.id
                 guard seen.insert(identity).inserted else { continue }
+                guard !MediaMentionToken.personIDs(in: item.caption ?? "").isEmpty else { continue }
                 result.append(MemoryItem(person: person, media: item))
             }
         }
@@ -3156,9 +3160,9 @@ private struct MemoriesView: View {
                             HStack(spacing: 7) {
                                 Image(systemName: "tray.and.arrow.down")
                                 Text(ArchiveCopy.text(english: "Review media", russian: "Проверить медиа"))
-                                let stagedCount = repository.stagedMediaItems().count
-                                if stagedCount > 0 {
-                                    Text("· \(stagedCount)")
+                                let reviewCount = repository.stagedMediaItems().count + repository.mediaNeedingMentionReview().count
+                                if reviewCount > 0 {
+                                    Text("· \(reviewCount)")
                                         .font(ArchiveTypography.metadata)
                                 }
                             }
@@ -3247,7 +3251,9 @@ private struct MediaReviewView: View {
     @ObservedObject var repository: FamilyRepository
     @Environment(\.dismiss) private var dismiss
     @State private var stagedItems: [StagedMediaItem] = []
+    @State private var savedItems: [MediaMentionReviewItem] = []
     @State private var selectedItem: StagedMediaItem?
+    @State private var selectedSavedItem: MediaMentionReviewItem?
     @State private var showingImporter = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var importError: String?
@@ -3263,7 +3269,7 @@ private struct MediaReviewView: View {
                     .font(ArchiveTypography.body)
                     .foregroundStyle(ArchiveTheme.metadata)
 
-                    if stagedItems.isEmpty {
+                    if stagedItems.isEmpty && savedItems.isEmpty {
                         ContentUnavailableView(
                             ArchiveCopy.text(english: "No media to review", russian: "Нет медиа для проверки"),
                             systemImage: "tray",
@@ -3275,6 +3281,48 @@ private struct MediaReviewView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 48)
                     } else {
+                        if !savedItems.isEmpty {
+                            Text(ArchiveCopy.text(
+                                english: "SAVED MEDIA NEEDING MENTIONS",
+                                russian: "СОХРАНЁННЫЕ МЕДИА БЕЗ УПОМИНАНИЙ"
+                            ))
+                            .font(ArchiveTypography.metadataEmphasis)
+                            .foregroundStyle(ArchiveTheme.metadata)
+
+                            VStack(spacing: 0) {
+                                ForEach(savedItems) { reviewItem in
+                                    Button {
+                                        selectedSavedItem = reviewItem
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: reviewItem.media.kind.systemImage)
+                                                .foregroundStyle(ArchiveTheme.action)
+                                                .frame(width: 28)
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(reviewItem.media.title)
+                                                    .font(ArchiveTypography.contentTitle)
+                                                    .foregroundStyle(ArchiveTheme.ink)
+                                                    .lineLimit(1)
+                                                Text(ArchiveCopy.text(
+                                                    english: "Add an @name_year mention",
+                                                    russian: "Добавьте упоминание @имя_год"
+                                                ))
+                                                .font(ArchiveTypography.metadata)
+                                                .foregroundStyle(ArchiveTheme.metadata)
+                                            }
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .foregroundStyle(ArchiveTheme.metadata)
+                                        }
+                                        .padding(12)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+                        }
+
+                        if !stagedItems.isEmpty {
                         VStack(spacing: 0) {
                             ForEach(stagedItems) { item in
                                 Button {
@@ -3292,6 +3340,7 @@ private struct MediaReviewView: View {
                             }
                         }
                         .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+                        }
                     }
                 }
                 .padding(.horizontal, ArchiveLayout.pageHorizontal)
@@ -3355,6 +3404,10 @@ private struct MediaReviewView: View {
                     reloadItems()
                 }
             }
+            .sheet(item: $selectedSavedItem) { reviewItem in
+                MediaMetadataEditor(item: reviewItem.media, ownerID: reviewItem.ownerID, repository: repository)
+                    .onDisappear { reloadItems() }
+            }
             .alert(
                 ArchiveCopy.text(english: "Could not add media", russian: "Не удалось добавить медиа"),
                 isPresented: Binding(
@@ -3379,6 +3432,7 @@ private struct MediaReviewView: View {
 
     private func reloadItems() {
         stagedItems = repository.stagedMediaItems()
+        savedItems = repository.mediaNeedingMentionReview()
     }
 
     private func importPhotos(_ items: [PhotosPickerItem]) async {
@@ -3466,6 +3520,7 @@ private struct StagedMediaEditor: View {
     @State private var seededOriginalLocation: String?
     @State private var mentionSuggestions: [Person] = []
     @State private var selectedMentionIDs: Set<Person.ID> = []
+    @State private var selectedEditorMentionID: Person.ID?
     @State private var errorMessage: String?
     @StateObject private var imageLoader = ArchiveImageLoader()
 
@@ -3480,7 +3535,15 @@ private struct StagedMediaEditor: View {
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
 
-                    MentionTextEditor(text: $caption, people: repository.people)
+                    MentionTextEditor(text: $caption, people: repository.people) { personID in
+                        selectedEditorMentionID = personID
+                        if let personID,
+                           let person = repository.people.first(where: { $0.id == personID }) {
+                            mentionSuggestions = [person]
+                        } else {
+                            mentionSuggestions = []
+                        }
+                    }
                         // UITextView does not provide a reliable intrinsic
                         // height when hosted by SwiftUI. Without an explicit
                         // height the editor collapses and only the helper
@@ -3501,14 +3564,9 @@ private struct StagedMediaEditor: View {
                                     Button {
                                         insertMention(for: person)
                                     } label: {
-                                        HStack(spacing: 5) {
-                                            Text("@\(person.displayName)")
-                                                .font(ArchiveTypography.metadataEmphasis)
-                                                .foregroundStyle(ArchiveTheme.ink)
-                                            Text("· \(ArchiveDateFormatter.displayRange(person.lifespan) ?? person.lifespan)")
-                                                .font(ArchiveTypography.metadata)
-                                                .foregroundStyle(ArchiveTheme.metadata)
-                                        }
+                                        Text("@\(MediaMentionToken.displayLabel(for: person, people: repository.people, language: repository.appLanguage))")
+                                            .font(ArchiveTypography.metadataEmphasis)
+                                            .foregroundStyle(ArchiveTheme.ink)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 7)
                                         .background(ArchiveTheme.actionBackground)
@@ -3634,31 +3692,22 @@ private struct StagedMediaEditor: View {
             )
             return
         }
-        let mentionedIDs = mentionedPersonIDs(in: caption)
-        let linkedIDs = mentionedIDs.union(selectedMentionIDs)
-        guard !linkedIDs.isEmpty else {
-            errorMessage = ArchiveCopy.text(english: "Type @ and choose at least one family member.", russian: "Введите @ и выберите хотя бы одного родственника.")
-            return
-        }
         guard !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             errorMessage = ArchiveCopy.text(english: "Add a caption before saving.", russian: "Добавьте подпись перед сохранением.")
             return
         }
-        if let languageIssue = ArchiveLanguageValidator.issue(
-            language: repository.appLanguage,
-            fields: [(ArchiveCopy.text(english: "Caption", russian: "Подпись"), caption)]
-        ) {
-            errorMessage = languageIssue
-            return
-        }
-
         do {
             let recordDate = dateFromCaption(caption)
             let canonicalCaption = MediaMentionToken.canonicalize(
                 caption,
                 people: repository.people,
-                preferredPersonIDs: linkedIDs
+                preferredPersonIDs: selectedMentionIDs
             )
+            let linkedIDs = Set(MediaMentionToken.personIDs(in: canonicalCaption))
+            guard !linkedIDs.isEmpty else {
+                errorMessage = ArchiveCopy.text(english: "Type @ and choose at least one family member.", russian: "Введите @ и выберите хотя бы одного родственника.")
+                return
+            }
             let mediaID = try repository.reviewStagedMedia(
                 item,
                 caption: canonicalCaption,
@@ -3689,32 +3738,51 @@ private struct StagedMediaEditor: View {
 
 
     private func updateMentionSuggestions() {
+        selectedEditorMentionID = nil
         guard let query = mentionQuery(in: caption) else {
             mentionSuggestions = []
             return
         }
 
+        let labels = MediaMentionToken.displayLabels(for: repository.people, language: repository.appLanguage)
         mentionSuggestions = Array(repository.people.filter { person in
-            personNameVariants(person).contains { name in
+            personNameVariants(person, mentionLabels: labels).contains { name in
                 query.isEmpty || name.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
             }
         }.prefix(8))
     }
 
     private func insertMention(for person: Person) {
+        if selectedEditorMentionID == person.id {
+            selectedMentionIDs.insert(person.id)
+            selectedEditorMentionID = nil
+            mentionSuggestions = []
+            return
+        }
         guard let atIndex = caption.lastIndex(of: "@") else { return }
-        let tokenRange = mentionReplacementRange(in: caption, at: atIndex, displayName: person.displayName)
-        caption.replaceSubrange(tokenRange, with: "@\(person.displayName) ")
+        let label = MediaMentionToken.displayLabel(for: person, people: repository.people, language: repository.appLanguage)
+        let tokenRange = mentionReplacementRange(in: caption, at: atIndex, displayName: label)
+        caption.replaceSubrange(tokenRange, with: "@\(label) ")
+        let labels = MediaMentionToken.displayLabels(for: repository.people, language: repository.appLanguage)
+        let selectedVariants = personNameVariants(person, mentionLabels: labels)
         let duplicateIDs = repository.people
-            .filter { personNameVariants($0).contains { lhs in personNameVariants(person).contains { rhs in lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame } } }
+            .filter { personNameVariants($0, mentionLabels: labels).contains { lhs in selectedVariants.contains { rhs in lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame } } }
             .map(\.id)
         selectedMentionIDs.subtract(duplicateIDs)
         selectedMentionIDs.insert(person.id)
         mentionSuggestions = []
     }
 
-    private func personNameVariants(_ person: Person) -> [String] {
-        [person.displayName, person.sourceDisplayName, person.originalDisplayName]
+    private func personNameVariants(
+        _ person: Person,
+        mentionLabels: [Person.ID: String]? = nil
+    ) -> [String] {
+        [
+            person.displayName,
+            person.sourceDisplayName,
+            person.originalDisplayName,
+            mentionLabels?[person.id] ?? MediaMentionToken.displayLabel(for: person, people: repository.people, language: repository.appLanguage)
+        ]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
@@ -3973,12 +4041,23 @@ private struct GalleryMediaVisual: View {
 /// expect from mention fields: recognized @names are highlighted as one unit,
 /// tapping a token selects the whole token, and backspace removes it as a
 /// whole rather than leaving a half-name behind.
-private struct MentionTextEditor: UIViewRepresentable {
+struct MentionTextEditor: UIViewRepresentable {
     @Binding var text: String
     let people: [Person]
+    let onMentionSelected: (Person.ID?) -> Void
+
+    init(
+        text: Binding<String>,
+        people: [Person],
+        onMentionSelected: @escaping (Person.ID?) -> Void = { _ in }
+    ) {
+        _text = text
+        self.people = people
+        self.onMentionSelected = onMentionSelected
+    }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, people: people)
+        Coordinator(text: $text, people: people, onMentionSelected: onMentionSelected)
     }
 
     func makeUIView(context: Context) -> UITextView {
@@ -3998,6 +4077,7 @@ private struct MentionTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.onMentionSelected = onMentionSelected
         guard view.text != text else { return }
         let selectedRange = view.selectedRange
         context.coordinator.applyAttributes(to: view, text: text)
@@ -4008,33 +4088,64 @@ private struct MentionTextEditor: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
-        private let people: [Person]
-        private var binding: Binding<String>
+        private struct MentionDescriptor {
+            let name: String
+            let personID: Person.ID
+        }
 
-        init(text: Binding<String>, people: [Person]) {
+        private struct MentionMatch {
+            let range: NSRange
+            let personID: Person.ID
+        }
+
+        private let mentionDescriptors: [MentionDescriptor]
+        private var binding: Binding<String>
+        private var isApplyingAttributes = false
+        var onMentionSelected: (Person.ID?) -> Void
+
+        init(
+            text: Binding<String>,
+            people: [Person],
+            onMentionSelected: @escaping (Person.ID?) -> Void
+        ) {
             self.binding = text
-            self.people = people
+            self.onMentionSelected = onMentionSelected
+            let currentLabels = MediaMentionToken.displayLabels(for: people, language: .current)
+            self.mentionDescriptors = people.compactMap { person in
+                let label = (currentLabels[person.id] ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !label.isEmpty else { return nil }
+                return MentionDescriptor(name: label, personID: person.id)
+            }
+            .sorted { $0.name.utf16.count > $1.name.utf16.count }
         }
 
         func applyAttributes(to view: UITextView, text: String? = nil) {
+            isApplyingAttributes = true
+            defer { isApplyingAttributes = false }
             let value = text ?? binding.wrappedValue
+            let selection = view.selectedRange
             let attributed = NSMutableAttributedString(string: value, attributes: [
                 .font: UIFont.systemFont(ofSize: 15),
                 .foregroundColor: UIColor.archiveInk
             ])
-            for range in mentionRanges(in: value) {
+            for match in mentionMatches(in: value) {
                 attributed.addAttributes([
                     .foregroundColor: UIColor.archiveMention,
                     .backgroundColor: UIColor.archiveMentionBackground,
                     .link: URL(string: "family-mention://token") as Any,
                     .underlineStyle: 0
-                ], range: range)
+                ], range: match.range)
             }
             view.attributedText = attributed
             view.typingAttributes = [
                 .font: UIFont.systemFont(ofSize: 15),
                 .foregroundColor: UIColor.archiveInk
             ]
+            view.selectedRange = NSRange(
+                location: min(selection.location, attributed.length),
+                length: min(selection.length, max(0, attributed.length - min(selection.location, attributed.length)))
+            )
         }
 
         func textViewDidChange(_ textView: UITextView) {
@@ -4042,11 +4153,36 @@ private struct MentionTextEditor: UIViewRepresentable {
             applyAttributes(to: textView)
         }
 
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !isApplyingAttributes else { return }
+            let selection = textView.selectedRange
+            guard let mention = mentionMatches(in: textView.text).first(where: { match in
+                if selection.length == 0 {
+                    // A caret at either token boundary is outside the token.
+                    // This lets a tap immediately before or after a mention
+                    // place the insertion point and remain ready for typing.
+                    return selection.location > match.range.location
+                        && selection.location < NSMaxRange(match.range)
+                }
+                return NSIntersectionRange(match.range, selection).length > 0
+            }) else {
+                onMentionSelected(nil)
+                return
+            }
+            if selection != mention.range {
+                textView.selectedRange = mention.range
+            }
+            onMentionSelected(mention.personID)
+        }
+
         func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange) -> Bool {
             // Mention tokens are editable tokens here, not outbound links.
             // Selecting the full range makes their special behavior visible
             // and lets a single backspace remove the complete token.
             textView.selectedRange = characterRange
+            if let mention = mentionMatches(in: textView.text).first(where: { $0.range == characterRange }) {
+                onMentionSelected(mention.personID)
+            }
             return false
         }
 
@@ -4055,8 +4191,8 @@ private struct MentionTextEditor: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText replacement: String
         ) -> Bool {
-            let mentions = mentionRanges(in: textView.text)
-            guard let token = mentions.first(where: { NSIntersectionRange($0, range).length > 0 }) else {
+            let mentions = mentionMatches(in: textView.text)
+            guard let token = mentions.first(where: { NSIntersectionRange($0.range, range).length > 0 })?.range else {
                 return true
             }
 
@@ -4071,16 +4207,10 @@ private struct MentionTextEditor: UIViewRepresentable {
             return false
         }
 
-        private func mentionRanges(in text: String) -> [NSRange] {
-            let names = people
-                .flatMap { [$0.displayName, $0.sourceDisplayName, $0.originalDisplayName] }
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .sorted { $0.utf16.count > $1.utf16.count }
-
-            var ranges: [NSRange] = []
-            for name in names {
-                let token = "@\(name)"
+        private func mentionMatches(in text: String) -> [MentionMatch] {
+            var matches: [MentionMatch] = []
+            for descriptor in mentionDescriptors {
+                let token = "@\(descriptor.name)"
                 var search = NSRange(location: 0, length: (text as NSString).length)
                 while search.length > 0 {
                     let found = (text as NSString).range(of: token, options: [.caseInsensitive, .diacriticInsensitive], range: search)
@@ -4088,20 +4218,238 @@ private struct MentionTextEditor: UIViewRepresentable {
                     let beforeOK = found.location == 0 || mentionBoundary((text as NSString).character(at: found.location - 1))
                     let end = found.location + found.length
                     let afterOK = end == (text as NSString).length || mentionBoundary((text as NSString).character(at: end))
-                    if beforeOK && afterOK && !ranges.contains(where: { NSIntersectionRange($0, found).length > 0 }) {
-                        ranges.append(found)
+                    if beforeOK && afterOK && !matches.contains(where: { NSIntersectionRange($0.range, found).length > 0 }) {
+                        matches.append(MentionMatch(range: found, personID: descriptor.personID))
                     }
                     let next = found.location + max(found.length, 1)
                     search = NSRange(location: next, length: (text as NSString).length - next)
                 }
             }
-            return ranges.sorted { $0.location < $1.location }
+            return matches.sorted { $0.range.location < $1.range.location }
         }
 
         private func mentionBoundary(_ value: unichar) -> Bool {
             guard let scalar = UnicodeScalar(value) else { return true }
             return CharacterSet.whitespacesAndNewlines.contains(scalar)
                 || CharacterSet.punctuationCharacters.contains(scalar)
+        }
+    }
+}
+
+/// The single caption-editing component used everywhere media captions are
+/// edited. It owns mention selection, suggestions, insertion, and the
+/// gesture-safe Save/Cancel controls so entry points cannot drift apart.
+struct MediaCaptionEditor: View {
+    /// The exact media being described. Keeping it in the shared editor means
+    /// caption editing is never detached from the image in either entry path.
+    let preview: MemoryItem?
+    /// The pager hosts Save/Cancel outside its swipeable content. Other
+    /// callers use the same controls inline.
+    let showsActions: Bool
+    @Binding var caption: String
+    @Binding var selectedMentionIDs: Set<Person.ID>
+    @ObservedObject var repository: FamilyRepository
+    let onCancel: () -> Void
+    let onSave: () throws -> Void
+
+    @State private var mentionSuggestions: [Person] = []
+    @State private var selectedEditorMentionID: Person.ID?
+    @State private var saveError: String?
+    @State private var isSaving = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let preview {
+                GalleryMediaVisual(memory: preview, maxPixelSize: 900)
+                    .frame(maxWidth: .infinity)
+                    .frame(maxHeight: 320)
+                    .clipShape(ArchiveShape.control)
+                    .accessibilityLabel(ArchiveCopy.text(english: "Image being captioned", russian: "Изображение, для которого редактируется подпись"))
+            }
+
+            Text(ArchiveCopy.text(english: "EDIT CAPTION", russian: "ИЗМЕНЕНИЕ ПОДПИСИ"))
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(1.2)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            MentionTextEditor(text: $caption, people: repository.people) { personID in
+                selectedEditorMentionID = personID
+                if let personID,
+                   let person = repository.people.first(where: { $0.id == personID }) {
+                    mentionSuggestions = [person]
+                } else {
+                    mentionSuggestions = []
+                }
+            }
+            .frame(minHeight: 104, maxHeight: 180)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(ArchiveTheme.controlBackground)
+            .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+            .onChange(of: caption) { _, _ in
+                updateMentionSuggestions()
+            }
+
+            if !mentionSuggestions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(mentionSuggestions) { person in
+                            Button {
+                                insertMention(for: person)
+                            } label: {
+                                Text("@\(MediaMentionToken.displayLabel(for: person, people: repository.people, language: repository.appLanguage))")
+                                    .font(ArchiveTypography.metadataEmphasis)
+                                    .foregroundStyle(ArchiveTheme.ink)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(ArchiveTheme.actionBackground)
+                                    .clipShape(ArchiveShape.control)
+                                    .overlay(ArchiveShape.control.stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            Text(ArchiveCopy.text(
+                english: "Type @ and choose a family member. The suggested mention is inserted exactly as shown, becomes a profile link, and adds the photo to that person’s media.",
+                russian: "Введите @ и выберите родственника. Упоминание будет вставлено точно в показанном виде, станет ссылкой на профиль, а фото появится в его медиа."
+            ))
+            .font(ArchiveTypography.metadata)
+            .foregroundStyle(ArchiveTheme.metadata)
+
+            if showsActions {
+                CaptionEditorActionBar(
+                    isSaving: isSaving,
+                    onCancel: onCancel,
+                    onSave: save
+                )
+                .padding(.top, 4)
+            }
+
+            if let saveError {
+                Text(saveError)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel(ArchiveCopy.text(
+                        english: "Could not save caption: \(saveError)",
+                        russian: "Не удалось сохранить подпись: \(saveError)"
+                    ))
+            }
+        }
+    }
+
+    private func save() {
+        guard !isSaving else { return }
+        isSaving = true
+        saveError = nil
+        do {
+            try onSave()
+        } catch {
+            saveError = error.localizedDescription
+            isSaving = false
+        }
+    }
+
+    private func updateMentionSuggestions() {
+        selectedEditorMentionID = nil
+        guard let query = mentionQuery(in: caption) else {
+            mentionSuggestions = []
+            return
+        }
+        let labels = MediaMentionToken.displayLabels(
+            for: repository.people,
+            language: repository.appLanguage
+        )
+        mentionSuggestions = Array(repository.people.filter { person in
+            let variants = personNameVariants(person, mentionLabels: labels)
+            return query.isEmpty || variants.contains { value in
+                value.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
+            }
+        }.prefix(8))
+    }
+
+    private func insertMention(for person: Person) {
+        if selectedEditorMentionID == person.id {
+            selectedMentionIDs.insert(person.id)
+            selectedEditorMentionID = nil
+            mentionSuggestions = []
+            return
+        }
+        guard let atIndex = caption.lastIndex(of: "@") else { return }
+        let label = MediaMentionToken.displayLabel(
+            for: person,
+            people: repository.people,
+            language: repository.appLanguage
+        )
+        let range = mentionReplacementRange(in: caption, at: atIndex, displayName: label)
+        caption.replaceSubrange(range, with: "@\(label) ")
+
+        let labels = MediaMentionToken.displayLabels(
+            for: repository.people,
+            language: repository.appLanguage
+        )
+        let selectedVariants = personNameVariants(person, mentionLabels: labels)
+        let duplicateIDs = repository.people
+            .filter { candidate in
+                personNameVariants(candidate, mentionLabels: labels).contains { lhs in
+                    selectedVariants.contains { rhs in
+                        lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                    }
+                }
+            }
+            .map(\.id)
+        selectedMentionIDs.subtract(duplicateIDs)
+        selectedMentionIDs.insert(person.id)
+        mentionSuggestions = []
+    }
+
+    private func personNameVariants(
+        _ person: Person,
+        mentionLabels: [Person.ID: String]
+    ) -> [String] {
+        [
+            person.displayName,
+            person.sourceDisplayName,
+            person.originalDisplayName,
+            mentionLabels[person.id] ?? person.sourceDisplayName
+        ]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    }
+}
+
+/// The one Save/Cancel control used by every caption editor. The pager places
+/// this bar beside (rather than inside) its swipeable image page.
+private struct CaptionEditorActionBar: View {
+    let isSaving: Bool
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onCancel) {
+                Text(ArchiveCopy.text(english: "Cancel", russian: "Отмена"))
+                    .font(ArchiveTypography.action)
+                    .frame(minWidth: 96, minHeight: 44, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(ArchiveTheme.metadata)
+            .disabled(isSaving)
+
+            Spacer()
+
+            Button(action: onSave) {
+                Text(isSaving
+                    ? ArchiveCopy.text(english: "Saving…", russian: "Сохранение…")
+                    : ArchiveCopy.text(english: "Save", russian: "Сохранить"))
+                    .font(ArchiveTypography.action)
+                    .frame(minWidth: 96, minHeight: 44, alignment: .trailing)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(ArchiveTheme.action)
+            .disabled(isSaving)
         }
     }
 }
@@ -4161,101 +4509,33 @@ private struct CaptionPeopleText: View {
     }
 
     private var linkedCaption: AttributedString {
-        // Always resolve internal ID markers before constructing SwiftUI's
-        // attributed text. This is the final display boundary: raw markers
-        // must never be visible to the reader, even if a legacy sidecar or a
-        // new translation is loaded during a view refresh.
-        let displayText = MediaMentionToken.visibleText(text, people: people)
-        let candidates = people
-            .flatMap { person in
-                [person.displayName, person.sourceDisplayName, person.originalDisplayName]
-                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map { ($0, person) }
-            }
-            .sorted { left, right in
-                let leftPreferred = preferredPersonIDs.contains(left.1.id)
-                let rightPreferred = preferredPersonIDs.contains(right.1.id)
-                if leftPreferred != rightPreferred { return leftPreferred }
-                return left.0.count > right.0.count
-            }
-
+        let canonical = MediaMentionToken.canonicalize(
+            text,
+            people: people,
+            preferredPersonIDs: preferredPersonIDs
+        )
         var result = AttributedString()
-        var plain = ""
-        var index = displayText.startIndex
-
-        while index < displayText.endIndex {
-            // New captions carry an immutable person-ID marker. Render the
-            // current localized name while keeping the link attached to the
-            // ID, so renaming or switching languages never breaks it.
-            if displayText[index...].hasPrefix(MediaMentionToken.prefix),
-               let tokenEnd = displayText.range(of: MediaMentionToken.suffix, range: index..<displayText.endIndex)?.upperBound {
-                let markerEnd = displayText.index(before: tokenEnd)
-                let markerStart = displayText.index(index, offsetBy: MediaMentionToken.prefix.count)
-                let personID = String(displayText[markerStart..<markerEnd])
-                guard let person = people.first(where: { $0.id == personID }) else {
-                    plain += displayText[index..<tokenEnd]
-                    index = tokenEnd
-                    continue
-                }
-                if !plain.isEmpty {
-                    result += AttributedString(plain)
-                    plain = ""
-                }
-                var linked = AttributedString("@\(person.displayName)")
+        var cursor = canonical.startIndex
+        while cursor < canonical.endIndex {
+            guard let start = canonical.range(of: MediaMentionToken.prefix, range: cursor..<canonical.endIndex),
+                  let end = canonical.range(of: MediaMentionToken.suffix, range: start.upperBound..<canonical.endIndex) else {
+                result += AttributedString(String(canonical[cursor...]))
+                break
+            }
+            result += AttributedString(String(canonical[cursor..<start.lowerBound]))
+            let personID = String(canonical[start.upperBound..<end.lowerBound])
+            if let person = people.first(where: { $0.id == personID }) {
+                let label = MediaMentionToken.displayLabel(for: person, people: people, language: .current)
+                var linked = AttributedString("@\(label)")
                 linked.link = URL(string: "family-person://\(person.id)")
                 linked.foregroundColor = ArchiveTheme.mention
                 linked.backgroundColor = ArchiveTheme.actionBackground
                 linked.inlinePresentationIntent = .stronglyEmphasized
                 result += linked
-                index = tokenEnd
-                continue
+            } else {
+                result += AttributedString("@\(personID)")
             }
-
-            // Legacy captions may still contain visible names. They remain
-            // readable and linkable until the next private-store migration or
-            // edit converts them to ID markers.
-            guard displayText[index] == "@", index < displayText.index(before: displayText.endIndex) else {
-                plain.append(displayText[index])
-                index = displayText.index(after: index)
-                continue
-            }
-
-            let nameStart = displayText.index(after: index)
-            guard let match = candidates.first(where: { displayText[nameStart...].hasPrefix($0.0) }) else {
-                plain.append(displayText[index])
-                index = displayText.index(after: index)
-                continue
-            }
-
-            let tokenLength = match.0.count + 1
-            let tokenEnd = displayText.index(index, offsetBy: tokenLength)
-            // Do not link a matching prefix inside a longer word such as
-            // “@IrinaSaparova”.
-            if tokenEnd < displayText.endIndex {
-                let next = displayText[tokenEnd]
-                if next.isLetter || next.isNumber || next == "_" {
-                    plain.append(displayText[index])
-                    index = displayText.index(after: index)
-                    continue
-                }
-            }
-
-            if !plain.isEmpty {
-                result += AttributedString(plain)
-                plain = ""
-            }
-
-            var linked = AttributedString(String(displayText[index..<tokenEnd]))
-            linked.link = URL(string: "family-person://\(match.1.id)")
-            linked.foregroundColor = ArchiveTheme.mention
-            linked.backgroundColor = ArchiveTheme.actionBackground
-            linked.inlinePresentationIntent = .stronglyEmphasized
-            result += linked
-            index = tokenEnd
-        }
-
-        if !plain.isEmpty {
-            result += AttributedString(plain)
+            cursor = end.upperBound
         }
         return result
     }
@@ -4264,15 +4544,16 @@ private struct CaptionPeopleText: View {
 /// Returns the current @mention token without consuming the text that follows
 /// it. This matches the behavior of standard mention fields: choosing a
 /// suggestion replaces only the active token, not the rest of the caption.
-private func mentionTokenRange(in text: String, at atIndex: String.Index) -> Range<String.Index> {
+func mentionTokenRange(in text: String, at atIndex: String.Index) -> Range<String.Index> {
     var end = text.index(after: atIndex)
-    // Spaces are allowed inside a person's display name. A newline or
-    // punctuation terminates the active token, matching normal mention fields
-    // while still supporting names such as “Irina Saparova”.
-    let separators = CharacterSet.newlines.union(.punctuationCharacters)
+    // The current visible mention format uses underscores, so `_` must remain
+    // part of the active token. Whitespace and ordinary prose punctuation end
+    // the query and protect any caption text that follows it.
     while end < text.endIndex {
         let character = text[end]
-        if character.unicodeScalars.allSatisfy(separators.contains) {
+        let isMentionCharacter = character.isLetter || character.isNumber ||
+            character == "_" || character == "-" || character == "'" || character == "’"
+        if !isMentionCharacter {
             break
         }
         end = text.index(after: end)
@@ -4280,28 +4561,18 @@ private func mentionTokenRange(in text: String, at atIndex: String.Index) -> Ran
     return atIndex..<end
 }
 
-private func mentionReplacementRange(in text: String, at atIndex: String.Index, displayName: String) -> Range<String.Index> {
-    let queryStart = text.index(after: atIndex)
-    var textIndex = queryStart
-    var nameIndex = displayName.startIndex
-
-    while textIndex < text.endIndex, nameIndex < displayName.endIndex {
-        let textCharacter = String(text[textIndex])
-        let nameCharacter = String(displayName[nameIndex])
-        guard textCharacter.compare(nameCharacter, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame else {
-            break
-        }
-        textIndex = text.index(after: textIndex)
-        nameIndex = displayName.index(after: nameIndex)
-    }
-
-    // If a different supported name variant was typed, keep the replacement
-    // bounded to the current token rather than consuming the rest of the text.
-    let end = textIndex == queryStart ? mentionTokenRange(in: text, at: atIndex).upperBound : textIndex
-    return atIndex..<end
+func mentionReplacementRange(
+    in text: String,
+    at atIndex: String.Index,
+    displayName _: String
+) -> Range<String.Index> {
+    // Replace the complete active query. Prefix-only replacement left suffixes
+    // behind when the selected person differed from the typed year/name, e.g.
+    // selecting `@Ivan_Petrov_1912` from `@Ivan_1890` produced a stray `890`.
+    mentionTokenRange(in: text, at: atIndex)
 }
 
-private func mentionQuery(in text: String) -> String? {
+func mentionQuery(in text: String) -> String? {
     guard let atIndex = text.lastIndex(of: "@") else { return nil }
     if atIndex != text.startIndex {
         let previous = text[text.index(before: atIndex)]
@@ -4310,19 +4581,37 @@ private func mentionQuery(in text: String) -> String? {
     }
 
     let tokenRange = mentionTokenRange(in: text, at: atIndex)
+    // A space or punctuation commits the mention/query. Do not reopen the
+    // suggestion row for a completed mention elsewhere in the caption.
+    if tokenRange.upperBound < text.endIndex {
+        return nil
+    }
     let queryStart = text.index(after: atIndex)
     return String(text[queryStart..<tokenRange.upperBound])
+}
+
+private enum CaptionEditorCommand: Equatable {
+    case save(mediaID: MediaReference.ID)
+    case cancel(mediaID: MediaReference.ID)
+
+    var mediaID: MediaReference.ID {
+        switch self {
+        case let .save(mediaID), let .cancel(mediaID): mediaID
+        }
+    }
 }
 
 private struct MemoryDetailView: View {
     let memory: MemoryItem
     @ObservedObject var repository: FamilyRepository
     let isActive: Bool
+    @Binding var captionCommand: CaptionEditorCommand?
+    let onCaptionEditingChanged: (Bool) -> Void
+    let onCaptionSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedPerson: Person?
     @State private var isEditingCaption = false
     @State private var draftCaption = ""
-    @State private var mentionSuggestions: [Person] = []
     /// Keeps an unambiguous ID for a person selected from the @mention picker.
     /// The visible caption remains human-readable; the IDs are written to the
     /// media record's personIDs field when the caption is saved.
@@ -4331,10 +4620,20 @@ private struct MemoryDetailView: View {
     @State private var saveError: String?
     @State private var showingRemoveConfirmation = false
 
-    init(memory: MemoryItem, repository: FamilyRepository, isActive: Bool = true) {
+    init(
+        memory: MemoryItem,
+        repository: FamilyRepository,
+        isActive: Bool = true,
+        captionCommand: Binding<CaptionEditorCommand?>,
+        onCaptionEditingChanged: @escaping (Bool) -> Void = { _ in },
+        onCaptionSaved: @escaping () -> Void = { }
+    ) {
         self.memory = memory
         self.repository = repository
         self.isActive = isActive
+        self._captionCommand = captionCommand
+        self.onCaptionEditingChanged = onCaptionEditingChanged
+        self.onCaptionSaved = onCaptionSaved
     }
 
     private var currentMedia: MediaReference {
@@ -4376,7 +4675,7 @@ private struct MemoryDetailView: View {
                             CaptionPeopleText(
                                 text: captionWithDate,
                                 people: repository.people,
-                                preferredPersonIDs: Set(currentMedia.personIDs ?? []),
+                                preferredPersonIDs: Set(MediaMentionToken.personIDs(in: currentMedia.caption ?? "")),
                                 onSelect: { selectedPerson = $0 }
                             )
                         } else {
@@ -4417,6 +4716,12 @@ private struct MemoryDetailView: View {
         .background(ArchiveTheme.background)
         .navigationTitle(ArchiveCopy.text(english: "Memory", russian: "Воспоминание"))
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: isEditingCaption) { _, editing in
+            onCaptionEditingChanged(editing)
+        }
+        .onChange(of: captionCommand) { _, command in
+            handleCaptionCommand(command)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
@@ -4510,79 +4815,15 @@ private struct MemoryDetailView: View {
 
     @ViewBuilder
     private var captionEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(ArchiveCopy.text(english: "EDIT CAPTION", russian: "ИЗМЕНЕНИЕ ПОДПИСИ"))
-                .font(ArchiveTypography.sectionTitle)
-                .tracking(1.2)
-                .foregroundStyle(ArchiveTheme.ink)
-
-            MentionTextEditor(text: $draftCaption, people: repository.people)
-                // Keep the editable caption visibly present above the helper
-                // copy; a bare UITextView can otherwise collapse to zero
-                // height inside this VStack.
-                .frame(minHeight: 104, maxHeight: 180)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(ArchiveTheme.controlBackground)
-                .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
-                .onChange(of: draftCaption) { _, _ in
-                    updateMentionSuggestions()
-                }
-
-            if !mentionSuggestions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(mentionSuggestions) { person in
-                            Button {
-                                insertMention(for: person)
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Text("@\(person.displayName)")
-                                        .font(ArchiveTypography.metadataEmphasis)
-                                        .foregroundStyle(ArchiveTheme.ink)
-                                            Text("· \(ArchiveDateFormatter.displayRange(person.lifespan) ?? person.lifespan)")
-                                        .font(ArchiveTypography.metadata)
-                                        .foregroundStyle(ArchiveTheme.metadata)
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 7)
-                                .background(ArchiveTheme.actionBackground)
-                                .clipShape(ArchiveShape.control)
-                                .overlay(ArchiveShape.control.stroke(ArchiveTheme.controlBorder, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-
-            Text(ArchiveCopy.text(
-                english: "Type @ followed by a family member’s name—for example, @Irina Saparova. The mention becomes a profile link and adds the photo to that person’s media.",
-                russian: "Введите @ и имя родственника — например, @Ирина Сапарова. Упоминание станет ссылкой на профиль, а фото появится в его медиа."
-            ))
-            .font(ArchiveTypography.metadata)
-            .foregroundStyle(ArchiveTheme.metadata)
-
-            HStack {
-                Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена")) {
-                    isEditingCaption = false
-                }
-                .buttonStyle(.plain)
-                .font(ArchiveTypography.action)
-                .foregroundStyle(ArchiveTheme.metadata)
-
-                Spacer()
-
-                Button(ArchiveCopy.text(english: "Save", russian: "Сохранить")) {
-                    saveCaptionEditing()
-                }
-                .buttonStyle(.plain)
-                .font(ArchiveTypography.action)
-                .foregroundStyle(ArchiveTheme.action)
-            }
-            .padding(.top, 4)
-
-        }
+        MediaCaptionEditor(
+            preview: nil,
+            showsActions: false,
+            caption: $draftCaption,
+            selectedMentionIDs: $selectedMentionIDs,
+            repository: repository,
+            onCancel: { },
+            onSave: { }
+        )
     }
 
     private func beginCaptionEditing() {
@@ -4595,149 +4836,56 @@ private struct MemoryDetailView: View {
         // The year is part of the user-facing caption. The media date remains
         // a separate field for sorting and filtering, but is included here so
         // it is visible and editable with the rest of the caption text.
-        draftCaption = captionWithMentionsForEditing(
-            memoryCaptionWithDate(localizedCaption, date: currentMedia.date)
-        )
-        selectedMentionIDs = Set(currentMedia.personIDs ?? [memory.person.id])
-        isEditingCaption = true
-        mentionSuggestions = []
-    }
-
-    private func updateMentionSuggestions() {
-        guard let query = mentionQuery(in: draftCaption) else {
-            mentionSuggestions = []
-            return
-        }
-        let matches = repository.people.filter { person in
-            let variants = [person.displayName, person.sourceDisplayName, person.originalDisplayName]
-            return query.isEmpty || variants.contains(where: { variant in
-                variant.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
-            })
-        }
-        mentionSuggestions = Array(matches.prefix(8))
-    }
-
-    private func insertMention(for person: Person) {
-        guard let atIndex = draftCaption.lastIndex(of: "@") else { return }
-        let tokenRange = mentionReplacementRange(in: draftCaption, at: atIndex, displayName: person.displayName)
-        let mention = "@\(person.displayName) "
-        draftCaption.replaceSubrange(tokenRange, with: mention)
-        let duplicateIDs = repository.people
-            .filter { personNameVariants($0).contains { lhs in personNameVariants(person).contains { rhs in lhs.compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame } } }
-            .map(\.id)
-        selectedMentionIDs.subtract(duplicateIDs)
-        selectedMentionIDs.insert(person.id)
-        mentionSuggestions = []
-    }
-
-    /// Relationship links are stored as person IDs on the media record. When
-    /// entering edit mode, expose those links in the same @mention form the
-    /// user can type, even if an imported caption only contained a plain name.
-    private func captionWithMentionsForEditing(_ caption: String) -> String {
-        var result = MediaMentionToken.visibleText(
-            caption,
+        draftCaption = MediaMentionToken.visibleText(
+            memoryCaptionWithDate(localizedCaption, date: currentMedia.date),
             people: repository.people,
             language: repository.appLanguage
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let relatedIDs = currentMedia.personIDs ?? [memory.person.id]
-
-        for personID in relatedIDs {
-            guard let person = repository.person(id: personID) else { continue }
-            let name = person.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { continue }
-            let mention = "@\(name)"
-
-            if result.range(of: mention, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-                continue
-            }
-
-            if let plainNameRange = result.range(of: name, options: [.caseInsensitive, .diacriticInsensitive]) {
-                result.replaceSubrange(plainNameRange, with: mention)
-            } else if result.isEmpty {
-                result = mention
-            } else {
-                result += " \(mention)"
-            }
-        }
-
-        return result
+        )
+        selectedMentionIDs = Set(MediaMentionToken.personIDs(in: localizedCaption))
+        isEditingCaption = true
     }
 
-    private func saveCaptionEditing() {
-        guard repository.canEdit else {
+    private func handleCaptionCommand(_ command: CaptionEditorCommand?) {
+        guard let command else { return }
+        defer { captionCommand = nil }
+        guard command.mediaID == currentMedia.id, isEditingCaption else { return }
+
+        switch command {
+        case .cancel:
             isEditingCaption = false
-            return
+        case .save:
+            do {
+                try saveCaptionEditing()
+            } catch {
+                saveError = error.localizedDescription
+            }
         }
-        if let issue = ArchiveLanguageValidator.issue(
-            language: repository.appLanguage,
-            fields: [("Caption", draftCaption)]
-        ) {
-            languageError = issue
-            return
-        }
+    }
 
-        let canonicalCaption = MediaMentionToken.canonicalize(
-            draftCaption,
-            people: repository.people,
-            preferredPersonIDs: selectedMentionIDs
-        )
-        let parsedIDs = Set(MediaMentionToken.personIDs(in: canonicalCaption))
-        // The ID markers are now the source of truth. The selected picker ID
-        // disambiguates duplicate visible names before canonicalization.
-        let relatedIDs = parsedIDs.isEmpty ? Set([memory.person.id]) : parsedIDs
-        var updated = currentMedia
-        updated.personIDs = Array(relatedIDs).sorted()
+    private func saveCaptionEditing() throws {
+        guard repository.canEdit else { throw MediaUpdateError.editingUnavailable }
         let ownerID = repository.mediaOwnerID(for: currentMedia, preferredID: memory.person.id) ?? memory.person.id
-
-        // Persist the relationship links first. A localization sidecar is
-        // secondary; a failure to write a translated caption must never make
-        // a correctly selected @mention disappear from the person's profile.
-        var translationError: String?
-        do {
-            let sourceLanguage = repository.appLanguage
-            let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
-            try NarrativeLocalizationStore.shared.updateMediaCaption(
-                mediaID: currentMedia.id,
-                caption: canonicalCaption,
-                language: sourceLanguage
-            )
-            // Do not leave an old translation visible while the new one
-            // is being generated. It will be restored by the translation
-            // task below, or remain explicitly pending if translation is
-            // unavailable.
-            try NarrativeLocalizationStore.shared.updateMediaCaption(
-                mediaID: currentMedia.id,
-                caption: "",
-                language: targetLanguage
-            )
-        } catch {
-            translationError = error.localizedDescription
-        }
-        updated.caption = canonicalCaption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : canonicalCaption.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        repository.updateMedia(updated, for: ownerID)
-        NarrativeLocalizationStore.shared.reload()
+        let saved = try repository.saveMediaCaption(
+            draftCaption,
+            for: currentMedia,
+            ownerID: ownerID,
+            preferredPersonIDs: selectedMentionIDs,
+            date: currentMedia.date,
+            language: repository.appLanguage
+        )
         let sourceLanguage = repository.appLanguage
         if #available(iOS 26.0, *) {
             Task { @MainActor in
                 await repository.autoTranslateMediaCaption(
-                    canonicalCaption,
-                    mediaID: currentMedia.id,
-                    personIDs: Array(relatedIDs),
+                    saved.canonicalCaption,
+                    mediaID: saved.media.id,
+                    personIDs: Array(saved.personIDs),
                     from: sourceLanguage
                 )
             }
         }
-        if let translationError {
-            saveError = translationError
-        }
         isEditingCaption = false
-    }
-
-    private func personNameVariants(_ person: Person) -> [String] {
-        [person.displayName, person.sourceDisplayName, person.originalDisplayName]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        onCaptionSaved()
     }
 
     private func mentionedPersonIDs(in text: String) -> Set<Person.ID> {
@@ -4772,12 +4920,15 @@ struct MemoriesPagerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndex: Int
     @State private var selectedSlot = 1
+    @State private var isCaptionEditing = false
+    @State private var captionCommand: CaptionEditorCommand?
 
     init(items: [MemoryItem], initialID: String, repository: FamilyRepository) {
         self.items = items
         self.initialID = initialID
         self.repository = repository
         _selectedIndex = State(initialValue: items.firstIndex { $0.id == initialID } ?? 0)
+        _selectedSlot = State(initialValue: items.count > 1 ? 1 : 0)
     }
 
     /// Keep the pager's view tree bounded. The archive can contain hundreds
@@ -4806,13 +4957,30 @@ struct MemoriesPagerView: View {
                             // it as inactive prevents its image loader from
                             // ever starting and leaves an orange placeholder
                             // beside an otherwise valid caption.
-                            isActive: items.count == 1 ? true : slot == 1
+                            isActive: items.count == 1 ? true : slot == 1,
+                            captionCommand: $captionCommand,
+                            onCaptionEditingChanged: { editing in
+                                isCaptionEditing = editing
+                                resetPagerToCurrentSlot()
+                            },
+                            onCaptionSaved: {
+                                // Saving is an action on this media, not pager
+                                // navigation. Keep the exact image selected.
+                                selectedIndex = index
+                                resetPagerToCurrentSlot()
+                            }
                         )
+                            .id(items[index].id)
                             .tag(slot)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .automatic))
+                .scrollDisabled(isCaptionEditing)
                 .onChange(of: selectedSlot) { _, newSlot in
+                    guard !isCaptionEditing else {
+                        resetPagerToCurrentSlot()
+                        return
+                    }
                     guard items.count > 1 else { return }
                     switch newSlot {
                     case 0:
@@ -4829,7 +4997,23 @@ struct MemoriesPagerView: View {
                     }
                 }
 
-                HStack {
+                if isCaptionEditing {
+                    CaptionEditorActionBar(
+                        isSaving: false,
+                        onCancel: {
+                            guard let mediaID = currentMemoryID else { return }
+                            captionCommand = .cancel(mediaID: mediaID)
+                        },
+                        onSave: {
+                            guard let mediaID = currentMemoryID else { return }
+                            captionCommand = .save(mediaID: mediaID)
+                        }
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(ArchiveTheme.background)
+                } else {
+                    HStack {
                     Button {
                         guard !items.isEmpty else { return }
                         selectedIndex = (selectedIndex + items.count - 1) % items.count
@@ -4842,6 +5026,7 @@ struct MemoriesPagerView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(isCaptionEditing)
                     .accessibilityLabel("Previous memory")
 
                     Spacer()
@@ -4864,16 +5049,31 @@ struct MemoriesPagerView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(isCaptionEditing)
                     .accessibilityLabel("Next memory")
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(ArchiveTheme.background)
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-                .background(ArchiveTheme.background)
             }
             .foregroundStyle(ArchiveTheme.ink)
             .background(ArchiveTheme.background)
             .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    private func resetPagerToCurrentSlot() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedSlot = items.count > 1 ? 1 : 0
+        }
+    }
+
+    private var currentMemoryID: MediaReference.ID? {
+        guard items.indices.contains(selectedIndex) else { return nil }
+        return items[selectedIndex].media.id
     }
 
     private var memoriesTopBar: some View {

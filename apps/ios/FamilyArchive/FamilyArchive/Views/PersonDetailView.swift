@@ -3460,7 +3460,7 @@ private struct PersonMediaEditorView: View {
                                             .font(ArchiveTypography.metadata)
                                             .foregroundStyle(ArchiveTheme.metadata)
                                     }
-                                    Text("Related to \((item.personIDs ?? [person.id]).count) people")
+                                    Text("Related to \(MediaMentionToken.personIDs(in: item.caption ?? "").count) people")
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
@@ -3504,8 +3504,7 @@ struct MediaMetadataEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var caption: String
     @State private var date: String
-    @State private var relatedIDs: Set<Person.ID>
-    @State private var languageError: String?
+    @State private var selectedMentionIDs: Set<Person.ID>
     @State private var saveError: String?
 
     init(item: MediaReference, ownerID: Person.ID, repository: FamilyRepository) {
@@ -3523,8 +3522,7 @@ struct MediaMetadataEditor: View {
             language: repository.appLanguage
         ))
         _date = State(initialValue: item.date ?? "")
-        _relatedIDs = State(initialValue: Set(item.personIDs ?? [ownerID]))
-        _languageError = State(initialValue: nil)
+        _selectedMentionIDs = State(initialValue: Set(MediaMentionToken.personIDs(in: localizedCaption)))
         _saveError = State(initialValue: nil)
     }
 
@@ -3536,116 +3534,37 @@ struct MediaMetadataEditor: View {
         ArchiveCopy.text(english: "Date", russian: "Дата")
     }
 
-    private var relatedPeopleLabel: String {
-        ArchiveCopy.text(english: "People shown", russian: "Люди на фото")
-    }
-
     var body: some View {
         NavigationStack {
-            Form {
-                Section(captionLabel) {
-                    TextField(captionLabel, text: $caption, axis: .vertical)
-                        .lineLimit(2...5)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    MediaCaptionEditor(
+                        preview: repository.people.first(where: { $0.id == ownerID }).map {
+                            MemoryItem(person: $0, media: item)
+                        },
+                        showsActions: true,
+                        caption: $caption,
+                        selectedMentionIDs: $selectedMentionIDs,
+                        repository: repository,
+                        onCancel: { dismiss() },
+                        onSave: save
+                    )
+
+                    Text(dateLabel.uppercased())
+                        .font(ArchiveTypography.sectionTitle)
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.ink)
                     TextField(dateLabel, text: $date)
+                        .textFieldStyle(.roundedBorder)
                 }
-
-                Section {
-                    Text(ArchiveCopy.text(
-                        english: "Select everyone shown. The photo will appear on each selected profile.",
-                        russian: "Выберите всех, кто изображён. Фото появится в профиле каждого выбранного человека."
-                    ))
-                    .font(ArchiveTypography.metadata)
-                    .foregroundStyle(ArchiveTheme.metadata)
-
-                    ForEach(repository.people) { person in
-                        Toggle(isOn: Binding(
-                            get: { relatedIDs.contains(person.id) },
-                            set: { enabled in
-                                if enabled { relatedIDs.insert(person.id) }
-                                else if person.id != ownerID { relatedIDs.remove(person.id) }
-                            }
-                        )) {
-                            Text(person.displayName)
-                        }
-                    }
-                } header: {
-                    Text(relatedPeopleLabel)
-                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
             }
+            .scrollIndicators(.hidden)
+            .background(ArchiveTheme.background)
             .navigationTitle(ArchiveCopy.text(english: "Edit media", russian: "Изменить медиа"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена")) { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(ArchiveCopy.text(english: "Save", russian: "Сохранить")) {
-                        if let issue = ArchiveLanguageValidator.issue(
-                            language: repository.appLanguage,
-                            fields: [(captionLabel, caption)]
-                        ) {
-                            languageError = issue
-                            return
-                        }
-                        let canonicalCaption = MediaMentionToken.canonicalize(
-                            caption,
-                            people: repository.people,
-                            preferredPersonIDs: relatedIDs.union([ownerID])
-                        )
-                        var updated = item
-                        updated.date = date.trimmed.isEmpty ? nil : date.trimmed
-                        updated.personIDs = Array(relatedIDs.union([ownerID])).sorted()
-
-                        // Captions are centralized by media ID. Persist the
-                        // edited source locale once, clear the old target
-                        // translation immediately, and let the translator
-                        // fill that target locale below.
-                        do {
-                            let sourceLanguage = repository.appLanguage
-                            let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
-                            try NarrativeLocalizationStore.shared.updateMediaCaption(
-                                mediaID: item.id,
-                                caption: canonicalCaption,
-                                language: sourceLanguage
-                            )
-                            try NarrativeLocalizationStore.shared.updateMediaCaption(
-                                mediaID: item.id,
-                                caption: "",
-                                language: targetLanguage
-                            )
-                        } catch {
-                            saveError = error.localizedDescription
-                            return
-                        }
-                        // Keep the entered text on the media record as a
-                        // durable fallback, regardless of the current locale.
-                        updated.caption = canonicalCaption.trimmed.isEmpty ? nil : canonicalCaption.trimmed
-
-                        repository.updateMedia(updated, for: ownerID)
-                        NarrativeLocalizationStore.shared.reload()
-                        let sourceLanguage = repository.appLanguage
-                        if #available(iOS 26.0, *) {
-                            Task { @MainActor in
-                                await repository.autoTranslateMediaCaption(
-                                    canonicalCaption,
-                                    mediaID: item.id,
-                                    personIDs: updated.personIDs ?? [ownerID],
-                                    from: sourceLanguage
-                                )
-                            }
-                        }
-                        dismiss()
-                    }
-                }
-            }
-            .alert(repository.appLanguage == .russian ? "Проверка языка" : "Language check", isPresented: Binding(
-                get: { languageError != nil },
-                set: { if !$0 { languageError = nil } }
-            )) {
-                Button(repository.appLanguage == .russian ? "Хорошо" : "OK") { languageError = nil }
-            } message: {
-                Text(languageError ?? "")
-            }
             .alert(
                 ArchiveCopy.text(english: "Could not save media", russian: "Не удалось сохранить медиа"),
                 isPresented: Binding(
@@ -3658,6 +3577,30 @@ struct MediaMetadataEditor: View {
                 Text(saveError ?? "")
             }
         }
+    }
+
+    private func save() throws {
+        let saved = try repository.saveMediaCaption(
+            caption,
+            for: item,
+            ownerID: ownerID,
+            preferredPersonIDs: selectedMentionIDs,
+            date: date,
+            language: repository.appLanguage
+        )
+
+        let sourceLanguage = repository.appLanguage
+        if #available(iOS 26.0, *) {
+            Task { @MainActor in
+                await repository.autoTranslateMediaCaption(
+                    saved.canonicalCaption,
+                    mediaID: saved.media.id,
+                    personIDs: Array(saved.personIDs),
+                    from: sourceLanguage
+                )
+            }
+        }
+        dismiss()
     }
 }
 

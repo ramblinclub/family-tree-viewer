@@ -14,6 +14,33 @@ struct StagedMediaItem: Identifiable, Hashable {
     var id: String { url.path }
 }
 
+struct MediaMentionReviewItem: Identifiable, Hashable {
+    let media: MediaReference
+    let ownerID: Person.ID
+
+    var id: MediaReference.ID { media.id }
+}
+
+enum MediaUpdateError: LocalizedError {
+    case editingUnavailable
+    case mediaNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .editingUnavailable:
+            "This archive is read-only and cannot save media changes."
+        case .mediaNotFound:
+            "The media record could not be found, so its caption was not saved."
+        }
+    }
+}
+
+struct SavedMediaCaption {
+    let canonicalCaption: String
+    let personIDs: Set<Person.ID>
+    let media: MediaReference
+}
+
 /// The app's canonical private document store. Metadata is split into one
 /// file per person so an edit does not rewrite the complete family archive.
 /// Media and documents remain ordinary persistent files and are referenced by
@@ -174,19 +201,17 @@ private struct PrivateDocumentStore {
         readOnly: Bool = true
     ) throws {
         guard fileManager.fileExists(atPath: rootURL.path) else { throw StoreError.storeUnavailable }
-        if let document = try loadDocument() {
-            // Export is also a repair point for records created by older
-            // builds, before referenced assets were synchronized on save.
-            try copyReferencedAssetsIfNeeded(document: document)
-        }
+        guard let document = try loadDocument() else { throw ArchivePackageError.emptyArchive }
+        // Export is also a repair point for records created by older builds,
+        // before referenced assets were synchronized on save.
+        try copyReferencedAssetsIfNeeded(document: document)
 
         guard let preparedForPersonID else {
             try PrivateArchiveFile.write(directory: rootURL, to: destinationURL, fileManager: fileManager)
             return
         }
 
-        guard let document = try loadDocument(),
-              let preparedPerson = document.people.first(where: { $0.id == preparedForPersonID }) else {
+        guard let preparedPerson = document.people.first(where: { $0.id == preparedForPersonID }) else {
             throw StoreError.invalidAccountID
         }
 
@@ -299,10 +324,43 @@ private enum PrivateArchiveFile {
     private static let chunkSize = 1024 * 1024
 
     static func write(directory: URL, to destinationURL: URL, fileManager: FileManager) throws {
-        try? fileManager.removeItem(at: destinationURL)
-        fileManager.createFile(atPath: destinationURL.path, contents: nil)
-        let output = try FileHandle(forWritingTo: destinationURL)
-        defer { try? output.close() }
+        // A prepared archive inside app-owned temporary storage is not visible
+        // to the user. Write it there directly so large exports do not require
+        // a second full-size temporary copy before the system Files exporter
+        // publishes it.
+        let temporaryRoot = fileManager.temporaryDirectory.standardizedFileURL.path
+        let standardizedDestination = destinationURL.standardizedFileURL.path
+        if standardizedDestination.hasPrefix(temporaryRoot + "/") {
+            try writeContents(directory: directory, to: destinationURL, fileManager: fileManager)
+            return
+        }
+
+        // Build in app-owned temporary storage first. The Files exporter has
+        // already created a small placeholder at the selected destination;
+        // keeping it in place until this archive is complete prevents a
+        // cancelled or interrupted export from leaving a valid-looking FAR1
+        // header with no records.
+        let stagedURL = fileManager.temporaryDirectory
+            .appendingPathComponent("FamilyArchiveExport-\(UUID().uuidString)")
+            .appendingPathExtension("partial")
+        defer { try? fileManager.removeItem(at: stagedURL) }
+        try writeContents(directory: directory, to: stagedURL, fileManager: fileManager)
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: stagedURL)
+        } else {
+            try fileManager.copyItem(at: stagedURL, to: destinationURL)
+        }
+    }
+
+    private static func writeContents(directory: URL, to outputURL: URL, fileManager: FileManager) throws {
+        try? fileManager.removeItem(at: outputURL)
+        fileManager.createFile(atPath: outputURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: outputURL)
+        var didCloseOutput = false
+        defer {
+            if !didCloseOutput { try? output.close() }
+        }
         try output.write(contentsOf: magic)
 
         guard let enumerator = fileManager.enumerator(
@@ -311,6 +369,8 @@ private enum PrivateArchiveFile {
             options: [.skipsHiddenFiles]
         ) else { throw ArchivePackageError.documentsUnavailable }
 
+        var containsManifest = false
+        var personRecordCount = 0
         for case let fileURL as URL in enumerator {
             let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true else { continue }
@@ -318,6 +378,10 @@ private enum PrivateArchiveFile {
             guard !relativePath.isEmpty,
                   !relativePath.hasPrefix("/"),
                   !relativePath.split(separator: "/").contains("..") else { continue }
+            containsManifest = containsManifest || relativePath == "manifest.json"
+            if relativePath.hasPrefix("people/"), relativePath.hasSuffix(".json") {
+                personRecordCount += 1
+            }
             let pathData = Data(relativePath.utf8)
             let fileSize = UInt64(values.fileSize ?? 0)
             try output.write(contentsOf: uint64Data(UInt64(pathData.count)))
@@ -338,6 +402,13 @@ private enum PrivateArchiveFile {
                 }
             }
         }
+
+        guard containsManifest, personRecordCount > 0 else {
+            throw ArchivePackageError.emptyArchive
+        }
+        try output.synchronize()
+        try output.close()
+        didCloseOutput = true
     }
 
     static func isArchive(at url: URL) -> Bool {
@@ -357,6 +428,7 @@ private enum PrivateArchiveFile {
             throw ArchivePackageError.invalidZip
         }
 
+        var recordCount = 0
         while true {
             // Files-provider URLs can return a short read even when more bytes
             // are available. Read the fixed-size record header until complete,
@@ -389,7 +461,9 @@ private enum PrivateArchiveFile {
                     remaining -= UInt64(data.count)
                 }
             }
+            recordCount += 1
         }
+        guard recordCount > 0 else { throw ArchivePackageError.incompleteArchive }
     }
 
     private static func uint64Data(_ value: UInt64) -> Data {
@@ -501,51 +575,34 @@ final class FamilyRepository: ObservableObject {
         var updatedPeople = document.people
         var changedPersonIDs = Set<Person.ID>()
 
-        // Older imports copied a shared media record into every tagged
-        // person's JSON file. Preserve those record owners while upgrading
-        // captions to ID-backed tokens; deriving the list only from the
-        // caption can silently drop a valid profile when a visible name was
-        // ambiguous or partially tokenized (for example, duplicate Tatyana
-        // records).
-        var sharedRecordOwners: [MediaReference.ID: Set<Person.ID>] = [:]
-        for person in document.people {
-            for media in person.media {
-                // An explicit personIDs list is authoritative. Only infer
-                // tags from duplicate person files for truly legacy records
-                // that have no links; otherwise a stale duplicate copy can
-                // re-add a person that was intentionally untagged.
-                guard media.personIDs?.isEmpty != false else { continue }
-                sharedRecordOwners[media.id, default: []].insert(person.id)
-            }
-        }
-
         for personIndex in updatedPeople.indices {
             let person = updatedPeople[personIndex]
             var updatedMedia = person.media
             var personChanged = false
             for mediaIndex in updatedMedia.indices {
                 let media = updatedMedia[mediaIndex]
-                let canonical = MediaMentionToken.canonicalize(
-                    media.caption ?? "",
-                    people: document.people,
-                    preferredPersonIDs: Set(media.personIDs ?? [person.id])
-                )
-                let mentionedIDs = MediaMentionToken.personIDs(in: canonical)
-                var normalizedIDs = Set(media.personIDs ?? [person.id])
-                normalizedIDs.formUnion(mentionedIDs)
-                // If this legacy record exists in more than one person file,
-                // those files are the only available representation of its
-                // shared tags. Keep all of them while normalizing.
-                if (media.personIDs?.isEmpty ?? true),
-                   let owners = sharedRecordOwners[media.id], owners.count > 1 {
-                    normalizedIDs.formUnion(owners)
-                }
-                let sortedIDs = normalizedIDs.sorted()
+                let storedCaption = media.caption ?? ""
+                let canonical = MediaMentionToken.hasUnstructuredMention(in: storedCaption)
+                    ? MediaMentionToken.canonicalize(
+                        storedCaption,
+                        people: document.people,
+                        // The old index can resolve a legacy ambiguous visible
+                        // name during migration, but it is never retained unless
+                        // the resulting caption actually contains that token.
+                        preferredPersonIDs: Set(media.personIDs ?? [])
+                    )
+                    : storedCaption
+                let sortedIDs = MediaMentionToken.personIDs(in: canonical)
+                    .filter { peopleByID[$0] != nil }
+                    .sorted()
+                let needsReview = sortedIDs.isEmpty ? true : nil
                 let captionChanged = canonical != (media.caption ?? "")
                 let linksChanged = sortedIDs != (media.personIDs ?? []).sorted()
-                guard captionChanged || linksChanged else { continue }
+                let reviewChanged = media.needsMentionReview != needsReview
+                guard captionChanged || linksChanged || reviewChanged else { continue }
                 updatedMedia[mediaIndex].caption = canonical.isEmpty ? nil : canonical
                 updatedMedia[mediaIndex].personIDs = sortedIDs
+                updatedMedia[mediaIndex].needsMentionReview = needsReview
                 personChanged = true
             }
             if personChanged {
@@ -738,14 +795,11 @@ final class FamilyRepository: ObservableObject {
         guard canEdit else { return "" }
         let sourceURL = item.url.standardizedFileURL
         let fileManager = privateStore.fileManager
-        guard fileManager.fileExists(atPath: sourceURL.path), !personIDs.isEmpty else {
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw StagedMediaError.invalidReview
         }
 
-        let uniquePersonIDs = Array(Set(personIDs)).sorted()
-        guard uniquePersonIDs.allSatisfy({ peopleByID[$0] != nil }) else {
-            throw StagedMediaError.invalidReview
-        }
+        let selectedPersonIDs = Set(personIDs.filter { peopleByID[$0] != nil })
 
         let mediaID = "media-\(UUID().uuidString.lowercased())"
         let extensionName = sourceURL.pathExtension.isEmpty ? "bin" : sourceURL.pathExtension.lowercased()
@@ -757,8 +811,12 @@ final class FamilyRepository: ObservableObject {
         let cleanedCaption = MediaMentionToken.canonicalize(
             caption.trimmingCharacters(in: .whitespacesAndNewlines),
             people: document.people,
-            preferredPersonIDs: Set(uniquePersonIDs)
+            preferredPersonIDs: selectedPersonIDs
         )
+        let uniquePersonIDs = Array(Set(
+            MediaMentionToken.personIDs(in: cleanedCaption).filter { peopleByID[$0] != nil }
+        )).sorted()
+        guard !uniquePersonIDs.isEmpty else { throw StagedMediaError.invalidReview }
         let cleanedDate = date?.trimmingCharacters(in: .whitespacesAndNewlines)
         let media = MediaReference(
             id: mediaID,
@@ -775,6 +833,7 @@ final class FamilyRepository: ObservableObject {
             tags: nil,
             collection: nil,
             isApproximate: isApproximate ? true : nil,
+            needsMentionReview: nil,
             personIDs: uniquePersonIDs
         )
 
@@ -852,9 +911,10 @@ final class FamilyRepository: ObservableObject {
     ) async {
         let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
         let normalizedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedIDs = Set(personIDs)
         guard let currentMedia = mediaItem(withID: mediaID),
               currentMedia.caption?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCaption,
-              !Set(currentMedia.personIDs ?? []).intersection(personIDs).isEmpty else { return }
+              !Set(MediaMentionToken.personIDs(in: currentMedia.caption ?? "")).intersection(expectedIDs).isEmpty else { return }
 
         let source = Locale.Language(identifier: sourceLanguage.rawValue)
         let target = Locale.Language(identifier: targetLanguage.rawValue)
@@ -873,7 +933,7 @@ final class FamilyRepository: ObservableObject {
             // may have edited or removed the media while the model ran.
             guard let latestMedia = mediaItem(withID: mediaID),
                   latestMedia.caption?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCaption,
-                  !Set(latestMedia.personIDs ?? []).intersection(personIDs).isEmpty else { return }
+                  !Set(MediaMentionToken.personIDs(in: latestMedia.caption ?? "")).intersection(expectedIDs).isEmpty else { return }
 
             try NarrativeLocalizationStore.shared.updateMediaCaption(
                 mediaID: mediaID,
@@ -1062,11 +1122,29 @@ final class FamilyRepository: ObservableObject {
         var seen = Set<String>()
         for owner in document.people {
             for item in owner.media {
-                let belongsToPerson = item.personIDs?.contains(personID) == true ||
-                    (item.personIDs == nil && owner.id == personID)
+                let belongsToPerson = MediaMentionToken.personIDs(in: item.caption ?? "").contains(personID)
                 let identity = item.path ?? item.id
                 guard belongsToPerson, seen.insert(identity).inserted else { continue }
                 result.append(item)
+            }
+        }
+        return result
+    }
+
+    /// Saved media without a caption mention is intentionally absent from
+    /// every profile and gallery. It remains reachable here so the user can
+    /// add the missing mention or delete the record.
+    func mediaNeedingMentionReview() -> [MediaMentionReviewItem] {
+        var seen = Set<String>()
+        var result: [MediaMentionReviewItem] = []
+        for owner in document.people {
+            for item in owner.media {
+                let identity = item.path ?? item.id
+                guard seen.insert(identity).inserted else { continue }
+                let validMentions = MediaMentionToken.personIDs(in: item.caption ?? "")
+                    .contains { peopleByID[$0] != nil }
+                guard item.needsMentionReview == true || !validMentions else { continue }
+                result.append(MediaMentionReviewItem(media: item, ownerID: owner.id))
             }
         }
         return result
@@ -1255,8 +1333,9 @@ final class FamilyRepository: ObservableObject {
         replaceDocument(people: people, changedPersonIDs: [person.id])
     }
 
-    func updateMedia(_ item: MediaReference, for ownerID: Person.ID) {
-        guard canEdit else { return }
+    @discardableResult
+    func updateMedia(_ item: MediaReference, for ownerID: Person.ID) throws -> MediaReference {
+        guard canEdit else { throw MediaUpdateError.editingUnavailable }
         var people = document.people
         // A shared media item may be opened from any tagged profile. Resolve
         // the physical record by ID, then update every tagged profile from
@@ -1265,23 +1344,26 @@ final class FamilyRepository: ObservableObject {
         guard let ownerIndex = people.firstIndex(where: { person in
             person.media.contains(where: { $0.id == item.id })
         }),
-        let mediaIndex = people[ownerIndex].media.firstIndex(where: { $0.id == item.id }) else { return }
+        let mediaIndex = people[ownerIndex].media.firstIndex(where: { $0.id == item.id }) else {
+            throw MediaUpdateError.mediaNotFound
+        }
 
-        let previousIDs = Set(people.compactMap { person in
-            person.media.first(where: { $0.id == item.id })?.personIDs ??
-                (person.media.contains(where: { $0.id == item.id }) ? [person.id] : nil)
-        }.flatMap { $0 })
-        let updatedIDs = Set(item.personIDs ?? [ownerID])
-        guard !updatedIDs.isEmpty else { return }
+        let previousIDs = Set(people.flatMap { person in
+            person.media
+                .filter { $0.id == item.id }
+                .flatMap { MediaMentionToken.personIDs(in: $0.caption ?? "") }
+        })
         var updatedItem = item
-        updatedItem.personIDs = Array(updatedIDs).sorted()
         let canonicalCaption = MediaMentionToken.canonicalize(
             item.caption ?? "",
             people: people,
-            preferredPersonIDs: updatedIDs
+            preferredPersonIDs: Set(item.personIDs ?? [])
         )
+        let updatedIDs = Set(MediaMentionToken.personIDs(in: canonicalCaption).filter { peopleByID[$0] != nil })
+        updatedItem.personIDs = Array(updatedIDs).sorted()
+        updatedItem.needsMentionReview = updatedIDs.isEmpty ? true : nil
         updatedItem.caption = canonicalCaption.isEmpty ? nil : canonicalCaption
-        var changedIDs = updatedIDs.union(previousIDs)
+        var changedIDs = updatedIDs.union(previousIDs).union([people[ownerIndex].id, ownerID])
 
         for index in people.indices {
             if index == ownerIndex {
@@ -1292,19 +1374,13 @@ final class FamilyRepository: ObservableObject {
                 } else {
                     people[index].media.append(updatedItem)
                 }
-            } else if previousIDs.contains(people[index].id) {
+            } else if people[index].media.contains(where: { $0.id == item.id }) {
                 people[index].media.removeAll { $0.id == item.id }
-                // If this asset had been selected as that person's profile
-                // image, unlink it as well. Otherwise a corrected @mention
-                // would still leave the photo visible at the old profile.
-                if people[index].profileImagePath == item.path {
-                    changedIDs.insert(people[index].id)
-                    people[index].profileImagePath = nil
-                    people[index].profileImageScale = nil
-                    people[index].profileImageOffsetX = nil
-                    people[index].profileImageOffsetY = nil
-                }
-            } else if people[index].profileImagePath == item.path {
+            }
+
+            // A profile image is valid only while that profile is mentioned
+            // in the caption of the asset.
+            if !updatedIDs.contains(people[index].id), people[index].profileImagePath == item.path {
                 changedIDs.insert(people[index].id)
                 people[index].profileImagePath = nil
                 people[index].profileImageScale = nil
@@ -1312,8 +1388,72 @@ final class FamilyRepository: ObservableObject {
                 people[index].profileImageOffsetY = nil
             }
         }
-        replaceDocument(people: people, changedPersonIDs: changedIDs)
+        let updatedDocument = FamilyArchiveDocument(
+            schemaVersion: document.schemaVersion,
+            title: document.title,
+            accountHolderID: document.accountHolderID,
+            people: people
+        )
+        // Persist before publishing the new document. The old implementation
+        // discarded write errors, allowing the UI to appear saved while the
+        // archive on disk remained unchanged.
+        try privateStore.save(
+            document: updatedDocument,
+            changedPersonIDs: changedIDs,
+            rebuildGEDCOM: true
+        )
+        applyDocument(updatedDocument, changedPersonIDs: changedIDs)
+        return updatedItem
+    }
 
+    /// The one persistence operation used by every caption editor. The
+    /// visible text is converted to immutable person-ID tokens, written to the
+    /// private archive, then mirrored to the optional localization sidecar.
+    func saveMediaCaption(
+        _ visibleCaption: String,
+        for item: MediaReference,
+        ownerID: Person.ID,
+        preferredPersonIDs: Set<Person.ID>,
+        date: String?,
+        language: ArchiveLanguage
+    ) throws -> SavedMediaCaption {
+        let canonicalCaption = MediaMentionToken.canonicalize(
+            visibleCaption,
+            people: document.people,
+            preferredPersonIDs: preferredPersonIDs
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let personIDs = Set(MediaMentionToken.personIDs(in: canonicalCaption))
+        let cleanedDate = date?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        var updated = item
+        updated.caption = canonicalCaption.isEmpty ? nil : canonicalCaption
+        updated.date = cleanedDate.isEmpty ? nil : cleanedDate
+        updated.personIDs = Array(personIDs).sorted()
+        updated.needsMentionReview = personIDs.isEmpty ? true : nil
+        let savedMedia = try updateMedia(updated, for: ownerID)
+
+        // Localization is a secondary presentation index. A sidecar problem
+        // must not undo or conceal a caption already saved in the archive.
+        let targetLanguage: ArchiveLanguage = language == .english ? .russian : .english
+        try? NarrativeLocalizationStore.shared.updateMediaCaption(
+            mediaID: item.id,
+            caption: canonicalCaption,
+            language: language,
+            fileManager: privateStore.fileManager
+        )
+        try? NarrativeLocalizationStore.shared.updateMediaCaption(
+            mediaID: item.id,
+            caption: "",
+            language: targetLanguage,
+            fileManager: privateStore.fileManager
+        )
+        NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
+
+        return SavedMediaCaption(
+            canonicalCaption: canonicalCaption,
+            personIDs: personIDs,
+            media: savedMedia
+        )
     }
 
     func removeMedia(_ item: MediaReference, from ownerID: Person.ID) {
@@ -1324,7 +1464,11 @@ final class FamilyRepository: ObservableObject {
         // delete from a linked profile would silently do nothing.
         guard let resolvedOwnerID = mediaOwnerID(for: item, preferredID: ownerID),
               let ownerIndex = people.firstIndex(where: { $0.id == resolvedOwnerID }) else { return }
-        let relatedIDs = Set(item.personIDs ?? [resolvedOwnerID])
+        let relatedIDs = Set(people.flatMap { person in
+            person.media
+                .filter { $0.id == item.id }
+                .flatMap { MediaMentionToken.personIDs(in: $0.caption ?? "") }
+        })
         people[ownerIndex].media.removeAll { $0.id == item.id }
         for index in people.indices where relatedIDs.contains(people[index].id) || people[index].id == resolvedOwnerID {
             people[index].media.removeAll { $0.id == item.id }
@@ -1381,28 +1525,36 @@ final class FamilyRepository: ObservableObject {
     }
 
     private func replaceDocument(people: [Person], changedPersonIDs: Set<Person.ID> = []) {
-        let previousPeopleByID = peopleByID
-        let profileImageChanged = changedPersonIDs.contains { personID in
-            guard let previous = previousPeopleByID[personID],
-                  let updated = people.first(where: { $0.id == personID }) else { return false }
-            return previous.profileImagePath != updated.profileImagePath ||
-                previous.profileImageScale != updated.profileImageScale ||
-                previous.profileImageOffsetX != updated.profileImageOffsetX ||
-                previous.profileImageOffsetY != updated.profileImageOffsetY
-        }
-        document = FamilyArchiveDocument(
+        let updatedDocument = FamilyArchiveDocument(
             schemaVersion: document.schemaVersion,
             title: document.title,
             accountHolderID: document.accountHolderID,
             people: people
         )
-        peopleByID = Dictionary(uniqueKeysWithValues: people.map { ($0.id, $0) })
+        applyDocument(updatedDocument, changedPersonIDs: changedPersonIDs)
+        try? privateStore.save(document: updatedDocument, changedPersonIDs: changedPersonIDs, rebuildGEDCOM: true)
+    }
+
+    private func applyDocument(
+        _ updatedDocument: FamilyArchiveDocument,
+        changedPersonIDs: Set<Person.ID>
+    ) {
+        let previousPeopleByID = peopleByID
+        let profileImageChanged = changedPersonIDs.contains { personID in
+            guard let previous = previousPeopleByID[personID],
+                  let updated = updatedDocument.people.first(where: { $0.id == personID }) else { return false }
+            return previous.profileImagePath != updated.profileImagePath ||
+                previous.profileImageScale != updated.profileImageScale ||
+                previous.profileImageOffsetX != updated.profileImageOffsetX ||
+                previous.profileImageOffsetY != updated.profileImageOffsetY
+        }
+        document = updatedDocument
+        peopleByID = Dictionary(uniqueKeysWithValues: updatedDocument.people.map { ($0.id, $0) })
         profilePhotoPathCache.removeAll()
         coloredPhotoCache.removeAll()
         if profileImageChanged {
             ArchiveFileResolver.invalidateImages()
         }
-        try? privateStore.save(document: document, changedPersonIDs: changedPersonIDs, rebuildGEDCOM: true)
     }
 
     /// Legacy ZIP export retained for compatibility with packages created by
@@ -1491,6 +1643,9 @@ final class FamilyRepository: ObservableObject {
             return try previewPrivateArchive(at: stagingURL, fileManager: fileManager)
         }
         if url.hasDirectoryPath || fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
+            guard fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) else {
+                throw ArchivePackageError.incompleteArchive
+            }
             let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
             guard let document = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
             let handoff = readAccountHandoff(at: url, fileManager: fileManager)
@@ -1511,6 +1666,9 @@ final class FamilyRepository: ObservableObject {
             return try importPrivateArchive(at: stagingURL, fileManager: fileManager)
         }
         if url.hasDirectoryPath || fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
+            guard fileManager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) else {
+                throw ArchivePackageError.incompleteArchive
+            }
             let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
             guard let importedDocument = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
             let handoff = readAccountHandoff(at: url, fileManager: fileManager)
@@ -1740,6 +1898,7 @@ struct ArchivePackageSummary: Identifiable {
 enum ArchivePackageError: LocalizedError {
     case missingArchiveJSON
     case emptyArchive
+    case incompleteArchive
     case documentsUnavailable
     case unsupportedZip
     case invalidZip
@@ -1748,6 +1907,7 @@ enum ArchivePackageError: LocalizedError {
         switch self {
         case .missingArchiveJSON: "The package does not contain family-archive.json."
         case .emptyArchive: "The package contains no people."
+        case .incompleteArchive: "The private archive is incomplete. Export it again and wait for ‘Private archive saved.’ before importing."
         case .documentsUnavailable: "The app could not access its private Documents folder."
         case .unsupportedZip: "This archive uses a compression format the app cannot read yet."
         case .invalidZip: "The private archive is damaged or invalid."
@@ -1938,7 +2098,9 @@ private struct GEDCOMExporter {
             finalLines.append(line)
             if line.hasSuffix(" INDI"), let id = line.split(separator: "@").dropFirst().first.map(String.init), peopleByID[id] != nil {
                 let paths = document.people.flatMap { owner in
-                    owner.media.filter { $0.kind == .photo && ($0.personIDs ?? [owner.id]).contains(id) }.compactMap(\.path)
+                    owner.media.filter {
+                        $0.kind == .photo && MediaMentionToken.personIDs(in: $0.caption ?? "").contains(id)
+                    }.compactMap(\.path)
                 }
                 for path in Set(paths).sorted() {
                     if let object = mediaObjects.first(where: { $0.path == path }) { finalLines.append("1 OBJE @\(object.id)@") }
