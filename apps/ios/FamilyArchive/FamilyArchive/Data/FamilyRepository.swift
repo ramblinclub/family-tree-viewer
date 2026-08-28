@@ -161,6 +161,33 @@ private struct PrivateDocumentStore {
         // visible in the app but are absent from the exported store archive.
         try copyReferencedAssetsIfNeeded(document: document)
 
+        try writeMetadata(
+            document: document,
+            changedPersonIDs: changedPersonIDs,
+            rebuildGEDCOM: rebuildGEDCOM
+        )
+    }
+
+    /// Repairs a missing or stale store index from the repository's current
+    /// in-memory document before export. This is intentionally metadata-only:
+    /// exportArchive synchronizes referenced assets immediately afterward.
+    func synchronizeMetadataForExport(document: FamilyArchiveDocument) throws {
+        guard !document.people.isEmpty else { throw ArchivePackageError.emptyArchive }
+        try fileManager.createDirectory(at: peopleURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: privateDataURL, withIntermediateDirectories: true)
+        try writeMetadata(
+            document: document,
+            changedPersonIDs: Set(document.people.map(\.id)),
+            rebuildGEDCOM: true
+        )
+    }
+
+    private func writeMetadata(
+        document: FamilyArchiveDocument,
+        changedPersonIDs: Set<Person.ID>,
+        rebuildGEDCOM: Bool
+    ) throws {
+
         let peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
         let idsToWrite = changedPersonIDs.isEmpty ? Set(peopleByID.keys) : changedPersonIDs
         for personID in idsToWrite {
@@ -386,12 +413,15 @@ private enum PrivateArchiveFile {
             options: [.skipsHiddenFiles]
         ) else { throw ArchivePackageError.documentsUnavailable }
 
+        let resolvedDirectoryPath = directory.resolvingSymlinksInPath().standardizedFileURL.path
         var containsManifest = false
         var personRecordCount = 0
         for case let fileURL as URL in enumerator {
             let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true else { continue }
-            let relativePath = fileURL.path.replacingOccurrences(of: directory.path + "/", with: "")
+            let resolvedFilePath = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolvedFilePath.hasPrefix(resolvedDirectoryPath + "/") else { continue }
+            let relativePath = String(resolvedFilePath.dropFirst(resolvedDirectoryPath.count + 1))
             guard !relativePath.isEmpty,
                   !relativePath.hasPrefix("/"),
                   !relativePath.split(separator: "/").contains("..") else { continue }
@@ -561,18 +591,19 @@ final class FamilyRepository: ObservableObject {
     }
 
     init(document: FamilyArchiveDocument, fileManager: FileManager = .default) {
-        self.document = document
+        let coreEventMigration = document.canonicalizingCoreEvents()
+        self.document = coreEventMigration.document
         self.privateStore = PrivateDocumentStore(fileManager: fileManager)
-        self.activeAccountID = document.accountHolderID
+        self.activeAccountID = coreEventMigration.document.accountHolderID
         self.isReadOnly = UserDefaults.standard.bool(forKey: Self.readOnlyModeKey)
         self.appLanguage = ArchiveLanguage(
             rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue
         ) ?? .russian
-        peopleByID = Dictionary(uniqueKeysWithValues: document.people.map { ($0.id, $0) })
+        peopleByID = Dictionary(uniqueKeysWithValues: coreEventMigration.document.people.map { ($0.id, $0) })
         if let savedID = UserDefaults.standard.string(forKey: Self.activeAccountIDKey),
            peopleByID[savedID] != nil {
             activeAccountID = savedID
-        } else if let documentAccountID = document.accountHolderID,
+        } else if let documentAccountID = coreEventMigration.document.accountHolderID,
                   peopleByID[documentAccountID] != nil {
             activeAccountID = documentAccountID
             UserDefaults.standard.set(documentAccountID, forKey: Self.activeAccountIDKey)
@@ -581,6 +612,13 @@ final class FamilyRepository: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.activeAccountIDKey)
         }
         NameLocalizationStore.shared.reload()
+        if !coreEventMigration.changedPersonIDs.isEmpty {
+            try? privateStore.save(
+                document: coreEventMigration.document,
+                changedPersonIDs: coreEventMigration.changedPersonIDs,
+                rebuildGEDCOM: true
+            )
+        }
         normalizeMediaMentionStorage()
     }
 
@@ -1374,7 +1412,7 @@ final class FamilyRepository: ObservableObject {
         guard canEdit else { return }
         var people = document.people
         guard let index = people.firstIndex(where: { $0.id == person.id }) else { return }
-        people[index] = person
+        people[index] = person.canonicalizingCoreEvents().person
         replaceDocument(people: people, changedPersonIDs: [person.id])
     }
 
@@ -1571,15 +1609,18 @@ final class FamilyRepository: ObservableObject {
     }
 
     private func replaceDocument(people: [Person], changedPersonIDs: Set<Person.ID> = []) {
-        let updatedDocument = FamilyArchiveDocument(
+        let proposedDocument = FamilyArchiveDocument(
             schemaVersion: document.schemaVersion,
             title: document.title,
             accountHolderID: document.accountHolderID,
             people: people,
             familyUnions: document.familyUnions
         )
-        applyDocument(updatedDocument, changedPersonIDs: changedPersonIDs)
-        try? privateStore.save(document: updatedDocument, changedPersonIDs: changedPersonIDs, rebuildGEDCOM: true)
+        let normalization = proposedDocument.canonicalizingCoreEvents()
+        let updatedDocument = normalization.document
+        let allChangedPersonIDs = changedPersonIDs.union(normalization.changedPersonIDs)
+        applyDocument(updatedDocument, changedPersonIDs: allChangedPersonIDs)
+        try? privateStore.save(document: updatedDocument, changedPersonIDs: allChangedPersonIDs, rebuildGEDCOM: true)
     }
 
     private func applyDocument(
@@ -1625,6 +1666,7 @@ final class FamilyRepository: ObservableObject {
         readOnly: Bool = true,
         fileManager: FileManager = .default
     ) throws {
+        try privateStore.synchronizeMetadataForExport(document: document)
         try privateStore.exportArchive(
             to: destinationURL,
             preparedForPersonID: preparedForPersonID,
@@ -1717,7 +1759,8 @@ final class FamilyRepository: ObservableObject {
                 throw ArchivePackageError.incompleteArchive
             }
             let sourceStore = PrivateDocumentStore(rootURL: url, fileManager: fileManager)
-            guard let importedDocument = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
+            guard let decodedDocument = try sourceStore.loadDocument() else { throw ArchivePackageError.emptyArchive }
+            let importedDocument = decodedDocument.canonicalizingCoreEvents().document
             let handoff = readAccountHandoff(at: url, fileManager: fileManager)
             // Keep the imported media and documents inside the canonical
             // private store so a later export remains complete. The mirrored
@@ -1795,7 +1838,8 @@ final class FamilyRepository: ObservableObject {
         let handoff = entries[PrivateDocumentStore.accountHandoffFilename].flatMap {
             try? JSONDecoder.archive.decode(PrivateDocumentStore.AccountHandoff.self, from: $0)
         }
-        let importedDocument = try JSONDecoder().decode(FamilyArchiveDocument.self, from: archiveData)
+        let decodedDocument = try JSONDecoder().decode(FamilyArchiveDocument.self, from: archiveData)
+        let importedDocument = decodedDocument.canonicalizingCoreEvents().document
         guard !importedDocument.people.isEmpty else { throw ArchivePackageError.emptyArchive }
 
         guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -1854,7 +1898,7 @@ final class FamilyRepository: ObservableObject {
             let data = try Data(contentsOf: url)
             let document = try JSONDecoder().decode(FamilyArchiveDocument.self, from: data)
             let repository = FamilyRepository(document: document, fileManager: fileManager)
-            try? repository.privateStore.bootstrap(document: document)
+            try? repository.privateStore.bootstrap(document: repository.document)
             return repository
         } catch {
             assertionFailure("Unable to load bundled family data: \(error)")
@@ -1878,7 +1922,7 @@ final class FamilyRepository: ObservableObject {
             if let data = try? Data(contentsOf: localURL),
                let document = try? JSONDecoder().decode(FamilyArchiveDocument.self, from: data) {
                 let repository = FamilyRepository(document: document, fileManager: fileManager)
-                try? repository.privateStore.bootstrap(document: document)
+                try? repository.privateStore.bootstrap(document: repository.document)
                 return repository
             }
         }

@@ -978,6 +978,25 @@ struct FamilyUnion: Codable, Identifiable, Hashable {
 }
 
 extension FamilyArchiveDocument {
+    func canonicalizingCoreEvents() -> (document: FamilyArchiveDocument, changedPersonIDs: Set<Person.ID>) {
+        var changedPersonIDs = Set<Person.ID>()
+        let normalizedPeople = people.map { person in
+            let result = person.canonicalizingCoreEvents()
+            if result.changed { changedPersonIDs.insert(person.id) }
+            return result.person
+        }
+        return (
+            FamilyArchiveDocument(
+                schemaVersion: schemaVersion,
+                title: title,
+                accountHolderID: accountHolderID,
+                people: normalizedPeople,
+                familyUnions: familyUnions
+            ),
+            changedPersonIDs
+        )
+    }
+
     /// Explicit unions are authoritative. Legacy documents get a conservative
     /// best-effort projection that refuses to invent pairings for a child with
     /// more than two recorded parents.
@@ -1129,7 +1148,8 @@ struct Person: Codable, Identifiable, Hashable {
     }
 
     var isLiving: Bool {
-        lifespan.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("–") ||
+        guard !structuredEvents.contains(where: { $0.coreCategory == .death }) else { return false }
+        return lifespan.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("–") ||
             lifespan.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("-")
     }
 
@@ -1153,12 +1173,89 @@ struct Person: Codable, Identifiable, Hashable {
         }
     }
 
+    var birthEvent: LifeEvent? {
+        structuredEvents.first { $0.coreCategory == .birth }
+    }
+
+    var deathEvent: LifeEvent? {
+        structuredEvents.first { $0.coreCategory == .death }
+    }
+
+    /// Birth and death are canonical life events. Returning a fact-shaped
+    /// projection keeps older list, tree, and GEDCOM consumers simple without
+    /// storing a second editable copy of the same event.
     var birthFact: PersonFact? {
-        facts.first { $0.label.localizedCaseInsensitiveContains("born") || $0.label.localizedCaseInsensitiveContains("birth") }
+        birthEvent.map { $0.factProjection(for: .birth) }
+            ?? facts.first { $0.coreEventCategory == .birth }
     }
 
     var deathFact: PersonFact? {
-        facts.first { $0.label.localizedCaseInsensitiveContains("died") || $0.label.localizedCaseInsensitiveContains("death") }
+        deathEvent.map { $0.factProjection(for: .death) }
+            ?? facts.first { $0.coreEventCategory == .death }
+    }
+
+    /// Converts legacy birth/death facts and mislabeled birth/death events into
+    /// one canonical event per kind. Other facts remain untouched.
+    func canonicalizingCoreEvents() -> (person: Person, changed: Bool) {
+        var updated = self
+        var events = structuredEvents
+        var changed = false
+
+        for category in [LifeEventCategory.birth, .death] {
+            let matchingFacts = updated.facts.filter { $0.coreEventCategory == category }
+            let matchingEventIndexes = events.indices.filter { events[$0].coreCategory == category }
+
+            if let canonicalIndex = matchingEventIndexes.first {
+                var canonical = events[canonicalIndex]
+                if canonical.category != category.rawValue {
+                    canonical.category = category.rawValue
+                    changed = true
+                }
+
+                for index in matchingEventIndexes.dropFirst() {
+                    canonical.mergeMissingValues(from: events[index])
+                    changed = true
+                }
+                for fact in matchingFacts {
+                    canonical.mergeValues(from: fact)
+                }
+                if canonical.sortKey == nil {
+                    canonical.sortKey = LifeEvent.sortKey(for: canonical.date)
+                }
+                events[canonicalIndex] = canonical
+
+                if matchingEventIndexes.count > 1 {
+                    let duplicateIDs = Set(matchingEventIndexes.dropFirst().map { events[$0].id })
+                    events.removeAll { duplicateIDs.contains($0.id) }
+                }
+            } else if let fact = matchingFacts.first {
+                events.append(LifeEvent(
+                    id: "\(fact.id)-event",
+                    date: fact.value,
+                    sortKey: LifeEvent.sortKey(for: fact.value),
+                    title: category.defaultTitle,
+                    summary: "",
+                    place: fact.place,
+                    category: category.rawValue,
+                    isApproximate: fact.isApproximate,
+                    sourceIDs: fact.sourceIDs,
+                    titleTranslations: fact.labelTranslations,
+                    summaryTranslations: nil
+                ))
+                changed = true
+            }
+
+            if !matchingFacts.isEmpty {
+                updated.facts.removeAll { $0.coreEventCategory == category }
+                changed = true
+            }
+        }
+
+        if events != structuredEvents {
+            updated.events = events
+            changed = true
+        }
+        return (updated, changed)
     }
 }
 
@@ -1191,6 +1288,62 @@ struct PersonFact: Codable, Identifiable, Hashable {
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return values?[language.rawValue].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
     }
+
+    var coreEventCategory: LifeEventCategory? {
+        LifeEventCategory.coreCategory(for: label)
+    }
+}
+
+enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
+    case birth
+    case death
+    case family
+    case residence
+    case education
+    case career
+    case military
+    case migration
+    case burial
+    case life
+    case other
+
+    var id: String { rawValue }
+
+    var defaultTitle: String {
+        switch self {
+        case .birth: "Born"
+        case .death: "Died"
+        default: ""
+        }
+    }
+
+    var localizedLabel: String {
+        switch self {
+        case .birth: ArchiveCopy.text(english: "Birth", russian: "Рождение")
+        case .death: ArchiveCopy.text(english: "Death", russian: "Смерть")
+        case .family: ArchiveCopy.text(english: "Family", russian: "Семья")
+        case .residence: ArchiveCopy.text(english: "Residence", russian: "Место жительства")
+        case .education: ArchiveCopy.text(english: "Education", russian: "Образование")
+        case .career: ArchiveCopy.text(english: "Career", russian: "Карьера")
+        case .military: ArchiveCopy.text(english: "Military service", russian: "Военная служба")
+        case .migration: ArchiveCopy.text(english: "Migration", russian: "Переезд")
+        case .burial: ArchiveCopy.text(english: "Burial", russian: "Захоронение")
+        case .life: ArchiveCopy.text(english: "Life", russian: "Жизнь")
+        case .other: ArchiveCopy.text(english: "Other", russian: "Другое")
+        }
+    }
+
+    static func coreCategory(for value: String) -> LifeEventCategory? {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: ".", with: "")
+        let birthLabels: Set<String> = ["birth", "born", "рождение", "родился", "родилась"]
+        let deathLabels: Set<String> = ["death", "died", "смерть", "умер", "умерла", "погиб", "погибла"]
+        if birthLabels.contains(normalized) { return .birth }
+        if deathLabels.contains(normalized) { return .death }
+        return nil
+    }
 }
 
 struct LifeEvent: Codable, Identifiable, Hashable {
@@ -1220,6 +1373,65 @@ struct LifeEvent: Codable, Identifiable, Hashable {
     private func localized(_ values: [String: String]?, fallback: String) -> String {
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
         return values?[language.rawValue].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+    }
+
+    var coreCategory: LifeEventCategory? {
+        if category.lowercased() == LifeEventCategory.birth.rawValue { return .birth }
+        if category.lowercased() == LifeEventCategory.death.rawValue { return .death }
+        return LifeEventCategory.coreCategory(for: title)
+    }
+
+    func factProjection(for category: LifeEventCategory) -> PersonFact {
+        PersonFact(
+            id: id,
+            label: category.defaultTitle,
+            value: date,
+            place: place,
+            isApproximate: isApproximate,
+            sourceIDs: sourceIDs,
+            labelTranslations: titleTranslations,
+            valueTranslations: nil
+        )
+    }
+
+    static func sortKey(for value: String) -> Int? {
+        let years = value
+            .split(whereSeparator: { !$0.isNumber })
+            .compactMap { Int($0) }
+            .filter { (1000...2100).contains($0) }
+        return years.first.map { $0 * 10_000 }
+    }
+
+    mutating func mergeValues(from fact: PersonFact) {
+        if date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            date = fact.value
+        }
+        place = richer(place, fact.place)
+        isApproximate = isApproximate ?? fact.isApproximate
+        sourceIDs = merged(sourceIDs, fact.sourceIDs)
+        if titleTranslations == nil { titleTranslations = fact.labelTranslations }
+    }
+
+    mutating func mergeMissingValues(from event: LifeEvent) {
+        if date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { date = event.date }
+        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { title = event.title }
+        if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { summary = event.summary }
+        place = richer(place, event.place)
+        isApproximate = isApproximate ?? event.isApproximate
+        sourceIDs = merged(sourceIDs, event.sourceIDs)
+        titleTranslations = titleTranslations ?? event.titleTranslations
+        summaryTranslations = summaryTranslations ?? event.summaryTranslations
+    }
+
+    private func richer(_ left: String?, _ right: String?) -> String? {
+        let leftValue = left?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rightValue = right?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return rightValue.count > leftValue.count ? right : left
+    }
+
+    private func merged(_ left: [String]?, _ right: [String]?) -> [String]? {
+        let values = Array(Set((left ?? []) + (right ?? []))).sorted()
+        return values.isEmpty ? nil : values
     }
 }
 

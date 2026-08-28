@@ -889,12 +889,12 @@ struct PersonDetailView: View {
     }
 
     private var timelineEvents: [LifeEvent] {
-        person.orderedEvents.filter { $0.category != "birth" && $0.category != "death" }
+        person.orderedEvents
     }
 
     private var timelineEntries: [TimelineEntry] {
         let facts = person.facts
-            .filter { !$0.value.trimmed.isEmpty }
+            .filter { !$0.value.trimmed.isEmpty && $0.coreEventCategory == nil }
             .map(TimelineEntry.fact)
         let events = timelineEvents.map(TimelineEntry.event)
         return (facts + events).sorted { left, right in
@@ -2421,10 +2421,6 @@ private struct ProfileEditorView: View {
     private struct EditorValues {
         var givenName: String
         var familyName: String
-        var birthDate: String
-        var birthPlace: String
-        var deathDate: String
-        var deathPlace: String
     }
 
     let repository: FamilyRepository
@@ -2433,10 +2429,6 @@ private struct ProfileEditorView: View {
     @State private var draft: Person
     @State private var editedGivenName: String
     @State private var editedFamilyName: String
-    @State private var birthDate: String
-    @State private var birthPlace: String
-    @State private var deathDate: String
-    @State private var deathPlace: String
     @State private var languageError: String?
     @State private var showingLanguageReviewConfirmation = false
     @State private var valuesByLanguage: [ArchiveLanguage: EditorValues] = [:]
@@ -2448,10 +2440,6 @@ private struct ProfileEditorView: View {
         let displayParts = person.displayName.split(separator: " ", maxSplits: 1).map(String.init)
         _editedGivenName = State(initialValue: displayParts.first ?? person.givenName)
         _editedFamilyName = State(initialValue: displayParts.count > 1 ? displayParts[1] : person.familyName)
-        _birthDate = State(initialValue: ArchiveDateFormatter.display(person.birthFact?.value, language: repository.appLanguage) ?? person.birthFact?.value ?? "")
-        _birthPlace = State(initialValue: person.birthFact?.place.map(ArchiveCopy.place) ?? "")
-        _deathDate = State(initialValue: ArchiveDateFormatter.display(person.deathFact?.value, language: repository.appLanguage) ?? person.deathFact?.value ?? "")
-        _deathPlace = State(initialValue: person.deathFact?.place.map(ArchiveCopy.place) ?? "")
         _languageError = State(initialValue: nil)
     }
 
@@ -2466,19 +2454,9 @@ private struct ProfileEditorView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
-                    editorSection(copy("PROFILE", "ПРОФИЛЬ")) {
-                        ProfileEditorField(label: copy("First name", "Имя"), text: $editedGivenName)
-                        ProfileEditorField(label: copy("Last name", "Фамилия"), text: $editedFamilyName)
-                    }
-
-                        editorSection(copy("BIRTH", "РОЖДЕНИЕ")) {
-                            ProfileEditorField(label: copy("Full date", "Полная дата"), text: $birthDate)
-                            ProfileEditorField(label: copy("Place", "Место"), text: $birthPlace)
-                        }
-
-                        editorSection(copy("DEATH", "СМЕРТЬ")) {
-                            ProfileEditorField(label: copy("Full date", "Полная дата"), text: $deathDate)
-                            ProfileEditorField(label: copy("Place", "Место"), text: $deathPlace)
+                        editorSection(copy("PROFILE", "ПРОФИЛЬ")) {
+                            ProfileEditorField(label: copy("First name", "Имя"), text: $editedGivenName)
+                            ProfileEditorField(label: copy("Last name", "Фамилия"), text: $editedFamilyName)
                         }
                     }
                     .padding(.horizontal, ArchiveLayout.pageHorizontal)
@@ -2583,11 +2561,7 @@ private struct ProfileEditorView: View {
         let currentLanguage = repository.appLanguage
         valuesByLanguage[currentLanguage] = EditorValues(
             givenName: editedGivenName,
-            familyName: editedFamilyName,
-            birthDate: birthDate,
-            birthPlace: birthPlace,
-            deathDate: deathDate,
-            deathPlace: deathPlace
+            familyName: editedFamilyName
         )
 
         if hasEditorChanges {
@@ -2607,10 +2581,6 @@ private struct ProfileEditorView: View {
     private func apply(_ values: EditorValues) {
         editedGivenName = values.givenName
         editedFamilyName = values.familyName
-        birthDate = values.birthDate
-        birthPlace = values.birthPlace
-        deathDate = values.deathDate
-        deathPlace = values.deathPlace
     }
 
     private func applyValues(for language: ArchiveLanguage) {
@@ -2622,14 +2592,6 @@ private struct ProfileEditorView: View {
         let displayParts = localizedName.split(separator: " ", maxSplits: 1).map(String.init)
         editedGivenName = displayParts.first ?? draft.givenName
         editedFamilyName = displayParts.count > 1 ? displayParts[1] : draft.familyName
-        birthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: language)
-            ?? draft.birthFact?.value
-            ?? ""
-        birthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
-        deathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: language)
-            ?? draft.deathFact?.value
-            ?? ""
-        deathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
     }
 
     @ViewBuilder
@@ -2669,42 +2631,22 @@ private struct ProfileEditorView: View {
         let originalDisplayParts = localizedName.split(separator: " ", maxSplits: 1).map(String.init)
         let originalGivenName = originalDisplayParts.first ?? draft.givenName
         let originalFamilyName = originalDisplayParts.count > 1 ? originalDisplayParts[1] : draft.familyName
-        let originalBirthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: repository.appLanguage) ?? draft.birthFact?.value ?? ""
-        let originalBirthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
-        let originalDeathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: repository.appLanguage) ?? draft.deathFact?.value ?? ""
-        let originalDeathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
 
         return editedGivenName.trimmed != originalGivenName.trimmed ||
-            editedFamilyName.trimmed != originalFamilyName.trimmed ||
-            birthDate.trimmed != originalBirthDate.trimmed ||
-            birthPlace.trimmed != originalBirthPlace.trimmed ||
-            deathDate.trimmed != originalDeathDate.trimmed ||
-            deathPlace.trimmed != originalDeathPlace.trimmed
+            editedFamilyName.trimmed != originalFamilyName.trimmed
     }
 
     private func currentLanguageIssue() -> String? {
         let originalDisplayParts = initialPerson.displayName.split(separator: " ", maxSplits: 1).map(String.init)
-        let originalBirthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: repository.appLanguage) ?? draft.birthFact?.value ?? ""
-        let originalBirthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
-        let originalDeathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: repository.appLanguage) ?? draft.deathFact?.value ?? ""
-        let originalDeathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
         let originalFields: [String: String] = [
             "First name": originalDisplayParts.first ?? initialPerson.givenName,
-            "Last name": originalDisplayParts.count > 1 ? originalDisplayParts[1] : draft.familyName,
-            "Birth date": originalBirthDate,
-            "Birth place": originalBirthPlace,
-            "Death date": originalDeathDate,
-            "Death place": originalDeathPlace
+            "Last name": originalDisplayParts.count > 1 ? originalDisplayParts[1] : draft.familyName
         ]
         if let issue = ArchiveLanguageValidator.issue(
             language: repository.appLanguage,
             fields: [
                 ("First name", editedGivenName),
-                ("Last name", editedFamilyName),
-                ("Birth date", birthDate),
-                ("Birth place", birthPlace),
-                ("Death date", deathDate),
-                ("Death place", deathPlace)
+                ("Last name", editedFamilyName)
             ],
             unchanged: originalFields
         ) {
@@ -2725,47 +2667,12 @@ private struct ProfileEditorView: View {
     }
 
     private func persistSave(counterpart: String?, dismissAfterSave: Bool = true) {
-        let originalBirthDate = ArchiveDateFormatter.display(draft.birthFact?.value, language: repository.appLanguage) ?? draft.birthFact?.value ?? ""
-        let originalBirthPlace = draft.birthFact?.place.map(ArchiveCopy.place) ?? ""
-        let originalDeathDate = ArchiveDateFormatter.display(draft.deathFact?.value, language: repository.appLanguage) ?? draft.deathFact?.value ?? ""
-        let originalDeathPlace = draft.deathFact?.place.map(ArchiveCopy.place) ?? ""
-
         var updated = draft
         if repository.appLanguage == .russian {
             // Russian is the source/original locale in the private archive.
             updated.givenName = editedGivenName.trimmed
             updated.familyName = editedFamilyName.trimmed
         }
-        let oldBirthID = draft.birthFact?.id
-        let oldDeathID = draft.deathFact?.id
-        var facts = draft.facts.filter { $0.id != oldBirthID && $0.id != oldDeathID }
-        let birthDateValue = birthDate == originalBirthDate ? (draft.birthFact?.value ?? birthDate.trimmed) : birthDate.trimmed
-        let birthPlaceValue = birthPlace == originalBirthPlace ? draft.birthFact?.place : (birthPlace.trimmed.isEmpty ? nil : birthPlace.trimmed)
-        let deathDateValue = deathDate == originalDeathDate ? (draft.deathFact?.value ?? deathDate.trimmed) : deathDate.trimmed
-        let deathPlaceValue = deathPlace == originalDeathPlace ? draft.deathFact?.place : (deathPlace.trimmed.isEmpty ? nil : deathPlace.trimmed)
-
-        if !birthDateValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            facts.append(PersonFact(
-                id: oldBirthID ?? UUID().uuidString,
-                label: draft.birthFact?.label ?? "Born",
-                value: birthDateValue,
-                place: birthPlaceValue,
-                isApproximate: draft.birthFact?.isApproximate,
-                sourceIDs: draft.birthFact?.sourceIDs
-            ))
-        }
-        if !deathDateValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            facts.append(PersonFact(
-                id: oldDeathID ?? UUID().uuidString,
-                label: draft.deathFact?.label ?? "Died",
-                value: deathDateValue,
-                place: deathPlaceValue,
-                isApproximate: draft.deathFact?.isApproximate,
-                sourceIDs: draft.deathFact?.sourceIDs
-            ))
-        }
-
-        updated.facts = facts
         let localizedName = [editedGivenName.trimmed, editedFamilyName.trimmed]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
@@ -3215,20 +3122,12 @@ private struct LifeEventsManagerView: View {
             }
             .sheet(isPresented: $addingEvent) {
                 EventEditorView(event: nil, language: repository.appLanguage) { event in
-                    var updated = person
-                    updated.events = (updated.events ?? []) + [event]
-                    repository.updatePerson(updated)
+                    save(event)
                 }
             }
             .sheet(item: $editingEvent) { event in
                 EventEditorView(event: event, language: repository.appLanguage) { updatedEvent in
-                    var updated = person
-                    var events = updated.events ?? []
-                    if let index = events.firstIndex(where: { $0.id == updatedEvent.id }) {
-                        events[index] = updatedEvent
-                    }
-                    updated.events = events
-                    repository.updatePerson(updated)
+                    save(updatedEvent)
                     editingEvent = nil
                 }
             }
@@ -3239,6 +3138,25 @@ private struct LifeEventsManagerView: View {
         guard repository.canEdit else { return }
         var updated = person
         updated.events?.removeAll { $0.id == event.id }
+        repository.updatePerson(updated)
+    }
+
+    private func save(_ event: LifeEvent) {
+        guard repository.canEdit else { return }
+        var updated = person
+        var events = updated.events ?? []
+
+        // Birth and death are single canonical events. Saving either replaces
+        // another record of the same kind instead of creating a second copy.
+        if let coreCategory = event.coreCategory {
+            events.removeAll { $0.id != event.id && $0.coreCategory == coreCategory }
+        }
+        if let index = events.firstIndex(where: { $0.id == event.id }) {
+            events[index] = event
+        } else {
+            events.append(event)
+        }
+        updated.events = events
         repository.updatePerson(updated)
     }
 }
@@ -3365,7 +3283,7 @@ private struct EventEditorView: View {
             title: "",
             summary: "",
             place: nil,
-            category: "",
+            category: LifeEventCategory.life.rawValue,
             isApproximate: nil,
             sourceIDs: nil
         ))
@@ -3384,7 +3302,11 @@ private struct EventEditorView: View {
                         get: { draft.place ?? "" },
                         set: { draft.place = $0.trimmed.isEmpty ? nil : $0 }
                     ))
-                    TextField("Category", text: $draft.category)
+                    Picker(ArchiveCopy.text(english: "Category", russian: "Категория"), selection: $draft.category) {
+                        ForEach(LifeEventCategory.allCases) { category in
+                            Text(category.localizedLabel).tag(category.rawValue)
+                        }
+                    }
                     Toggle("Approximate date", isOn: Binding(
                         get: { draft.isApproximate ?? false },
                         set: { draft.isApproximate = $0 }
@@ -3680,7 +3602,5 @@ private extension String {
 }
 
 private func editorSortKey(_ value: String) -> Int? {
-    let years = value.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.filter { (1000...2100).contains($0) }
-    guard let year = years.first else { return nil }
-    return year * 10000
+    LifeEvent.sortKey(for: value)
 }
