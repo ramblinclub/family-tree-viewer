@@ -1201,6 +1201,39 @@ struct Person: Codable, Identifiable, Hashable {
         var events = structuredEvents
         var changed = false
 
+        // Earlier archives used `family` for both marriages and events about
+        // relatives. A short-lived migration also relabeled all of those as
+        // `marriage`. Normalize only records whose text makes their meaning
+        // explicit, preserving Family as a distinct category.
+        for index in events.indices {
+            let normalizedCategory = events[index].category
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let searchableText = [events[index].id, events[index].title, events[index].summary]
+                .joined(separator: " ")
+                .lowercased()
+
+            let correctedCategory: LifeEventCategory?
+            if normalizedCategory == "relationship" {
+                correctedCategory = .partnership
+            } else if normalizedCategory == "other" || normalizedCategory == "interests" {
+                correctedCategory = .life
+            } else if ["family", "marriage"].contains(normalizedCategory) && isBurialDescription(searchableText) {
+                correctedCategory = .burial
+            } else if normalizedCategory == "family" && isMarriageDescription(searchableText) {
+                correctedCategory = .marriage
+            } else if normalizedCategory == "marriage" && isRelativeLifeDescription(searchableText) {
+                correctedCategory = .family
+            } else {
+                correctedCategory = nil
+            }
+
+            if let correctedCategory, events[index].category != correctedCategory.rawValue {
+                events[index].category = correctedCategory.rawValue
+                changed = true
+            }
+        }
+
         for category in [LifeEventCategory.birth, .death] {
             let matchingFacts = updated.facts.filter { $0.coreEventCategory == category }
             let matchingEventIndexes = events.indices.filter { events[$0].coreCategory == category }
@@ -1257,6 +1290,35 @@ struct Person: Codable, Identifiable, Hashable {
         }
         return (updated, changed)
     }
+
+    private func isMarriageDescription(_ value: String) -> Bool {
+        value.contains("marriage") ||
+            value.contains("married") ||
+            value.contains("wedding") ||
+            value.contains("пожен") ||
+            value.contains("свадьб") ||
+            value.contains("брак")
+    }
+
+    private func isBurialDescription(_ value: String) -> Bool {
+        value.contains("burial") ||
+            value.contains("buried") ||
+            value.contains("cemetery") ||
+            value.contains("похорон") ||
+            value.contains("захорон") ||
+            value.contains("кладбищ")
+    }
+
+    private func isRelativeLifeDescription(_ value: String) -> Bool {
+        let relativeTerms = [
+            "mother", "father", "daughter", "son", "sister", "brother", "parent", "child",
+            "мать", "отец", "дочь", "сын", "сестра", "брат", "родител", "ребен", "ребён"
+        ]
+        let lifeTerms = [
+            "birth", "born", "death", "died", "рожд", "родил", "смерт", "умер", "погиб"
+        ]
+        return relativeTerms.contains(where: value.contains) && lifeTerms.contains(where: value.contains)
+    }
 }
 
 enum PrivacyLevel: String, Codable, Hashable {
@@ -1297,7 +1359,10 @@ struct PersonFact: Codable, Identifiable, Hashable {
 enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
     case birth
     case death
+    case marriage
+    case partnership
     case family
+    case health
     case residence
     case education
     case career
@@ -1305,7 +1370,6 @@ enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
     case migration
     case burial
     case life
-    case other
 
     var id: String { rawValue }
 
@@ -1321,15 +1385,17 @@ enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .birth: ArchiveCopy.text(english: "Birth", russian: "Рождение")
         case .death: ArchiveCopy.text(english: "Death", russian: "Смерть")
+        case .marriage: ArchiveCopy.text(english: "Marriage", russian: "Брак")
+        case .partnership: ArchiveCopy.text(english: "Partnership", russian: "Партнёрские отношения")
         case .family: ArchiveCopy.text(english: "Family", russian: "Семья")
+        case .health: ArchiveCopy.text(english: "Health", russian: "Здоровье")
         case .residence: ArchiveCopy.text(english: "Residence", russian: "Место жительства")
         case .education: ArchiveCopy.text(english: "Education", russian: "Образование")
         case .career: ArchiveCopy.text(english: "Career", russian: "Карьера")
         case .military: ArchiveCopy.text(english: "Military service", russian: "Военная служба")
         case .migration: ArchiveCopy.text(english: "Migration", russian: "Переезд")
         case .burial: ArchiveCopy.text(english: "Burial", russian: "Захоронение")
-        case .life: ArchiveCopy.text(english: "Life", russian: "Жизнь")
-        case .other: ArchiveCopy.text(english: "Other", russian: "Другое")
+        case .life: ArchiveCopy.text(english: "Life (Other)", russian: "Жизнь (другое)")
         }
     }
 
@@ -1343,6 +1409,15 @@ enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
         if birthLabels.contains(normalized) { return .birth }
         if deathLabels.contains(normalized) { return .death }
         return nil
+    }
+
+    static func category(for value: String) -> LifeEventCategory? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Accept short-lived and legacy category names while the repository
+        // normalizes them to the current vocabulary.
+        if normalized == "relationship" { return .partnership }
+        if normalized == "other" || normalized == "interests" { return .life }
+        return LifeEventCategory(rawValue: normalized)
     }
 }
 

@@ -3058,68 +3058,38 @@ private struct LifeEventsManagerView: View {
 
     private var person: Person { repository.person(id: personID) ?? initialPerson }
 
+    private func copy(_ english: String, _ russian: String) -> String {
+        repository.appLanguage == .russian ? russian : english
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                if person.structuredEvents.isEmpty {
-                    Text("No life events yet.")
+            VStack(spacing: 0) {
+                managerTopBar
+
+                HStack(alignment: .firstTextBaseline) {
+                    Text(copy("LIFE EVENTS", "СОБЫТИЯ ЖИЗНИ"))
+                        .font(ArchiveTypography.sectionTitle)
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.ink)
+                    Spacer()
+                    Text(eventCountText)
+                        .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, 14)
+                .padding(.bottom, 6)
+
+                if person.structuredEvents.isEmpty {
+                    emptyState
                 } else {
-                    ForEach(person.orderedEvents) { event in
-                        Button { editingEvent = event } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(NarrativeLocalizationStore.shared.eventTitle(person.id, eventID: event.id, source: event.localizedTitle).isEmpty ? ArchiveCopy.text(english: "Untitled event", russian: "Событие без названия") : NarrativeLocalizationStore.shared.eventTitle(person.id, eventID: event.id, source: event.localizedTitle))
-                                        .font(ArchiveTypography.contentTitle)
-                                        .foregroundStyle(ArchiveTheme.ink)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(ArchiveTypography.metadata)
-                                        .foregroundStyle(ArchiveTheme.metadata)
-                                }
-                                if !event.date.isEmpty {
-                                    Text(ArchiveDateFormatter.displayRange(event.date) ?? event.date)
-                                        .font(ArchiveTypography.metadata)
-                                        .foregroundStyle(ArchiveTheme.metadata)
-                                }
-                                let summary = NarrativeLocalizationStore.shared.eventSummary(person.id, eventID: event.id, source: event.localizedSummary)
-                                if !summary.isEmpty {
-                                    Text(summary)
-                                        .font(ArchiveTypography.metadata)
-                                        .foregroundStyle(ArchiveTheme.muted)
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!repository.canEdit)
-                        .swipeActions {
-                            if repository.canEdit {
-                                Button(role: .destructive) { delete(event) } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                        }
-                    }
+                    eventsList
                 }
             }
-            .navigationTitle("Life events")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-                if repository.canEdit {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button {
-                            addingEvent = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Add life event")
-                    }
-                }
-            }
+            .foregroundStyle(ArchiveTheme.ink)
+            .background(ArchiveTheme.background)
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $addingEvent) {
                 EventEditorView(event: nil, language: repository.appLanguage) { event in
                     save(event)
@@ -3132,6 +3102,150 @@ private struct LifeEventsManagerView: View {
                 }
             }
         }
+    }
+
+    private var managerTopBar: some View {
+        HStack {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(copy("Close", "Закрыть"))
+
+            Spacer()
+
+            VStack(spacing: 1) {
+                Text(copy("Manage events", "Управление событиями"))
+                    .font(ArchiveTypography.navigationTitle)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .lineLimit(1)
+                Text(person.displayName)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            if repository.canEdit {
+                Button { addingEvent = true } label: {
+                    Image(systemName: "plus")
+                        .font(ArchiveTypography.icon)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                        .background(ArchiveTheme.actionBackground)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(copy("Add life event", "Добавить событие"))
+            } else {
+                Color.clear
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+            }
+        }
+        .padding(.horizontal, ArchiveLayout.pageHorizontal)
+        .padding(.vertical, 8)
+        .background(ArchiveTheme.background)
+    }
+
+    private var eventsList: some View {
+        List {
+            ForEach(person.orderedEvents) { event in
+                Button { editingEvent = event } label: {
+                    LifeEventManagerRow(personID: person.id, event: event)
+                }
+                .buttonStyle(.plain)
+                .disabled(!repository.canEdit)
+                .listRowInsets(EdgeInsets(top: 6, leading: ArchiveLayout.pageHorizontal, bottom: 6, trailing: ArchiveLayout.pageHorizontal))
+                .listRowSeparator(.hidden)
+                .listRowBackground(ArchiveTheme.background)
+                .swipeActions {
+                    if repository.canEdit {
+                        Button(role: .destructive) { delete(event) } label: {
+                            Label(copy("Delete", "Удалить"), systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollIndicators(.hidden)
+        .background(ArchiveTheme.background)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 14) {
+                Image(systemName: "calendar.badge.plus")
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundStyle(ArchiveTheme.accent)
+                    .frame(width: 56, height: 56)
+                    .background(ArchiveTheme.background)
+                    .clipShape(Circle())
+
+                VStack(spacing: 5) {
+                    Text(copy("No life events yet", "Событий пока нет"))
+                        .font(ArchiveTypography.contentTitle)
+                        .foregroundStyle(ArchiveTheme.ink)
+                    Text(copy(
+                        "Add a date, place, and story to begin this timeline.",
+                        "Добавьте дату, место и описание, чтобы начать хронологию."
+                    ))
+                    .font(ArchiveTypography.body)
+                    .foregroundStyle(ArchiveTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if repository.canEdit {
+                    Button { addingEvent = true } label: {
+                        Label(copy("Add event", "Добавить событие"), systemImage: "plus")
+                            .font(ArchiveTypography.action)
+                            .foregroundStyle(ArchiveTheme.background)
+                            .padding(.horizontal, 18)
+                            .frame(height: 42)
+                            .background(ArchiveTheme.accent)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 36)
+            .background(ArchiveTheme.actionBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(.horizontal, ArchiveLayout.pageHorizontal)
+            .padding(.top, 12)
+
+            Spacer()
+        }
+    }
+
+    private var eventCountText: String {
+        let count = person.structuredEvents.count
+        guard repository.appLanguage == .russian else {
+            return count == 1 ? "1 event" : "\(count) events"
+        }
+        let lastTwo = count % 100
+        let last = count % 10
+        let noun: String
+        if (11...14).contains(lastTwo) {
+            noun = "событий"
+        } else if last == 1 {
+            noun = "событие"
+        } else if (2...4).contains(last) {
+            noun = "события"
+        } else {
+            noun = "событий"
+        }
+        return "\(count) \(noun)"
     }
 
     private func delete(_ event: LifeEvent) {
@@ -3158,6 +3272,158 @@ private struct LifeEventsManagerView: View {
         }
         updated.events = events
         repository.updatePerson(updated)
+    }
+}
+
+private struct LifeEventManagerRow: View {
+    let personID: Person.ID
+    let event: LifeEvent
+
+    private var category: LifeEventCategory {
+        LifeEventCategory.category(for: event.category) ?? event.coreCategory ?? .life
+    }
+
+    private var title: String {
+        let localized = NarrativeLocalizationStore.shared.eventTitle(
+            personID,
+            eventID: event.id,
+            source: event.localizedTitle
+        )
+        return localized.isEmpty
+            ? ArchiveCopy.text(english: "Untitled event", russian: "Событие без названия")
+            : localized
+    }
+
+    private var summary: String {
+        NarrativeLocalizationStore.shared.eventSummary(
+            personID,
+            eventID: event.id,
+            source: event.localizedSummary
+        )
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 13) {
+            LifeEventCategoryIcon(category: category, size: 16)
+                .foregroundStyle(ArchiveTheme.accent)
+                .frame(width: 38, height: 38)
+                .background(ArchiveTheme.background)
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(category.localizedLabel.uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.8)
+                    .foregroundStyle(ArchiveTheme.accent)
+
+                Text(title)
+                    .font(ArchiveTypography.contentTitle)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .multilineTextAlignment(.leading)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    if !event.date.trimmed.isEmpty {
+                        Label(ArchiveDateFormatter.displayRange(event.date) ?? event.date, systemImage: "calendar")
+                    }
+                    if let place = event.place?.trimmed, !place.isEmpty {
+                        Label(place, systemImage: "mappin.and.ellipse")
+                    }
+                }
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
+                .lineLimit(2)
+
+                if !summary.isEmpty {
+                    Text(summary)
+                        .font(ArchiveTypography.body)
+                        .foregroundStyle(ArchiveTheme.muted)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ArchiveTheme.metadata)
+                .padding(.top, 13)
+        }
+        .padding(14)
+        .background(ArchiveTheme.actionBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private extension LifeEventCategory {
+    var archiveIcon: String {
+        switch self {
+        case .birth: "sparkles"
+        case .death: "leaf"
+        case .marriage: "heart"
+        case .partnership: "person.2"
+        case .family: "person.3"
+        case .health: "cross.case"
+        case .residence: "house"
+        case .education: "graduationcap"
+        case .career: "briefcase"
+        case .military: "shield"
+        case .migration: "arrow.right"
+        case .burial: "cross"
+        case .life: "ellipsis"
+        }
+    }
+}
+
+private struct LifeEventCategoryIcon: View {
+    let category: LifeEventCategory
+    let size: CGFloat
+
+    var body: some View {
+        if category == .burial {
+            GraveMarkerShape()
+                .fill(.foreground)
+                .frame(width: size * 0.9, height: size)
+        } else {
+            Image(systemName: category.archiveIcon)
+                .font(.system(size: size, weight: .semibold))
+        }
+    }
+}
+
+private struct GraveMarkerShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let stemWidth = rect.width * 0.19
+        let stemX = rect.midX - stemWidth / 2
+        path.addRoundedRect(
+            in: CGRect(x: stemX, y: rect.minY, width: stemWidth, height: rect.height * 0.84),
+            cornerSize: CGSize(width: stemWidth / 2, height: stemWidth / 2)
+        )
+
+        let armHeight = rect.height * 0.17
+        path.addRoundedRect(
+            in: CGRect(
+                x: rect.minX + rect.width * 0.14,
+                y: rect.minY + rect.height * 0.24,
+                width: rect.width * 0.72,
+                height: armHeight
+            ),
+            cornerSize: CGSize(width: armHeight / 2, height: armHeight / 2)
+        )
+
+        let groundHeight = rect.height * 0.11
+        path.addRoundedRect(
+            in: CGRect(
+                x: rect.minX + rect.width * 0.05,
+                y: rect.maxY - groundHeight,
+                width: rect.width * 0.9,
+                height: groundHeight
+            ),
+            cornerSize: CGSize(width: groundHeight / 2, height: groundHeight / 2)
+        )
+        return path
     }
 }
 
@@ -3270,10 +3536,13 @@ private struct EventEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: LifeEvent
     @State private var languageError: String?
+    @State private var showingCategoryPicker = false
+    private let isNewEvent: Bool
     let language: ArchiveLanguage
     let onSave: (LifeEvent) -> Void
 
     init(event: LifeEvent?, language: ArchiveLanguage, onSave: @escaping (LifeEvent) -> Void) {
+        isNewEvent = event == nil
         self.language = language
         self.onSave = onSave
         _draft = State(initialValue: event ?? LifeEvent(
@@ -3290,50 +3559,132 @@ private struct EventEditorView: View {
         _languageError = State(initialValue: nil)
     }
 
+    private func copy(_ english: String, _ russian: String) -> String {
+        language == .russian ? russian : english
+    }
+
+    private var selectedCategory: LifeEventCategory {
+        LifeEventCategory.category(for: draft.category) ?? draft.coreCategory ?? .life
+    }
+
+    private var canSave: Bool {
+        !draft.title.trimmed.isEmpty || !draft.summary.trimmed.isEmpty
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Event") {
-                    TextField("Date", text: $draft.date)
-                    TextField("Title", text: $draft.title)
-                    TextField("Description", text: $draft.summary, axis: .vertical)
-                        .lineLimit(3...8)
-                    TextField("Place", text: Binding(
-                        get: { draft.place ?? "" },
-                        set: { draft.place = $0.trimmed.isEmpty ? nil : $0 }
-                    ))
-                    Picker(ArchiveCopy.text(english: "Category", russian: "Категория"), selection: $draft.category) {
-                        ForEach(LifeEventCategory.allCases) { category in
-                            Text(category.localizedLabel).tag(category.rawValue)
+            VStack(spacing: 0) {
+                editorTopBar
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 26) {
+                        editorSection(copy("EVENT DETAILS", "СВЕДЕНИЯ О СОБЫТИИ")) {
+                            EventEditorTextField(
+                                label: copy("Title", "Название"),
+                                prompt: copy("What happened?", "Что произошло?"),
+                                text: $draft.title
+                            )
+
+                            EventEditorTextField(
+                                label: copy("Date", "Дата"),
+                                prompt: copy("For example, 1945 or 12 May 1945", "Например, 1945 или 12 мая 1945"),
+                                text: $draft.date
+                            )
+
+                            EventEditorTextField(
+                                label: copy("Place", "Место"),
+                                prompt: copy("City, region, or country", "Город, область или страна"),
+                                text: Binding(
+                                    get: { draft.place ?? "" },
+                                    set: { draft.place = $0.trimmed.isEmpty ? nil : $0 }
+                                )
+                            )
+
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(copy("Category", "Категория"))
+                                    .font(ArchiveTypography.metadataEmphasis)
+                                    .foregroundStyle(ArchiveTheme.muted)
+
+                                Button {
+                                    showingCategoryPicker = true
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        LifeEventCategoryIcon(category: selectedCategory, size: 15)
+                                            .foregroundStyle(ArchiveTheme.accent)
+                                            .frame(width: 32, height: 32)
+                                            .background(ArchiveTheme.background)
+                                            .clipShape(Circle())
+                                        Text(selectedCategory.localizedLabel)
+                                            .font(ArchiveTypography.bodyEmphasis)
+                                            .foregroundStyle(ArchiveTheme.ink)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(ArchiveTheme.metadata)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 48)
+                                    .background(ArchiveTheme.actionBackground)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(copy("Category", "Категория"))
+                                .accessibilityValue(selectedCategory.localizedLabel)
+                                .popover(
+                                    isPresented: $showingCategoryPicker,
+                                    attachmentAnchor: .rect(.bounds),
+                                    arrowEdge: .top
+                                ) {
+                                    EventCategoryPicker(selectedCategory: selectedCategory) { category in
+                                        draft.category = category.rawValue
+                                        showingCategoryPicker = false
+                                    }
+                                    .presentationCompactAdaptation(.popover)
+                                    .presentationBackground(ArchiveTheme.background)
+                                }
+                            }
+
+                            Toggle(isOn: Binding(
+                                get: { draft.isApproximate ?? false },
+                                set: { draft.isApproximate = $0 }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(copy("Approximate date", "Приблизительная дата"))
+                                        .font(ArchiveTypography.bodyEmphasis)
+                                        .foregroundStyle(ArchiveTheme.ink)
+                                    Text(copy(
+                                        "Use when the exact date is uncertain.",
+                                        "Включите, если точная дата неизвестна."
+                                    ))
+                                    .font(ArchiveTypography.metadata)
+                                    .foregroundStyle(ArchiveTheme.metadata)
+                                }
+                            }
+                            .tint(ArchiveTheme.accent)
+                            .padding(.vertical, 4)
+                        }
+
+                        editorSection(copy("STORY", "ОПИСАНИЕ")) {
+                            EventEditorTextArea(
+                                label: copy("Description", "Описание"),
+                                prompt: copy(
+                                    "Add context, memories, or details about this event.",
+                                    "Добавьте обстоятельства, воспоминания или подробности события."
+                                ),
+                                text: $draft.summary
+                            )
                         }
                     }
-                    Toggle("Approximate date", isOn: Binding(
-                        get: { draft.isApproximate ?? false },
-                        set: { draft.isApproximate = $0 }
-                    ))
+                    .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                    .padding(.top, 14)
+                    .padding(.bottom, ArchiveLayout.pageBottom)
                 }
+                .scrollIndicators(.hidden)
             }
-            .navigationTitle("Edit event")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        if let issue = ArchiveLanguageValidator.issue(
-                            language: language,
-                            fields: [("Title", draft.title), ("Description", draft.summary), ("Place", draft.place ?? "")]
-                        ) {
-                            languageError = issue
-                            return
-                        }
-                        var saved = draft
-                        saved.sortKey = editorSortKey(saved.date)
-                        onSave(saved)
-                        dismiss()
-                    }
-                    .disabled(draft.title.trimmed.isEmpty && draft.summary.trimmed.isEmpty)
-                }
-            }
+            .foregroundStyle(ArchiveTheme.ink)
+            .background(ArchiveTheme.background)
+            .toolbar(.hidden, for: .navigationBar)
             .alert(language == .russian ? "Проверка языка" : "Language check", isPresented: Binding(
                 get: { languageError != nil },
                 set: { if !$0 { languageError = nil } }
@@ -3342,6 +3693,181 @@ private struct EventEditorView: View {
             } message: {
                 Text(languageError ?? "")
             }
+        }
+    }
+
+    private var editorTopBar: some View {
+        HStack {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(copy("Cancel", "Отмена"))
+
+            Spacer()
+
+            Text(isNewEvent ? copy("Add event", "Новое событие") : copy("Edit event", "Изменить событие"))
+                .font(ArchiveTypography.navigationTitle)
+                .foregroundStyle(ArchiveTheme.ink)
+                .lineLimit(1)
+
+            Spacer()
+
+            Button { save() } label: {
+                Image(systemName: "checkmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(canSave ? ArchiveTheme.ink : ArchiveTheme.metadata)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSave)
+            .accessibilityLabel(copy("Save", "Сохранить"))
+        }
+        .padding(.horizontal, ArchiveLayout.pageHorizontal)
+        .padding(.vertical, 8)
+        .background(ArchiveTheme.background)
+    }
+
+    @ViewBuilder
+    private func editorSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(ArchiveTypography.sectionTitle)
+                .tracking(1.2)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            VStack(alignment: .leading, spacing: 18) {
+                content()
+            }
+        }
+    }
+
+    private func save() {
+        if let issue = ArchiveLanguageValidator.issue(
+            language: language,
+            fields: [("Title", draft.title), ("Description", draft.summary), ("Place", draft.place ?? "")]
+        ) {
+            languageError = issue
+            return
+        }
+        var saved = draft
+        saved.sortKey = editorSortKey(saved.date)
+        onSave(saved)
+        dismiss()
+    }
+}
+
+private struct EventCategoryPicker: View {
+    let selectedCategory: LifeEventCategory
+    let onSelect: (LifeEventCategory) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 2) {
+                ForEach(LifeEventCategory.allCases) { category in
+                    Button {
+                        onSelect(category)
+                    } label: {
+                        HStack(spacing: 10) {
+                            LifeEventCategoryIcon(category: category, size: 13)
+                                .foregroundStyle(ArchiveTheme.accent)
+                                .frame(width: 20)
+
+                            Text(category.localizedLabel)
+                                .font(ArchiveTypography.body)
+                                .foregroundStyle(ArchiveTheme.ink)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 8)
+
+                            if category == selectedCategory {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(ArchiveTheme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .background(
+                            category == selectedCategory
+                                ? ArchiveTheme.actionBackground
+                                : Color.clear
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+        }
+        .scrollIndicators(.hidden)
+        .frame(width: 270, height: 358)
+        .background(ArchiveTheme.background)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct EventEditorTextField: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(label)
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(ArchiveTheme.muted)
+
+            TextField(prompt, text: $text, axis: .vertical)
+                .font(ArchiveTypography.body)
+                .foregroundStyle(ArchiveTheme.ink)
+                .lineLimit(1...3)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(ArchiveTheme.actionBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+}
+
+private struct EventEditorTextArea: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(label)
+                .font(ArchiveTypography.metadataEmphasis)
+                .foregroundStyle(ArchiveTheme.muted)
+
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(prompt)
+                        .font(ArchiveTypography.body)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 18)
+                        .allowsHitTesting(false)
+                }
+
+                TextEditor(text: $text)
+                    .font(ArchiveTypography.body)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .frame(minHeight: 132)
+            }
+            .background(ArchiveTheme.actionBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 }
