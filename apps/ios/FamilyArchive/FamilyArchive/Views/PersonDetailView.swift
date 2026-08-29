@@ -18,7 +18,11 @@ struct PersonDetailView: View {
     @State private var showingMediaEditor = false
     @State private var showingProfilePhotoEditor = false
     @State private var showingEventsManager = false
-    @State private var showingStoriesManager = false
+    @State private var showingNotesManager = false
+    @State private var showingAllLocalizationIssues = false
+    @State private var reviewingLegacyNote: PersonNote?
+    @State private var reviewingBiographyStoryNote: PersonNote?
+    @State private var reviewingBiography = false
     @State private var selectedMedia: MediaReference?
     @State private var selectedFamilyPerson: PresentedFamilyPerson?
 
@@ -88,8 +92,29 @@ struct PersonDetailView: View {
         .sheet(isPresented: $showingEventsManager) {
             LifeEventsManagerView(person: person, repository: repository)
         }
-        .sheet(isPresented: $showingStoriesManager) {
-            StoriesManagerView(person: person, repository: repository)
+        .sheet(isPresented: $showingNotesManager) {
+            NotesManagerView(person: person, repository: repository)
+        }
+        .sheet(item: $reviewingLegacyNote) { note in
+            LegacyStoryReviewView(
+                personID: person.id,
+                storyIDs: note.reviewStoryIDs ?? [],
+                repository: repository
+            )
+        }
+        .sheet(item: $reviewingBiographyStoryNote) { note in
+            LegacyStoryReviewView(
+                personID: person.id,
+                storyIDs: [note.reviewBiographyStoryID].compactMap { $0 },
+                repository: repository,
+                title: ArchiveCopy.text(
+                    english: "Preserved biography",
+                    russian: "Сохранённая биография"
+                )
+            )
+        }
+        .sheet(isPresented: $reviewingBiography) {
+            LegacyBiographyReviewView(personID: person.id, repository: repository)
         }
         .sheet(item: $selectedFamilyPerson) { presented in
             if let familyPerson = repository.person(id: presented.id) {
@@ -253,10 +278,123 @@ struct PersonDetailView: View {
             if !profileSummaryText.isEmpty {
                 ArchiveParagraph(profileSummaryText)
             }
+
+            if !repository.localizationIssues(for: person.id).isEmpty {
+                localizationWarning
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var localizationWarning: some View {
+        let issues = repository.localizationIssues(for: person.id).sorted {
+            if $0.fieldLabel != $1.fieldLabel { return $0.fieldLabel < $1.fieldLabel }
+            if $0.targetLanguage.rawValue != $1.targetLanguage.rawValue {
+                return $0.targetLanguage.rawValue < $1.targetLanguage.rawValue
+            }
+            return $0.recordID < $1.recordID
+        }
+        let visibleIssues = showingAllLocalizationIssues ? issues : Array(issues.prefix(4))
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(ArchiveTheme.accent)
+                Text(ArchiveCopy.text(
+                    english: "Translation needs review",
+                    russian: "Нужно проверить перевод"
+                ))
+                .font(ArchiveTypography.bodyEmphasis)
+                .foregroundStyle(ArchiveTheme.ink)
+            }
+
+            Text(ArchiveCopy.text(
+                english: "Check the items below. The original text remains visible until both language versions are valid.",
+                russian: "Проверьте пункты ниже. Пока обе языковые версии не готовы, показывается исходный текст."
+            ))
+            .font(ArchiveTypography.metadata)
+            .foregroundStyle(ArchiveTheme.muted)
+
+            Text(ArchiveCopy.text(
+                english: "\(issues.count) \(issues.count == 1 ? "item" : "items") to check",
+                russian: "Нужно проверить: \(issues.count)"
+            ))
+            .font(ArchiveTypography.metadataEmphasis)
+            .foregroundStyle(ArchiveTheme.metadata)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(visibleIssues) { issue in
+                    localizationIssueRow(issue)
+                }
+            }
+            .padding(.top, 3)
+
+            if issues.count > 4 {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showingAllLocalizationIssues.toggle()
+                    }
+                } label: {
+                    Text(showingAllLocalizationIssues
+                        ? ArchiveCopy.text(english: "Show fewer", russian: "Свернуть")
+                        : ArchiveCopy.text(english: "Show all \(issues.count)", russian: "Показать все: \(issues.count)"))
+                        .font(ArchiveTypography.action)
+                        .foregroundStyle(ArchiveTheme.action)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if #available(iOS 26.0, *) {
+                Button {
+                    Task {
+                        await repository.autoTranslateMissingContent(for: person.id, force: true)
+                    }
+                } label: {
+                    Text(repository.isAutomaticallyTranslating
+                        ? ArchiveCopy.text(english: "Translating…", russian: "Переводим…")
+                        : ArchiveCopy.text(english: "Retry translation", russian: "Повторить перевод"))
+                        .font(ArchiveTypography.action)
+                        .foregroundStyle(ArchiveTheme.action)
+                }
+                .buttonStyle(.plain)
+                .disabled(repository.isAutomaticallyTranslating)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ArchiveTheme.controlBackground)
+        .clipShape(ArchiveShape.control)
+        .overlay(ArchiveShape.control.stroke(ArchiveTheme.accent.opacity(0.45), lineWidth: 1))
+    }
+
+    private func localizationIssueRow(_ issue: LocalizationReviewIssue) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 7) {
+                Text(issue.targetLanguageCode)
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.accent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ArchiveTheme.background)
+                    .clipShape(Capsule())
+
+                Text(issue.fieldLabel)
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.ink)
+            }
+
+            Text(issue.reasonLabel)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.accent)
+
+            Text(MediaMentionToken.visibleText(issue.sourceText, people: repository.people))
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.muted)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
     }
 
     private var profileSummaryText: String {
@@ -459,7 +597,7 @@ struct PersonDetailView: View {
         case .timeline:
             timelineContent
         case .stories:
-            storiesContent
+            notesContent
         case .family:
             familyContent
         }
@@ -790,55 +928,51 @@ struct PersonDetailView: View {
         }
     }
 
-    private var storiesContent: some View {
+    private var notesContent: some View {
         VStack(alignment: .leading, spacing: 28) {
             HStack(alignment: .firstTextBaseline) {
-                ArchiveSectionHeading(ArchiveCopy.text(english: "STORIES", russian: "ИСТОРИИ"))
+                ArchiveSectionHeading(ArchiveCopy.text(english: "NOTES", russian: "ЗАМЕТКИ"))
                 Spacer()
                 if repository.canEdit {
-                    Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingStoriesManager = true }
+                    Button(ArchiveCopy.text(english: "Manage", russian: "Управлять")) { showingNotesManager = true }
                         .font(ArchiveTypography.action)
                         .foregroundStyle(ArchiveTheme.action)
                         .buttonStyle(.plain)
                 }
             }
 
-            if !person.structuredStories.isEmpty {
-                ForEach(person.structuredStories) { chapter in
-                    VStack(alignment: .leading, spacing: 10) {
-                        ArchiveSectionHeading(
-                            NarrativeLocalizationStore.shared.storyTitle(person.id, storyID: chapter.id, source: chapter.title)
-                        )
-
-                        if let dateRange = chapter.dateRange, let summary = chapter.summary {
-                            StoryDatedContentBlock(
-                                date: dateRange,
-                                title: NarrativeLocalizationStore.shared.storySummary(person.id, storyID: chapter.id, source: summary),
-                                body: NarrativeLocalizationStore.shared.storyBody(person.id, storyID: chapter.id, source: chapter.body)
-                            )
-                        } else {
-                            if let dateRange = chapter.dateRange {
-                                ArchiveContentDate(dateRange)
-                            }
-                            if let summary = chapter.summary {
-                                StoryIntroParagraph(NarrativeLocalizationStore.shared.storySummary(person.id, storyID: chapter.id, source: summary))
-                            }
-                        }
-                        if chapter.dateRange == nil || chapter.summary == nil {
-                            ArchiveParagraph(NarrativeLocalizationStore.shared.storyBody(person.id, storyID: chapter.id, source: chapter.body))
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if person.structuredNotes.isEmpty {
+                Text(ArchiveCopy.text(
+                    english: "No notes have been recorded yet.",
+                    russian: "Заметок пока нет."
+                ))
+                .font(ArchiveTypography.paragraph)
+                .foregroundStyle(ArchiveTheme.muted)
+                .padding(.vertical, 12)
             } else {
-                detailSection(ArchiveCopy.text(english: "Life story", russian: "История жизни")) {
-                    ArchiveParagraph(person.localizedBiography)
-                        .textSelection(.enabled)
+                ForEach(person.structuredNotes) { note in
+                    PersonNoteCard(
+                        note: note,
+                        personID: person.id,
+                        repository: repository,
+                        onReviewStory: note.hasLegacyStoryReview
+                            ? { reviewingLegacyNote = note }
+                            : nil,
+                        onReviewBiography: biographyReviewAction(for: note)
+                    )
                 }
             }
-
         }
+    }
+
+    private func biographyReviewAction(for note: PersonNote) -> (() -> Void)? {
+        if note.hasBiographyStoryReview {
+            return { reviewingBiographyStoryNote = note }
+        }
+        if note.hasBiographyReview && !person.biography.trimmed.isEmpty {
+            return { reviewingBiography = true }
+        }
+        return nil
     }
 
     private var mediaContent: some View {
@@ -1406,7 +1540,7 @@ private enum DetailTab: String, CaseIterable, Identifiable {
         switch self {
         case .overview: ArchiveCopy.text(english: "Overview", russian: "Обзор")
         case .timeline: ArchiveCopy.text(english: "Life events", russian: "События")
-        case .stories: ArchiveCopy.text(english: "Stories", russian: "Истории")
+        case .stories: ArchiveCopy.text(english: "Notes", russian: "Заметки")
         case .family: ArchiveCopy.text(english: "Family", russian: "Семья")
         }
     }
@@ -1415,7 +1549,7 @@ private enum DetailTab: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "person.text.rectangle"
         case .timeline: "point.topleft.down.curvedto.point.bottomright.up"
-        case .stories: "text.book.closed"
+        case .stories: "note.text"
         case .family: "person.2"
         }
     }
@@ -1613,13 +1747,11 @@ private struct LifeEventRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ArchiveDatedContentBlock(
                     date: event.date,
-                    title: timelineEvent.isFamilyProjection
-                        ? event.localizedTitle
-                        : NarrativeLocalizationStore.shared.eventTitle(
-                            timelineEvent.sourcePersonID,
-                            eventID: timelineEvent.sourceEventID,
-                            source: event.localizedTitle
-                        ),
+                    title: NarrativeLocalizationStore.shared.eventTitle(
+                        timelineEvent.sourcePersonID,
+                        eventID: timelineEvent.sourceEventID,
+                        source: event.localizedTitle
+                    ),
                     body: NarrativeLocalizationStore.shared.eventSummary(
                         timelineEvent.sourcePersonID,
                         eventID: timelineEvent.sourceEventID,
@@ -1628,7 +1760,11 @@ private struct LifeEventRow: View {
                     note: event.isApproximate == true ? ArchiveCopy.text(english: "Approximate", russian: "Примерно") : nil
                 )
                 if let place = event.place {
-                    Text(ArchiveCopy.place(place))
+                    Text(NarrativeLocalizationStore.shared.eventPlace(
+                        timelineEvent.sourcePersonID,
+                        eventID: timelineEvent.sourceEventID,
+                        source: place
+                    ))
                         .font(ArchiveTypography.metadata)
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
@@ -2239,12 +2375,15 @@ private struct MediaTile: View {
             }
             .frame(height: 106)
 
-            Text(item.title)
+            Text(NarrativeLocalizationStore.shared.mediaTitle(mediaID: item.id, source: item.title))
                 .font(ArchiveTypography.supportingEmphasis)
                 .lineLimit(2)
 
             if let caption = item.caption, !caption.isEmpty {
-                Text(MediaMentionToken.visibleText(caption, people: people))
+                Text(MediaMentionToken.visibleText(
+                    NarrativeLocalizationStore.shared.mediaCaption(mediaID: item.id, source: caption),
+                    people: people
+                ))
                     .font(ArchiveTypography.metadata)
                     .foregroundStyle(ArchiveTheme.metadata)
                     .lineLimit(2)
@@ -3179,7 +3318,9 @@ private struct LifeEventsManagerView: View {
     private func save(_ event: LifeEvent, scope: ManagedLifeEvent.Scope = .person) {
         guard repository.canEdit else { return }
         if case .familyUnion(let unionID, let recordID) = scope {
+            repository.invalidateEventTranslations(personID: personID, eventID: event.id)
             repository.updateSharedEvent(event, unionID: unionID, recordID: recordID, editorID: personID)
+            translatePersonAfterSave()
             return
         }
         var updated = person
@@ -3196,7 +3337,17 @@ private struct LifeEventsManagerView: View {
             events.append(event)
         }
         updated.events = events
+        repository.invalidateEventTranslations(personID: personID, eventID: event.id)
         repository.updatePerson(updated)
+        translatePersonAfterSave()
+    }
+
+    private func translatePersonAfterSave() {
+        if #available(iOS 26.0, *) {
+            Task {
+                await repository.autoTranslateMissingContent(for: personID, force: true)
+            }
+        }
     }
 }
 
@@ -3251,7 +3402,14 @@ private struct LifeEventManagerRow: View {
                         Label(ArchiveDateFormatter.displayRange(event.date) ?? event.date, systemImage: "calendar")
                     }
                     if let place = event.place?.trimmed, !place.isEmpty {
-                        Label(place, systemImage: "mappin.and.ellipse")
+                        Label(
+                            NarrativeLocalizationStore.shared.eventPlace(
+                                personID,
+                                eventID: event.id,
+                                source: place
+                            ),
+                            systemImage: "mappin.and.ellipse"
+                        )
                     }
                 }
                 .font(ArchiveTypography.metadata)
@@ -3352,6 +3510,495 @@ private struct GraveMarkerShape: Shape {
     }
 }
 
+private struct PersonNoteCard: View {
+    let note: PersonNote
+    let personID: Person.ID
+    let repository: FamilyRepository
+    var onReviewStory: (() -> Void)?
+    var onReviewBiography: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            NoteLinkedTextView(text: note.localizedText(language: repository.appLanguage))
+
+            if let onReviewStory {
+                Button(action: onReviewStory) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "book.pages")
+                        Text(ArchiveCopy.text(
+                            english: "Review longer story",
+                            russian: "Проверить длинную историю"
+                        ))
+                    }
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.action)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let onReviewBiography {
+                Button(action: onReviewBiography) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                        Text(ArchiveCopy.text(
+                            english: "Open preserved biography",
+                            russian: "Открыть сохранённую биографию"
+                        ))
+                    }
+                    .font(ArchiveTypography.action)
+                    .foregroundStyle(ArchiveTheme.action)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(attribution)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                if repository.localizationIssues(for: personID).contains(where: {
+                    $0.field == .note && $0.recordID == note.id
+                }) {
+                    Text("·")
+                        .font(ArchiveTypography.metadata)
+                        .foregroundStyle(ArchiveTheme.metadata)
+                    Text(ArchiveCopy.text(
+                        english: "Translation review",
+                        russian: "Проверить перевод"
+                    ))
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.action)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(ArchiveTheme.actionBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var attribution: String {
+        let date = noteDate
+        if note.origin != .user {
+            return ArchiveCopy.text(
+                english: "Imported from family archive · \(date)",
+                russian: "Импортировано из семейного архива · \(date)"
+            )
+        }
+        let name = note.recordedByAccountID
+            .flatMap { repository.person(id: $0)?.displayName }
+            ?? ArchiveCopy.text(english: "Unknown account", russian: "Неизвестный автор")
+        return ArchiveCopy.text(
+            english: "Recorded by \(name) · \(date)",
+            russian: "Записал(а) \(name) · \(date)"
+        )
+    }
+
+    private var noteDate: String {
+        guard let date = ISO8601DateFormatter().date(from: note.recordedAt) else {
+            return note.recordedAt
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+/// UIKit's link detector makes plain URLs typed into Note text tappable
+/// without introducing a second link field or exposing storage metadata.
+private struct NoteLinkedTextView: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isScrollEnabled = false
+        view.isSelectable = true
+        view.dataDetectorTypes = [.link]
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = true
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        view.text = text
+        view.font = UIFont.preferredFont(forTextStyle: .body)
+        view.textColor = UIColor.label
+        view.linkTextAttributes = [
+            .foregroundColor: UIColor(ArchiveTheme.action),
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width else { return nil }
+        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+}
+
+private struct NotesManagerView: View {
+    private let initialPerson: Person
+    private let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var addingNote = false
+    @State private var editingNote: PersonNote?
+
+    init(person: Person, repository: FamilyRepository) {
+        initialPerson = person
+        personID = person.id
+        _repository = ObservedObject(wrappedValue: repository)
+    }
+
+    private var person: Person { repository.person(id: personID) ?? initialPerson }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                topBar
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(alignment: .firstTextBaseline) {
+                            ArchiveSectionHeading(ArchiveCopy.text(english: "NOTES", russian: "ЗАМЕТКИ"))
+                            Spacer()
+                            Text(ArchiveCopy.text(
+                                english: "\(person.structuredNotes.count) notes",
+                                russian: "Заметок: \(person.structuredNotes.count)"
+                            ))
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
+                        }
+
+                        if person.structuredNotes.isEmpty {
+                            Text(ArchiveCopy.text(
+                                english: "No notes have been recorded yet.",
+                                russian: "Заметок пока нет."
+                            ))
+                            .font(ArchiveTypography.paragraph)
+                            .foregroundStyle(ArchiveTheme.muted)
+                            .padding(.vertical, 20)
+                        } else {
+                            ForEach(person.structuredNotes) { note in
+                                VStack(alignment: .trailing, spacing: 8) {
+                                    PersonNoteCard(note: note, personID: person.id, repository: repository)
+
+                                    if repository.canEditNote(note) {
+                                        HStack(spacing: 18) {
+                                            Button {
+                                                editingNote = note
+                                            } label: {
+                                                Label(
+                                                    ArchiveCopy.text(english: "Edit", russian: "Изменить"),
+                                                    systemImage: "pencil"
+                                                )
+                                            }
+                                            Button(role: .destructive) {
+                                                repository.deleteNote(personID: personID, noteID: note.id)
+                                            } label: {
+                                                Label(
+                                                    ArchiveCopy.text(english: "Delete", russian: "Удалить"),
+                                                    systemImage: "trash"
+                                                )
+                                            }
+                                        }
+                                        .font(ArchiveTypography.action)
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                    .padding(.top, 16)
+                    .padding(.bottom, ArchiveLayout.pageBottom)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .background(ArchiveTheme.background)
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $addingNote) {
+                NoteEditorView(note: nil, personID: personID, repository: repository)
+            }
+            .sheet(item: $editingNote) { note in
+                NoteEditorView(note: note, personID: personID, repository: repository)
+            }
+        }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            VStack(spacing: 1) {
+                Text(ArchiveCopy.text(english: "Manage notes", russian: "Управление заметками"))
+                    .font(ArchiveTypography.navigationTitle)
+                Text(person.displayName)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
+
+            Spacer()
+
+            Button { addingNote = true } label: {
+                Image(systemName: "plus")
+                    .font(ArchiveTypography.icon)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                    .background(ArchiveTheme.actionBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!repository.canEdit || repository.accountHolderID == nil)
+        }
+        .padding(.horizontal, ArchiveLayout.pageHorizontal)
+        .padding(.vertical, 8)
+    }
+}
+
+private struct NoteEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    let originalNote: PersonNote?
+    let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @State private var text: String
+    @State private var languageError: String?
+
+    init(note: PersonNote?, personID: Person.ID, repository: FamilyRepository) {
+        originalNote = note
+        self.personID = personID
+        _repository = ObservedObject(wrappedValue: repository)
+        _text = State(initialValue: note?.localizedText(language: repository.appLanguage) ?? "")
+        _languageError = State(initialValue: nil)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    VStack(spacing: 1) {
+                        Text(originalNote == nil
+                            ? ArchiveCopy.text(english: "New note", russian: "Новая заметка")
+                            : ArchiveCopy.text(english: "Edit note", russian: "Изменить заметку"))
+                            .font(ArchiveTypography.navigationTitle)
+                        Text(repository.appLanguage == .english ? "English" : "Русский")
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(ArchiveTheme.metadata)
+                    }
+
+                    Spacer()
+
+                    Button { save() } label: {
+                        Image(systemName: "checkmark")
+                            .font(ArchiveTypography.icon)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(text.trimmed.isEmpty)
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.vertical, 8)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    ArchiveSectionHeading(ArchiveCopy.text(english: "NOTE", russian: "ЗАМЕТКА"))
+                    TextEditor(text: $text)
+                        .font(ArchiveTypography.body)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .scrollContentBackground(.hidden)
+                        .padding(10)
+                        .frame(minHeight: 260)
+                        .background(ArchiveTheme.actionBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                    Text(ArchiveCopy.text(
+                        english: "Web links in the note open in the browser. The other language is generated after saving.",
+                        russian: "Веб-ссылки из заметки открываются в браузере. Перевод создаётся после сохранения."
+                    ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, 18)
+
+                Spacer()
+            }
+            .background(ArchiveTheme.background)
+            .toolbar(.hidden, for: .navigationBar)
+            .alert(
+                ArchiveCopy.text(english: "Language check", russian: "Проверка языка"),
+                isPresented: Binding(
+                    get: { languageError != nil },
+                    set: { if !$0 { languageError = nil } }
+                )
+            ) {
+                Button(ArchiveCopy.text(english: "OK", russian: "Хорошо")) { languageError = nil }
+            } message: {
+                Text(languageError ?? "")
+            }
+        }
+    }
+
+    private func save() {
+        if let issue = ArchiveLanguageValidator.issue(
+            language: repository.appLanguage,
+            fields: [("Note", text)]
+        ) {
+            languageError = issue
+            return
+        }
+        let sourceLanguage = repository.appLanguage
+        guard let saved = repository.saveNote(
+            personID: personID,
+            existingNoteID: originalNote?.id,
+            text: text,
+            sourceLanguage: sourceLanguage
+        ) else { return }
+        dismiss()
+        if #available(iOS 26.0, *) {
+            Task {
+                await repository.autoTranslateNote(
+                    noteID: saved.id,
+                    personID: personID,
+                    expectedText: saved.text,
+                    from: sourceLanguage
+                )
+            }
+        }
+    }
+}
+
+private struct LegacyStoryReviewView: View {
+    let personID: Person.ID
+    let storyIDs: [StoryChapter.ID]
+    @ObservedObject var repository: FamilyRepository
+    var title: String? = nil
+    @Environment(\.dismiss) private var dismiss
+
+    private var person: Person? { repository.person(id: personID) }
+    private var stories: [StoryChapter] {
+        person?.structuredStories.filter { storyIDs.contains($0.id) } ?? []
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    ForEach(stories) { chapter in
+                        VStack(alignment: .leading, spacing: 10) {
+                            ArchiveSectionHeading(
+                                NarrativeLocalizationStore.shared.storyTitle(
+                                    personID,
+                                    storyID: chapter.id,
+                                    source: chapter.title
+                                )
+                            )
+                            if let dateRange = chapter.dateRange, !dateRange.isEmpty {
+                                ArchiveContentDate(dateRange)
+                            }
+                            if let summary = chapter.summary, !summary.isEmpty {
+                                StoryIntroParagraph(
+                                    NarrativeLocalizationStore.shared.storySummary(
+                                        personID,
+                                        storyID: chapter.id,
+                                        source: summary
+                                    )
+                                )
+                            }
+                            ArchiveParagraph(
+                                NarrativeLocalizationStore.shared.storyBody(
+                                    personID,
+                                    storyID: chapter.id,
+                                    source: chapter.body
+                                )
+                            )
+                            .textSelection(.enabled)
+                        }
+                    }
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.vertical, 24)
+            }
+            .background(ArchiveTheme.background)
+            .navigationTitle(title ?? ArchiveCopy.text(
+                english: "Story review",
+                russian: "Проверка истории"
+            ))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(ArchiveCopy.text(english: "Done", russian: "Готово")) { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct LegacyBiographyReviewView: View {
+    let personID: Person.ID
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+
+    private var person: Person? { repository.person(id: personID) }
+
+    private var biographyText: String {
+        guard let person else { return "" }
+        return person.localizedBiography
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let person {
+                        ArchiveSectionHeading(person.displayName.uppercased())
+                    }
+                    ArchiveParagraph(biographyText)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.vertical, 24)
+            }
+            .background(ArchiveTheme.background)
+            .navigationTitle(ArchiveCopy.text(
+                english: "Preserved biography",
+                russian: "Сохранённая биография"
+            ))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(ArchiveCopy.text(english: "Done", russian: "Готово")) { dismiss() }
+                }
+            }
+        }
+    }
+}
+
 private struct StoriesManagerView: View {
     private let initialPerson: Person
     private let personID: Person.ID
@@ -3431,7 +4078,9 @@ private struct StoriesManagerView: View {
                 StoryEditorView(story: nil, language: repository.appLanguage) { story in
                     var updated = person
                     updated.storyChapters = (updated.storyChapters ?? []) + [story]
+                    repository.invalidateStoryTranslations(personID: personID, storyID: story.id)
                     repository.updatePerson(updated)
+                    translatePersonAfterSave()
                 }
             }
             .sheet(item: $editingStory) { story in
@@ -3442,9 +4091,19 @@ private struct StoriesManagerView: View {
                         stories[index] = updatedStory
                     }
                     updated.storyChapters = stories
+                    repository.invalidateStoryTranslations(personID: personID, storyID: updatedStory.id)
                     repository.updatePerson(updated)
+                    translatePersonAfterSave()
                     editingStory = nil
                 }
+            }
+        }
+    }
+
+    private func translatePersonAfterSave() {
+        if #available(iOS 26.0, *) {
+            Task {
+                await repository.autoTranslateMissingContent(for: personID, force: true)
             }
         }
     }
@@ -3684,6 +4343,10 @@ private struct EventEditorView: View {
         }
         var saved = draft
         saved.sortKey = editorSortKey(saved.date)
+        // These values describe the pre-edit source. The repository will
+        // generate and validate a fresh counterpart after saving.
+        saved.titleTranslations = nil
+        saved.summaryTranslations = nil
         onSave(saved)
         dismiss()
     }
@@ -3895,11 +4558,18 @@ private struct PersonMediaEditorView: View {
                                     .foregroundStyle(ArchiveTheme.action)
                                     .frame(width: 24)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.caption?.trimmed.isEmpty == false
-                                        ? MediaMentionToken.visibleText(item.caption!, people: repository.people)
-                                        : item.kind.rawValue.capitalized)
+                                    let localizedCaption = NarrativeLocalizationStore.shared.mediaCaption(
+                                        mediaID: item.id,
+                                        source: item.caption ?? ""
+                                    )
+                                    Text(!localizedCaption.trimmed.isEmpty
+                                        ? MediaMentionToken.visibleText(localizedCaption, people: repository.people)
+                                        : ArchiveCopy.text(english: "Media", russian: "Медиа"))
                                         .foregroundStyle(ArchiveTheme.ink)
-                                    Text("Related to \(MediaMentionToken.personIDs(in: item.caption ?? "").count) people")
+                                    Text(ArchiveCopy.text(
+                                        english: "Related to \(MediaMentionToken.personIDs(in: item.caption ?? "").count) people",
+                                        russian: "Связано с людьми: \(MediaMentionToken.personIDs(in: item.caption ?? "").count)"
+                                    ))
                                         .font(ArchiveTypography.metadata)
                                         .foregroundStyle(ArchiveTheme.metadata)
                                 }
@@ -3950,11 +4620,11 @@ struct MediaMetadataEditor: View {
         self.ownerID = ownerID
         _repository = ObservedObject(wrappedValue: repository)
         let sourceCaption = item.caption ?? ""
-        let englishCaption = NarrativeLocalizationStore.shared.storedMediaCaption(
+        let localizedCaption = NarrativeLocalizationStore.shared.mediaCaption(
             mediaID: item.id,
+            language: repository.appLanguage,
             source: sourceCaption
-        ) ?? (sourceCaption.range(of: "[А-Яа-яЁё]", options: .regularExpression) == nil ? sourceCaption : "")
-        let localizedCaption = repository.appLanguage == .english ? englishCaption : sourceCaption
+        )
         _caption = State(initialValue: MediaMentionToken.visibleText(
             localizedCaption,
             people: repository.people,

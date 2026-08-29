@@ -18,6 +18,81 @@ enum ArchiveLanguage: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+/// Every piece of screen-facing family content is addressed by one stable
+/// field kind. The repository uses these paths both to audit all profiles and
+/// to route an automatically generated translation back to its durable store.
+enum LocalizationField: String, Hashable {
+    case summary
+    case biography
+    case eventTitle
+    case eventSummary
+    case eventPlace
+    case storyTitle
+    case storySummary
+    case storyBody
+    case note
+    case mediaTitle
+    case mediaCaption
+
+    var localizedLabel: String {
+        switch self {
+        case .summary: ArchiveCopy.text(english: "Profile summary", russian: "Описание профиля")
+        case .biography: ArchiveCopy.text(english: "Biography", russian: "Биография")
+        case .eventTitle: ArchiveCopy.text(english: "Event title", russian: "Название события")
+        case .eventSummary: ArchiveCopy.text(english: "Event description", russian: "Описание события")
+        case .eventPlace: ArchiveCopy.text(english: "Event place", russian: "Место события")
+        case .storyTitle: ArchiveCopy.text(english: "Story title", russian: "Название истории")
+        case .storySummary: ArchiveCopy.text(english: "Story summary", russian: "Описание истории")
+        case .storyBody: ArchiveCopy.text(english: "Story", russian: "История")
+        case .note: ArchiveCopy.text(english: "Note", russian: "Заметка")
+        case .mediaTitle: ArchiveCopy.text(english: "Media title", russian: "Название медиа")
+        case .mediaCaption: ArchiveCopy.text(english: "Media caption", russian: "Подпись к медиа")
+        }
+    }
+}
+
+enum LocalizationReviewReason: String, Hashable {
+    case missingTranslation
+    case wrongLanguage
+
+    func localizedLabel(targetLanguage: ArchiveLanguage) -> String {
+        switch (self, targetLanguage) {
+        case (.missingTranslation, .english):
+            ArchiveCopy.text(english: "Missing English version", russian: "Нет английской версии")
+        case (.missingTranslation, .russian):
+            ArchiveCopy.text(english: "Missing Russian version", russian: "Нет русской версии")
+        case (.wrongLanguage, .english):
+            ArchiveCopy.text(
+                english: "English version contains other-language text",
+                russian: "В английской версии есть текст на другом языке"
+            )
+        case (.wrongLanguage, .russian):
+            ArchiveCopy.text(
+                english: "Russian version contains other-language text",
+                russian: "В русской версии есть текст на другом языке"
+            )
+        }
+    }
+}
+
+struct LocalizationReviewIssue: Identifiable, Hashable {
+    let personID: Person.ID
+    let field: LocalizationField
+    let recordID: String
+    let sourceText: String
+    let sourceLanguage: ArchiveLanguage
+    let targetLanguage: ArchiveLanguage
+    let reason: LocalizationReviewReason
+
+    var id: String {
+        "\(personID)|\(field.rawValue)|\(recordID)|\(targetLanguage.rawValue)"
+    }
+
+    var fieldLabel: String { field.localizedLabel }
+    var reasonLabel: String { reason.localizedLabel(targetLanguage: targetLanguage) }
+    var targetLanguageCode: String { targetLanguage.rawValue.uppercased() }
+}
+
 private struct NameLocalizationDocument: Codable {
     let approvedNames: [NameLocalization]
 }
@@ -55,26 +130,36 @@ private struct NarrativeLocalizationDocument: Codable {
 }
 
 private struct NarrativePersonLocalization: Codable {
-    var summary: String?
-    var biography: String?
-    var stories: [String: NarrativeStoryLocalization]?
-    var events: [String: NarrativeEventLocalization]?
-    var media: [String: NarrativeMediaLocalization]?
+    var summary: String? = nil
+    var biography: String? = nil
+    var summaryTranslations: [String: String]? = nil
+    var biographyTranslations: [String: String]? = nil
+    var stories: [String: NarrativeStoryLocalization]? = nil
+    var events: [String: NarrativeEventLocalization]? = nil
+    var media: [String: NarrativeMediaLocalization]? = nil
 }
 
 private struct NarrativeStoryLocalization: Codable {
-    var title: String?
-    var summary: String?
-    var body: String?
+    var title: String? = nil
+    var summary: String? = nil
+    var body: String? = nil
+    var titleTranslations: [String: String]? = nil
+    var summaryTranslations: [String: String]? = nil
+    var bodyTranslations: [String: String]? = nil
 }
 
 private struct NarrativeEventLocalization: Codable {
-    var title: String?
-    var summary: String?
+    var title: String? = nil
+    var summary: String? = nil
+    var place: String? = nil
+    var titleTranslations: [String: String]? = nil
+    var summaryTranslations: [String: String]? = nil
+    var placeTranslations: [String: String]? = nil
 }
 
 private struct NarrativeMediaLocalization: Codable {
     var title: String?
+    var titleTranslations: [String: String]? = nil
     var caption: String?
     /// Captions translated into a locale other than the source locale. The
     /// older `caption` field remains the English value for backward
@@ -202,35 +287,276 @@ final class NarrativeLocalizationStore {
     }
 
     func personSummary(_ personID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.summary, pending: "English summary pending")
+        localized(
+            source: source,
+            translations: people[personID]?.summaryTranslations,
+            legacyEnglish: people[personID]?.summary
+        )
     }
 
     func personBiography(_ personID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.biography, pending: "English biography pending")
+        localized(
+            source: source,
+            translations: people[personID]?.biographyTranslations,
+            legacyEnglish: people[personID]?.biography
+        )
     }
 
     func storyTitle(_ personID: String, storyID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.stories?[storyID]?.title, pending: "English title pending")
+        let story = people[personID]?.stories?[storyID]
+        return localized(source: source, translations: story?.titleTranslations, legacyEnglish: story?.title)
     }
 
     func storySummary(_ personID: String, storyID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.stories?[storyID]?.summary, pending: "English summary pending")
+        let story = people[personID]?.stories?[storyID]
+        return localized(source: source, translations: story?.summaryTranslations, legacyEnglish: story?.summary)
     }
 
     func storyBody(_ personID: String, storyID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.stories?[storyID]?.body, pending: "English story pending")
+        let story = people[personID]?.stories?[storyID]
+        return localized(source: source, translations: story?.bodyTranslations, legacyEnglish: story?.body)
+    }
+
+    /// Returns only a stored translation, without substituting a pending
+    /// label or the source. Legacy Story-to-Note migration uses this so it
+    /// never mistakes fallback display text for an approved translation.
+    func storedStoryTranslation(
+        _ personID: String,
+        storyID: String
+    ) -> (title: String?, summary: String?, body: String?) {
+        let story = people[personID]?.stories?[storyID]
+        return (
+            story?.titleTranslations?[ArchiveLanguage.english.rawValue] ?? story?.title,
+            story?.summaryTranslations?[ArchiveLanguage.english.rawValue] ?? story?.summary,
+            story?.bodyTranslations?[ArchiveLanguage.english.rawValue] ?? story?.body
+        )
+    }
+
+    func storedBiographyTranslation(_ personID: String) -> String? {
+        people[personID]?.biographyTranslations?[ArchiveLanguage.english.rawValue]
+            ?? people[personID]?.biography
+    }
+
+    func storedSummaryTranslation(_ personID: String, language: ArchiveLanguage) -> String? {
+        people[personID]?.summaryTranslations?[language.rawValue]
+            ?? (language == .english ? people[personID]?.summary : nil)
+    }
+
+    func storedBiographyTranslation(_ personID: String, language: ArchiveLanguage) -> String? {
+        people[personID]?.biographyTranslations?[language.rawValue]
+            ?? (language == .english ? people[personID]?.biography : nil)
+    }
+
+    func storedStoryTranslation(
+        _ personID: String,
+        storyID: String,
+        field: LocalizationField,
+        language: ArchiveLanguage
+    ) -> String? {
+        let story = people[personID]?.stories?[storyID]
+        switch field {
+        case .storyTitle:
+            return story?.titleTranslations?[language.rawValue] ?? (language == .english ? story?.title : nil)
+        case .storySummary:
+            return story?.summaryTranslations?[language.rawValue] ?? (language == .english ? story?.summary : nil)
+        case .storyBody:
+            return story?.bodyTranslations?[language.rawValue] ?? (language == .english ? story?.body : nil)
+        default:
+            return nil
+        }
+    }
+
+    func storedEventTranslation(
+        _ personID: String,
+        eventID: String,
+        field: LocalizationField,
+        language: ArchiveLanguage
+    ) -> (title: String?, summary: String?, place: String?) {
+        let event = people[personID]?.events?[eventID]
+        return (
+            event?.titleTranslations?[language.rawValue] ?? (language == .english ? event?.title : nil),
+            event?.summaryTranslations?[language.rawValue] ?? (language == .english ? event?.summary : nil),
+            event?.placeTranslations?[language.rawValue] ?? (language == .english ? event?.place : nil)
+        )
+    }
+
+    func storedMediaTranslation(mediaID: String, language: ArchiveLanguage) -> String? {
+        let record = mediaByID[mediaID]
+        if let value = record?.captionTranslations?[language.rawValue], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+        if language == .english, let value = record?.caption, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+        return nil
+    }
+
+    func updatePersonTranslation(
+        personID: String,
+        field: LocalizationField,
+        language: ArchiveLanguage,
+        value: String,
+        fileManager: FileManager = .default
+    ) throws {
+        var record = people[personID] ?? NarrativePersonLocalization()
+        switch field {
+        case .summary:
+            var values = record.summaryTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            record.summaryTranslations = values.isEmpty ? nil : values
+        case .biography:
+            var values = record.biographyTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            record.biographyTranslations = values.isEmpty ? nil : values
+        default:
+            return
+        }
+        people[personID] = record
+        try persist(fileManager: fileManager)
+    }
+
+    func updateStoryTranslation(
+        personID: String,
+        storyID: String,
+        field: LocalizationField,
+        language: ArchiveLanguage,
+        value: String,
+        fileManager: FileManager = .default
+    ) throws {
+        var person = people[personID] ?? NarrativePersonLocalization()
+        var stories = person.stories ?? [:]
+        var story = stories[storyID] ?? NarrativeStoryLocalization()
+        switch field {
+        case .storyTitle:
+            var values = story.titleTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            story.titleTranslations = values.isEmpty ? nil : values
+        case .storySummary:
+            var values = story.summaryTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            story.summaryTranslations = values.isEmpty ? nil : values
+        case .storyBody:
+            var values = story.bodyTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            story.bodyTranslations = values.isEmpty ? nil : values
+        default: return
+        }
+        stories[storyID] = story
+        person.stories = stories
+        people[personID] = person
+        try persist(fileManager: fileManager)
+    }
+
+    func updateEventTranslation(
+        personID: String,
+        eventID: String,
+        field: LocalizationField,
+        language: ArchiveLanguage,
+        value: String,
+        fileManager: FileManager = .default
+    ) throws {
+        var person = people[personID] ?? NarrativePersonLocalization()
+        var events = person.events ?? [:]
+        var event = events[eventID] ?? NarrativeEventLocalization()
+        switch field {
+        case .eventTitle:
+            var values = event.titleTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            event.titleTranslations = values.isEmpty ? nil : values
+        case .eventSummary:
+            var values = event.summaryTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            event.summaryTranslations = values.isEmpty ? nil : values
+        case .eventPlace:
+            var values = event.placeTranslations ?? [:]
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+            event.placeTranslations = values.isEmpty ? nil : values
+        default: return
+        }
+        events[eventID] = event
+        person.events = events
+        people[personID] = person
+        try persist(fileManager: fileManager)
+    }
+
+    func removeEventTranslations(
+        personID: String,
+        eventID: String,
+        fileManager: FileManager = .default
+    ) throws {
+        guard var person = people[personID],
+              var events = person.events,
+              events.removeValue(forKey: eventID) != nil else { return }
+        person.events = events.isEmpty ? nil : events
+        people[personID] = person
+        try persist(fileManager: fileManager)
+    }
+
+    func removeStoryTranslations(
+        personID: String,
+        storyID: String,
+        fileManager: FileManager = .default
+    ) throws {
+        guard var person = people[personID],
+              var stories = person.stories,
+              stories.removeValue(forKey: storyID) != nil else { return }
+        person.stories = stories.isEmpty ? nil : stories
+        people[personID] = person
+        try persist(fileManager: fileManager)
     }
 
     func eventTitle(_ personID: String, eventID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.events?[eventID]?.title, pending: "English event title pending")
+        let event = people[personID]?.events?[eventID]
+        return localized(source: source, translations: event?.titleTranslations, legacyEnglish: event?.title)
     }
 
     func eventSummary(_ personID: String, eventID: String, source: String) -> String {
-        localized(source: source, translation: people[personID]?.events?[eventID]?.summary, pending: "English event description pending")
+        let event = people[personID]?.events?[eventID]
+        return localized(source: source, translations: event?.summaryTranslations, legacyEnglish: event?.summary)
+    }
+
+    func eventPlace(_ personID: String, eventID: String, source: String) -> String {
+        let event = people[personID]?.events?[eventID]
+        return localized(
+            source: ArchiveCopy.place(source),
+            translations: event?.placeTranslations,
+            legacyEnglish: event?.place
+        )
     }
 
     func mediaTitle(mediaID: String, source: String) -> String {
-        localized(source: source, translation: mediaByID[mediaID]?.title, pending: "English title pending")
+        let record = mediaByID[mediaID]
+        return localized(source: source, translations: record?.titleTranslations, legacyEnglish: record?.title)
+    }
+
+    func storedMediaTitle(mediaID: String, language: ArchiveLanguage) -> String? {
+        let record = mediaByID[mediaID]
+        return record?.titleTranslations?[language.rawValue]
+            ?? (language == .english ? record?.title : nil)
+    }
+
+    func updateMediaTitle(
+        mediaID: String,
+        title: String,
+        language: ArchiveLanguage,
+        fileManager: FileManager = .default
+    ) throws {
+        var record = mediaByID[mediaID] ?? NarrativeMediaLocalization(title: nil, caption: nil, captionTranslations: nil)
+        var values = record.titleTranslations ?? [:]
+        let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
+        record.titleTranslations = values.isEmpty ? nil : values
+        if language == .english { record.title = cleaned.isEmpty ? nil : cleaned }
+        mediaByID[mediaID] = record
+        try persist(fileManager: fileManager)
     }
 
     func mediaCaption(
@@ -363,15 +689,22 @@ final class NarrativeLocalizationStore {
         try persist(fileManager: fileManager)
     }
 
-    private func localized(source: String, translation: String?, pending: String) -> String {
+    private func localized(
+        source: String,
+        translations: [String: String]?,
+        legacyEnglish: String?
+    ) -> String {
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-        guard language == .english else { return source }
-        if let translation, !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let translation = translations?[language.rawValue], !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return translation
         }
-        if source.range(of: "[А-Яа-яЁё]", options: .regularExpression) != nil {
-            return pending
+        if language == .english, let legacyEnglish, !legacyEnglish.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return legacyEnglish
         }
+        // Missing translations deliberately fall back to the complete source
+        // value. The repository exposes a visible review warning for this
+        // exact fallback; partial translated/source concatenation is never
+        // produced here.
         return source
     }
 }
@@ -520,6 +853,14 @@ final class NameLocalizationStore {
         if let localized = namesByID[personID]?.localizedNames[selectedLanguage.rawValue],
            !localized.isEmpty {
             return localizedUnknownName(localized, language: selectedLanguage)
+        }
+        let containsCyrillic = fallback.range(of: "[А-Яа-яЁё]", options: .regularExpression) != nil
+        let containsLatin = fallback.range(of: "[A-Za-z]", options: .regularExpression) != nil
+        if selectedLanguage == .english, containsCyrillic {
+            return localizedUnknownName(Self.transliterate(fallback), language: selectedLanguage)
+        }
+        if selectedLanguage == .russian, containsLatin {
+            return localizedUnknownName(Self.reverseTransliterate(fallback), language: selectedLanguage)
         }
         // Older private archives used the English literal "Unknown" for an
         // unnamed given name. Keep those archives readable and make the
@@ -770,6 +1111,39 @@ enum ArchiveCopy {
         case "юмашев": return "Yumashev"
         default: return trimmed
         }
+    }
+
+    static func profileSummary(_ value: String) -> String {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = cleaned.lowercased()
+        if lowercased == "gedcom-linked record; detailed profile pending review." {
+            return text(
+                english: cleaned,
+                russian: "Запись связана с GEDCOM; подробные сведения ещё не проверены."
+            )
+        }
+        if lowercased.hasPrefix("gedcom-linked record; confirmed as ") {
+            let localized = NameLocalizationStore.shared.localizeEmbeddedNames(in: cleaned)
+            return text(
+                english: localized,
+                russian: localized
+                    .replacingOccurrences(of: "GEDCOM-linked record; confirmed as ", with: "Запись связана с GEDCOM; подтверждено родство: ")
+                    .replacingOccurrences(of: "’s son; detailed profile pending review.", with: " — сын; подробные сведения ещё не проверены.")
+            )
+        }
+        if lowercased.hasPrefix("placeholder for an unnamed daughter") {
+            return text(
+                english: cleaned,
+                russian: "Запись безымянной дочери Сергея Заболотнова; в GEDCOM имя не указано."
+            )
+        }
+        if lowercased.hasPrefix("placeholder for the unidentified mother") {
+            return text(
+                english: cleaned,
+                russian: "Запись неизвестной матери в семье Федотовых; личность требует проверки источников."
+            )
+        }
+        return cleaned
     }
 
     static func eventTitle(_ value: String) -> String {
@@ -1397,6 +1771,10 @@ struct Person: Codable, Identifiable, Hashable {
     var facts: [PersonFact]
     var events: [LifeEvent]?
     var storyChapters: [StoryChapter]?
+    /// Personal recollections recorded in the app or migrated from the
+    /// private legacy archive. Notes are intentionally separate from long
+    /// document-derived Stories.
+    var notes: [PersonNote]? = nil
     var immediateFamily: ImmediateFamily
     var media: [MediaReference]
     var sources: [SourceReference]
@@ -1451,7 +1829,9 @@ struct Person: Codable, Identifiable, Hashable {
     }
 
     var localizedSummary: String {
-        NarrativeLocalizationStore.shared.personSummary(id, source: summary)
+        ArchiveCopy.profileSummary(
+            NarrativeLocalizationStore.shared.personSummary(id, source: summary)
+        )
     }
 
     var localizedBiography: String {
@@ -1489,6 +1869,10 @@ struct Person: Codable, Identifiable, Hashable {
 
     var structuredStories: [StoryChapter] {
         storyChapters ?? []
+    }
+
+    var structuredNotes: [PersonNote] {
+        notes ?? []
     }
 
     var orderedEvents: [LifeEvent] {
@@ -1842,6 +2226,101 @@ struct StoryChapter: Codable, Identifiable, Hashable {
     var body: String
 }
 
+enum PersonNoteOrigin: String, Codable, Hashable {
+    case user
+    case legacyStory
+    case legacyBiography
+    case legacyGEDCOM
+}
+
+/// A Note has one durable identity and one source text. The opposite-language
+/// value is derived and stored on the same record. Links typed into the text
+/// remain part of the text. Review links connect an imported recollection to
+/// preserved Story chapters or to its separate synthesized biography.
+struct PersonNote: Codable, Identifiable, Hashable {
+    var id: String
+    var text: String
+    var sourceLanguage: String
+    var translations: [String: String]?
+    var recordedByAccountID: Person.ID?
+    var recordedAt: String
+    var updatedAt: String?
+    var origin: PersonNoteOrigin
+    var reviewStoryIDs: [StoryChapter.ID]?
+    var reviewBiography: Bool? = nil
+    var reviewBiographyStoryID: StoryChapter.ID? = nil
+    var translationNeedsReview: Bool?
+
+    func localizedText(language: ArchiveLanguage = .current) -> String {
+        if sourceLanguage == language.rawValue {
+            return text
+        }
+        if let translated = translations?[language.rawValue]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !translated.isEmpty {
+            return translated
+        }
+        return text
+    }
+
+    var needsTranslationReview: Bool {
+        translationNeedsReview == true
+    }
+
+    var hasLegacyStoryReview: Bool {
+        !(reviewStoryIDs ?? []).isEmpty
+    }
+
+    var hasBiographyReview: Bool {
+        reviewBiography == true
+    }
+
+    var hasBiographyStoryReview: Bool {
+        reviewBiographyStoryID?.isEmpty == false
+    }
+}
+
+enum NoteURLToken {
+    struct ProtectedText {
+        let text: String
+        let urls: [String]
+    }
+
+    static func protectedForTranslation(_ text: String) -> ProtectedText {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"(?:https?://|www\.)[^\s]+"#,
+            options: [.caseInsensitive]
+        ) else {
+            return ProtectedText(text: text, urls: [])
+        }
+        let matches = expression.matches(
+            in: text,
+            range: NSRange(text.startIndex..<text.endIndex, in: text)
+        )
+        var protected = text
+        let urls = matches.compactMap { match -> String? in
+            guard let range = Range(match.range, in: text) else { return nil }
+            return String(text[range])
+        }
+        for (index, match) in matches.enumerated().reversed() {
+            guard let range = Range(match.range, in: text) else { continue }
+            protected.replaceSubrange(range, with: "__FAMILY_ARCHIVE_URL_\(index)__")
+        }
+        return ProtectedText(text: protected, urls: urls)
+    }
+
+    static func restoreAfterTranslation(_ text: String, urls: [String]) -> String {
+        var restored = text
+        for (index, url) in urls.enumerated() {
+            restored = restored.replacingOccurrences(
+                of: "__FAMILY_ARCHIVE_URL_\(index)__",
+                with: url,
+                options: .caseInsensitive
+            )
+        }
+        return restored
+    }
+}
+
 struct ImmediateFamily: Codable, Hashable {
     let parents: [String]
     let partners: [String]
@@ -1965,7 +2444,9 @@ enum MediaMentionToken {
         let normalizedName = localizedName
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: "_")
-        let year = recordedBirthYear(for: person).map(String.init) ?? "unknown"
+        guard let year = recordedBirthYear(for: person) else {
+            return normalizedName
+        }
         return "\(normalizedName)_\(year)"
     }
 
@@ -2071,7 +2552,12 @@ enum MediaMentionToken {
                 let next = text[end]
                 return !(next.isLetter || next.isNumber || next == "_")
             }
-            let matchingIDs = Array(Set(matches.map(\.1))).sorted()
+            // Prefer the most specific complete name. A caption such as
+            // `@Светлана Петрова` also begins with `@Светлана`, but the shorter
+            // profile must not make the full-name match appear ambiguous.
+            let longestMatchLength = matches.map { $0.0.count }.max() ?? 0
+            let bestMatches = matches.filter { $0.0.count == longestMatchLength }
+            let matchingIDs = Array(Set(bestMatches.map(\.1))).sorted()
             let selectedMatches = matchingIDs.filter { preferredPersonIDs.contains($0) }
             let chosenID: Person.ID?
             if selectedMatches.count == 1 {
@@ -2082,7 +2568,7 @@ enum MediaMentionToken {
                 chosenID = nil
             }
 
-            guard let chosenID, let matchedName = matches.first(where: { $0.1 == chosenID })?.0 else {
+            guard let chosenID, let matchedName = bestMatches.first(where: { $0.1 == chosenID })?.0 else {
                 result.append(text[cursor])
                 cursor = text.index(after: cursor)
                 continue

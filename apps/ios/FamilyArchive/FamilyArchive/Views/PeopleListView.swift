@@ -5,6 +5,11 @@ import CoreTransferable
 import ImageIO
 import AuthenticationServices
 import PhotosUI
+import QuickLook
+
+private extension Notification.Name {
+    static let familyArchiveDidImport = Notification.Name("FamilyArchiveDidImport")
+}
 
 enum ArchiveFileResolver {
     nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
@@ -99,10 +104,22 @@ enum ArchiveFileResolver {
 final class ArchiveImageLoader: ObservableObject {
     @Published private(set) var image: UIImage?
     private var loadedKey: String?
+    private var decodeOperation: Operation?
+    private static let decodeQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "FamilyArchive.thumbnail-decoding"
+        // A large archive can make many LazyVGrid cells appear together.
+        // Bounding decode concurrency prevents hundreds of multi-megabyte
+        // originals from competing for CPU and memory at the same time.
+        queue.maxConcurrentOperationCount = 3
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
 
     func load(path: String?, maxPixelSize: Int) {
         let key = path.map { "\($0)|\(maxPixelSize)" }
         guard key != loadedKey else { return }
+        decodeOperation?.cancel()
         loadedKey = key
         image = nil
         guard let path else { return }
@@ -112,13 +129,23 @@ final class ArchiveImageLoader: ObservableObject {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        let operation = BlockOperation()
+        operation.addExecutionBlock { [weak self, weak operation] in
+            guard operation?.isCancelled == false else { return }
             let decoded = ArchiveFileResolver.image(for: path, maxPixelSize: maxPixelSize)
             DispatchQueue.main.async {
-                guard let self, self.loadedKey == key else { return }
+                guard operation?.isCancelled == false,
+                      let self,
+                      self.loadedKey == key else { return }
                 self.image = decoded
             }
         }
+        decodeOperation = operation
+        Self.decodeQueue.addOperation(operation)
+    }
+
+    deinit {
+        decodeOperation?.cancel()
     }
 }
 
@@ -172,6 +199,7 @@ struct PeopleListView: View {
     @State private var searchText = ""
     @State private var selectedFamilyNameKey: String?
     @State private var storiesOnly = false
+    @State private var translationReviewOnly = false
     @State private var selectedConnectionScope: ConnectionScope = .all
     @State private var selectedBirthMonth: DateFilterSelection = .any
     @State private var selectedDeathMonth: DateFilterSelection = .any
@@ -219,6 +247,7 @@ struct PeopleListView: View {
             let matchesFamilyName = selectedFamilyNameKey == nil ||
                 normalizedFamilyNameKey(person.familyName) == selectedFamilyNameKey
             let matchesStories = !storiesOnly || person.hasStories
+            let matchesTranslationReview = !translationReviewOnly || repository.needsTranslationReview(person.id)
             let matchesBirthMonth = matchesDateFilter(selectedBirthMonth, value: dateMonth(for: person.birthFact?.value))
             let matchesDeathMonth = matchesDateFilter(selectedDeathMonth, value: dateMonth(for: person.deathFact?.value))
             let matchesLivedCentury = matchesCenturyFilter(selectedCentury, person: person)
@@ -234,13 +263,15 @@ struct PeopleListView: View {
                 matchesConnection = false
             }
             return matchesSearch && matchesFamilyName && matchesStories &&
-                matchesBirthMonth && matchesDeathMonth && matchesLivedCentury && matchesConnection
+                matchesTranslationReview && matchesBirthMonth && matchesDeathMonth &&
+                matchesLivedCentury && matchesConnection
         }
     }
 
     private var activeFilterCount: Int {
         [selectedFamilyNameKey != nil,
          storiesOnly,
+         translationReviewOnly,
          selectedBirthMonth != .any,
          selectedDeathMonth != .any,
          selectedCentury != .any,
@@ -463,13 +494,15 @@ struct PeopleListView: View {
                     availableCenturies: availableBirthCenturies,
                     familyNameKey: selectedFamilyNameKey,
                     storiesOnly: storiesOnly,
+                    translationReviewOnly: translationReviewOnly,
                     connectionScope: selectedConnectionScope,
                     birthMonth: selectedBirthMonth,
                     deathMonth: selectedDeathMonth,
                     century: selectedCentury
-                ) { familyNameKey, storiesOnly, connectionScope, birthMonth, deathMonth, century in
+                ) { familyNameKey, storiesOnly, translationReviewOnly, connectionScope, birthMonth, deathMonth, century in
                     selectedFamilyNameKey = familyNameKey
                     self.storiesOnly = storiesOnly
+                    self.translationReviewOnly = translationReviewOnly
                     selectedConnectionScope = connectionScope
                     selectedBirthMonth = birthMonth
                     selectedDeathMonth = deathMonth
@@ -542,8 +575,16 @@ struct PeopleListView: View {
                     FilterBubble(title: name) { self.selectedFamilyNameKey = nil }
                 }
                 if storiesOnly {
-                    FilterBubble(title: ArchiveCopy.text(english: "Has stories", russian: "Есть истории")) {
+                    FilterBubble(title: ArchiveCopy.text(english: "Has notes or stories", russian: "Есть заметки или истории")) {
                         storiesOnly = false
+                    }
+                }
+                if translationReviewOnly {
+                    FilterBubble(title: ArchiveCopy.text(
+                        english: "Needs translation review",
+                        russian: "Нужно проверить перевод"
+                    )) {
+                        translationReviewOnly = false
                     }
                 }
                 if selectedConnectionScope != .all {
@@ -658,11 +699,12 @@ private struct FamilyFilterSheet: View {
     let familyNameOptions: [FamilyNameFilterOption]
     let connectionScopeCounts: [ConnectionScope: Int]
     let availableCenturies: [Int]
-    let onApply: (String?, Bool, ConnectionScope, DateFilterSelection, DateFilterSelection, DateFilterSelection) -> Void
+    let onApply: (String?, Bool, Bool, ConnectionScope, DateFilterSelection, DateFilterSelection, DateFilterSelection) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var familyNameKey: String?
     @State private var storiesOnly: Bool
+    @State private var translationReviewOnly: Bool
     @State private var connectionScope: ConnectionScope
     @State private var birthMonth: DateFilterSelection
     @State private var deathMonth: DateFilterSelection
@@ -675,11 +717,12 @@ private struct FamilyFilterSheet: View {
         availableCenturies: [Int],
         familyNameKey: String?,
         storiesOnly: Bool,
+        translationReviewOnly: Bool,
         connectionScope: ConnectionScope,
         birthMonth: DateFilterSelection,
         deathMonth: DateFilterSelection,
         century: DateFilterSelection,
-        onApply: @escaping (String?, Bool, ConnectionScope, DateFilterSelection, DateFilterSelection, DateFilterSelection) -> Void
+        onApply: @escaping (String?, Bool, Bool, ConnectionScope, DateFilterSelection, DateFilterSelection, DateFilterSelection) -> Void
     ) {
         self.repository = repository
         self.familyNameOptions = familyNameOptions
@@ -688,6 +731,7 @@ private struct FamilyFilterSheet: View {
         self.onApply = onApply
         _familyNameKey = State(initialValue: familyNameKey)
         _storiesOnly = State(initialValue: storiesOnly)
+        _translationReviewOnly = State(initialValue: translationReviewOnly)
         _connectionScope = State(initialValue: connectionScope)
         _birthMonth = State(initialValue: birthMonth)
         _deathMonth = State(initialValue: deathMonth)
@@ -731,8 +775,16 @@ private struct FamilyFilterSheet: View {
                         }
 
                         filterToggleRow(
-                            title: ArchiveCopy.text(english: "Has stories", russian: "Есть истории"),
+                            title: ArchiveCopy.text(english: "Has notes or stories", russian: "Есть заметки или истории"),
                             isOn: $storiesOnly
+                        )
+
+                        filterToggleRow(
+                            title: ArchiveCopy.text(
+                                english: "Needs translation review",
+                                russian: "Нужно проверить перевод"
+                            ),
+                            isOn: $translationReviewOnly
                         )
 
                         filterMenuRow(
@@ -826,7 +878,15 @@ private struct FamilyFilterSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        onApply(familyNameKey, storiesOnly, connectionScope, birthMonth, deathMonth, century)
+                        onApply(
+                            familyNameKey,
+                            storiesOnly,
+                            translationReviewOnly,
+                            connectionScope,
+                            birthMonth,
+                            deathMonth,
+                            century
+                        )
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark")
@@ -994,6 +1054,7 @@ private struct FamilyFilterSheet: View {
     private func clearAll() {
         familyNameKey = nil
         storiesOnly = false
+        translationReviewOnly = false
         connectionScope = .all
         birthMonth = .any
         deathMonth = .any
@@ -1046,6 +1107,10 @@ struct FamilyMemberTile: View {
                     }
 
                     Spacer(minLength: 6)
+
+                    if repository?.needsTranslationReview(person.id) == true {
+                        TranslationReviewBadge()
+                    }
 
                     if person.hasStories {
                         ProfileContentBadge()
@@ -1107,10 +1172,22 @@ struct AccountHolderBadge: View {
 
 private struct ProfileContentBadge: View {
     var body: some View {
-        Image(systemName: "book.pages")
+        Image(systemName: "note.text")
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(ArchiveTheme.muted)
-            .accessibilityLabel(ArchiveCopy.text(english: "Stories available", russian: "Есть истории"))
+            .accessibilityLabel(ArchiveCopy.text(english: "Notes or stories available", russian: "Есть заметки или истории"))
+    }
+}
+
+private struct TranslationReviewBadge: View {
+    var body: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ArchiveTheme.accent)
+            .accessibilityLabel(ArchiveCopy.text(
+                english: "Translation needs review",
+                russian: "Нужно проверить перевод"
+            ))
     }
 }
 
@@ -1173,7 +1250,8 @@ private struct PersonRow: View {
 extension Person {
     var hasStories: Bool {
         !biography.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !structuredStories.isEmpty
+            !structuredStories.isEmpty ||
+            !structuredNotes.isEmpty
     }
 
     var hasProfileContent: Bool {
@@ -1402,6 +1480,12 @@ struct MainTabView: View {
             // Family from the bottom bar can still open the requested person.
             selectedTab = .home
         }
+        .onReceive(NotificationCenter.default.publisher(for: .familyArchiveDidImport)) { _ in
+            guard #available(iOS 26.0, *) else { return }
+            Task { @MainActor in
+                await repository.autoTranslateMissingContent(force: true)
+            }
+        }
     }
 }
 
@@ -1584,8 +1668,8 @@ private struct HomeView: View {
                         .font(.system(.largeTitle).weight(.bold))
 
                     Text(ArchiveCopy.text(
-                        english: "Your family, stories, and memories in one place.",
-                        russian: "Ваша семья, истории и воспоминания — в одном месте."
+                        english: "Your family, notes, stories, and memories in one place.",
+                        russian: "Ваша семья, заметки, истории и воспоминания — в одном месте."
                     ))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -2276,7 +2360,7 @@ private struct SettingsView: View {
                         } label: {
                             ArchiveTransferRow(
                                 title: ArchiveCopy.text(english: "Export private archive", russian: "Экспортировать приватный архив"),
-                                detail: ArchiveCopy.text(english: "Save people, relationships, stories, and media", russian: "Сохранить людей, связи, истории и медиа"),
+                                detail: ArchiveCopy.text(english: "Save people, relationships, notes, stories, and media", russian: "Сохранить людей, связи, заметки, истории и медиа"),
                                 systemImage: "square.and.arrow.up"
                             )
                         }
@@ -2524,6 +2608,7 @@ private struct SettingsView: View {
                     cleanupTemporaryImport(at: url)
                     importConfirmation = nil
                     transferStatus = message
+                    NotificationCenter.default.post(name: .familyArchiveDidImport, object: nil)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -2773,8 +2858,8 @@ private struct AccountChooserView: View {
                                 isOn: readOnly
                             )
                             Text(ArchiveCopy.text(
-                                english: "When enabled, the recipient can browse the archive but cannot edit or delete profiles, stories, events, captions, or media.",
-                                russian: "При включении получатель сможет просматривать архив, но не сможет изменять или удалять профили, истории, события, подписи и медиа."
+                                english: "When enabled, the recipient can browse the archive but cannot edit or delete profiles, notes, stories, events, captions, or media.",
+                                russian: "При включении получатель сможет просматривать архив, но не сможет изменять или удалять профили, заметки, истории, события, подписи и медиа."
                             ))
                             .font(ArchiveTypography.metadata)
                             .foregroundStyle(ArchiveTheme.metadata)
@@ -3113,14 +3198,12 @@ private struct MemoriesView: View {
     @State private var filter: MemoryFilter = .photo
     @State private var mediaSnapshot: [MemoryItem] = []
     @State private var selectedMemory: MemoryItem?
+    @State private var selectedDocumentURL: URL?
     @State private var showingMediaReview = false
+    @State private var reviewCount = 0
+    @State private var isLoadingArchive = true
 
-    init(repository: FamilyRepository) {
-        self.repository = repository
-        _mediaSnapshot = State(initialValue: Self.makeMediaSnapshot(repository: repository))
-    }
-
-    private static func makeMediaSnapshot(repository: FamilyRepository) -> [MemoryItem] {
+    private static func makeMediaSnapshot(people: [Person]) -> [MemoryItem] {
         // Build this once per document change. The previous implementation
         // called repository.media(for:) for every person on every SwiftUI
         // refresh; each call scanned every person's media collection again.
@@ -3128,10 +3211,17 @@ private struct MemoriesView: View {
         // one gallery entry for a shared asset.
         var seen = Set<String>()
         var result: [MemoryItem] = []
-        for person in repository.people {
+        for person in people {
             for item in person.media {
                 let identity = item.path ?? item.id
                 guard seen.insert(identity).inserted else { continue }
+                // Source documents are browsed from the Documents category
+                // without needing a person mention. Profile media remains
+                // mention-driven and excludes documents in the repository.
+                if item.kind == .document {
+                    result.append(MemoryItem(person: person, media: item))
+                    continue
+                }
                 guard !MediaMentionToken.personIDs(in: item.caption ?? "").isEmpty else { continue }
                 result.append(MemoryItem(person: person, media: item))
             }
@@ -3143,7 +3233,12 @@ private struct MemoriesView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let people = repository.people
         let filtered = mediaSnapshot.filter { memory in
-            let matchesType = filter.matches(memory)
+            guard filter.matches(memory) else { return false }
+            // Mention rendering resolves stable person IDs against every
+            // localized name. It is useful for a real search, but doing it
+            // for all 409 photos when the query is empty caused the Archive
+            // tab's long apparent hang.
+            guard !query.isEmpty else { return true }
             let searchableText = [
                 memory.media.title,
                 MediaMentionToken.visibleText(
@@ -3156,14 +3251,18 @@ private struct MemoriesView: View {
             ]
             .joined(separator: " ")
 
-            let matchesSearch = query.isEmpty || searchableText.localizedCaseInsensitiveContains(query)
-            return matchesType && matchesSearch
+            return searchableText.localizedCaseInsensitiveContains(query)
         }
 
         return filtered
     }
 
     var body: some View {
+        // SwiftUI can read a computed property several times while building a
+        // hierarchy. Keep this render to one filtered archive pass and pass
+        // the same stable result to the count, grid, and pager.
+        let memories = visibleMemories
+
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -3175,8 +3274,7 @@ private struct MemoriesView: View {
                         } label: {
                             HStack(spacing: 7) {
                                 Image(systemName: "tray.and.arrow.down")
-                                Text(ArchiveCopy.text(english: "Review media", russian: "Проверить медиа"))
-                                let reviewCount = repository.stagedMediaItems().count + repository.mediaNeedingMentionReview().count
+                                Text(ArchiveCopy.text(english: "Review photos", russian: "Проверить фото"))
                                 if reviewCount > 0 {
                                     Text("· \(reviewCount)")
                                         .font(ArchiveTypography.metadata)
@@ -3204,22 +3302,34 @@ private struct MemoriesView: View {
                     }
                     .padding(.vertical, 12)
 
-                    Text("\(visibleMemories.count) \(filter.localizedCountLabel)")
+                    Text("\(memories.count) \(filter.localizedCountLabel)")
                         .font(ArchiveTypography.metadataEmphasis)
                         .foregroundStyle(ArchiveTheme.metadata)
                     .padding(.bottom, 8)
 
-                    if visibleMemories.isEmpty {
+                    if isLoadingArchive {
+                        ProgressView(ArchiveCopy.text(
+                            english: "Loading archive…",
+                            russian: "Загрузка архива…"
+                        ))
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 48)
+                    } else if memories.isEmpty {
                         ContentUnavailableView.search(text: searchText)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 48)
                     } else {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
-                            ForEach(visibleMemories) { memory in
+                            ForEach(memories) { memory in
                                 GalleryMemoryTile(memory: memory, people: repository.people)
                                     .contentShape(Rectangle())
                                     .onTapGesture {
-                                        selectedMemory = memory
+                                        if memory.media.kind == .document,
+                                           let path = memory.media.path {
+                                            selectedDocumentURL = repository.transferFileURL(for: path)
+                                        } else {
+                                            selectedMemory = memory
+                                        }
                                     }
                             }
                         }
@@ -3238,18 +3348,24 @@ private struct MemoriesView: View {
                 }
             }
             .sheet(item: $selectedMemory) { memory in
-                MemoriesPagerView(items: visibleMemories, initialID: memory.id, repository: repository)
+                MemoriesPagerView(items: memories, initialID: memory.id, repository: repository)
             }
+            .quickLookPreview($selectedDocumentURL)
             .sheet(isPresented: $showingMediaReview) {
                 MediaReviewView(repository: repository)
             }
-            .task {
-                if mediaSnapshot.isEmpty {
-                    mediaSnapshot = Self.makeMediaSnapshot(repository: repository)
+            .onReceive(repository.$document) { document in
+                // Let the navigation transition render before indexing the
+                // in-memory metadata. Images remain lazy and decode through
+                // the bounded queue above.
+                Task { @MainActor in
+                    isLoadingArchive = true
+                    await Task.yield()
+                    mediaSnapshot = Self.makeMediaSnapshot(people: document.people)
+                    reviewCount = repository.stagedMediaItems().filter { $0.kind == .photo }.count
+                        + repository.mediaNeedingMentionReview().count
+                    isLoadingArchive = false
                 }
-            }
-            .onReceive(repository.$document) { _ in
-                mediaSnapshot = Self.makeMediaSnapshot(repository: repository)
             }
         }
     }
@@ -3279,19 +3395,19 @@ private struct MediaReviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(ArchiveCopy.text(
-                        english: "New files stay private until you review and save them.",
-                        russian: "Новые файлы остаются приватными, пока вы не проверите и не сохраните их."
+                        english: "New photos stay private until you review and save them.",
+                        russian: "Новые фотографии остаются приватными, пока вы не проверите и не сохраните их."
                     ))
                     .font(ArchiveTypography.body)
                     .foregroundStyle(ArchiveTheme.metadata)
 
                     if stagedItems.isEmpty && savedItems.isEmpty {
                         ContentUnavailableView(
-                            ArchiveCopy.text(english: "No media to review", russian: "Нет медиа для проверки"),
+                            ArchiveCopy.text(english: "No photos to review", russian: "Нет фотографий для проверки"),
                             systemImage: "tray",
                             description: Text(ArchiveCopy.text(
-                                english: "Add photos or documents from Files to begin.",
-                                russian: "Добавьте фотографии или документы из приложения «Файлы»."
+                                english: "Add photos from Files or Photos to begin.",
+                                russian: "Добавьте фотографии из приложений «Файлы» или «Фото»."
                             ))
                         )
                         .frame(maxWidth: .infinity)
@@ -3299,8 +3415,8 @@ private struct MediaReviewView: View {
                     } else {
                         if !savedItems.isEmpty {
                             Text(ArchiveCopy.text(
-                                english: "SAVED MEDIA NEEDING MENTIONS",
-                                russian: "СОХРАНЁННЫЕ МЕДИА БЕЗ УПОМИНАНИЙ"
+                                english: "SAVED PHOTOS NEEDING MENTIONS",
+                                russian: "СОХРАНЁННЫЕ ФОТО БЕЗ УПОМИНАНИЙ"
                             ))
                             .font(ArchiveTypography.metadataEmphasis)
                             .foregroundStyle(ArchiveTheme.metadata)
@@ -3365,7 +3481,7 @@ private struct MediaReviewView: View {
             }
             .scrollIndicators(.hidden)
             .background(ArchiveTheme.background)
-            .navigationTitle(ArchiveCopy.text(english: "Review media", russian: "Проверка медиа"))
+            .navigationTitle(ArchiveCopy.text(english: "Review photos", russian: "Проверка фото"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -3383,7 +3499,7 @@ private struct MediaReviewView: View {
                         } label: {
                             Image(systemName: "plus")
                         }
-                        .accessibilityLabel(ArchiveCopy.text(english: "Add media", russian: "Добавить медиа"))
+                        .accessibilityLabel(ArchiveCopy.text(english: "Add photos", russian: "Добавить фото"))
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         PhotosPicker(
@@ -3400,7 +3516,7 @@ private struct MediaReviewView: View {
             }
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [.image, .movie, .audio, .pdf],
+                allowedContentTypes: [.image],
                 allowsMultipleSelection: true
             ) { result in
                 switch result {
@@ -3447,7 +3563,7 @@ private struct MediaReviewView: View {
     }
 
     private func reloadItems() {
-        stagedItems = repository.stagedMediaItems()
+        stagedItems = repository.stagedMediaItems().filter { $0.kind == .photo }
         savedItems = repository.mediaNeedingMentionReview()
     }
 
@@ -3626,7 +3742,7 @@ private struct StagedMediaEditor: View {
             }
             .scrollIndicators(.hidden)
             .background(ArchiveTheme.background)
-            .navigationTitle(ArchiveCopy.text(english: "Review media", russian: "Проверка медиа"))
+            .navigationTitle(ArchiveCopy.text(english: "Review photo", russian: "Проверка фото"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

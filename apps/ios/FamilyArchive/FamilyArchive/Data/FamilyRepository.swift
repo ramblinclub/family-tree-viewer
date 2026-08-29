@@ -611,14 +611,15 @@ final class FamilyRepository: ObservableObject {
     @Published private(set) var document: FamilyArchiveDocument
     @Published private(set) var activeAccountID: Person.ID?
     @Published private(set) var isReadOnly: Bool
+    @Published private(set) var localizationIssuesByPerson: [Person.ID: [LocalizationReviewIssue]] = [:]
+    @Published private(set) var isAutomaticallyTranslating = false
     @Published var appLanguage: ArchiveLanguage {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: NameLocalizationStore.appLanguageKey)
-            // Refresh private sidecars when the locale changes. This keeps
-            // names and narrative translations in sync immediately, rather
-            // than waiting for a relaunch or an import cycle.
-            NameLocalizationStore.shared.reload()
-            NarrativeLocalizationStore.shared.reload()
+            // Both localization stores keep every supported language in
+            // memory, and their display helpers read this preference. A
+            // language switch therefore needs no disk read or full-archive
+            // validation pass; @Published invalidation redraws the UI.
         }
     }
 
@@ -626,6 +627,7 @@ final class FamilyRepository: ObservableObject {
     private let presumedDeathBeforeBirthYear = 1921
     private var profilePhotoPathCache: [Person.ID: String] = [:]
     private var coloredPhotoCache: [String: Bool] = [:]
+    private var localizationIgnoredNameExpression: NSRegularExpression?
     private let privateStore: PrivateDocumentStore
 
     private struct PhotoCandidate {
@@ -656,6 +658,7 @@ final class FamilyRepository: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.activeAccountIDKey)
         }
         NameLocalizationStore.shared.reload()
+        NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
         if !coreEventMigration.changedPersonIDs.isEmpty {
             try? privateStore.save(
                 document: coreEventMigration.document,
@@ -664,6 +667,372 @@ final class FamilyRepository: ObservableObject {
             )
         }
         normalizeMediaMentionStorage()
+        migrateLegacyStoriesToNotes()
+        refreshLocalizationReviewIssues()
+    }
+
+    func localizationIssues(for personID: Person.ID) -> [LocalizationReviewIssue] {
+        localizationIssuesByPerson[personID] ?? []
+    }
+
+    func needsTranslationReview(_ personID: Person.ID) -> Bool {
+        !(localizationIssuesByPerson[personID] ?? []).isEmpty
+    }
+
+    var translationReviewPersonCount: Int {
+        localizationIssuesByPerson.values.filter { !$0.isEmpty }.count
+    }
+
+    /// Audits every narrative value that can be rendered on a profile. A
+    /// missing locale is allowed to fall back to the complete original text,
+    /// but the fallback always produces a visible, filterable review issue.
+    func refreshLocalizationReviewIssues() {
+        prepareLocalizationAudit()
+        var result: [Person.ID: [LocalizationReviewIssue]] = [:]
+
+        for person in document.people {
+            var issues: [LocalizationReviewIssue] = []
+
+            if shouldAuditPrivateProfileSummary(person.summary) {
+                auditLocalizedField(
+                    personID: person.id,
+                    field: .summary,
+                    recordID: person.id,
+                    source: person.summary,
+                    stored: { NarrativeLocalizationStore.shared.storedSummaryTranslation(person.id, language: $0) },
+                    issues: &issues
+                )
+            }
+            // A preserved legacy biography is document-derived source
+            // material reached through its Note link. It is not canonical
+            // profile prose and must not create a translation-review warning.
+            if !person.structuredNotes.contains(where: \.hasBiographyReview) {
+                auditLocalizedField(
+                    personID: person.id,
+                    field: .biography,
+                    recordID: person.id,
+                    source: person.biography,
+                    stored: { NarrativeLocalizationStore.shared.storedBiographyTranslation(person.id, language: $0) },
+                    issues: &issues
+                )
+            }
+
+            for event in person.structuredEvents {
+                let sidecar: (ArchiveLanguage) -> (title: String?, summary: String?, place: String?) = { language in
+                    NarrativeLocalizationStore.shared.storedEventTranslation(
+                        person.id,
+                        eventID: event.id,
+                        field: .eventTitle,
+                        language: language
+                    )
+                }
+                if shouldAuditCustomEventTitle(event.title) {
+                    auditLocalizedField(
+                        personID: person.id,
+                        field: .eventTitle,
+                        recordID: event.id,
+                        source: event.title,
+                        stored: { event.titleTranslations?[$0.rawValue] ?? sidecar($0).title },
+                        issues: &issues
+                    )
+                }
+                if shouldAuditCustomEventSummary(event.summary) {
+                    auditLocalizedField(
+                        personID: person.id,
+                        field: .eventSummary,
+                        recordID: event.id,
+                        source: event.summary,
+                        stored: { event.summaryTranslations?[$0.rawValue] ?? sidecar($0).summary },
+                        issues: &issues
+                    )
+                }
+                if shouldAuditCustomPlace(event.place ?? "") {
+                    auditLocalizedField(
+                        personID: person.id,
+                        field: .eventPlace,
+                        recordID: event.id,
+                        source: event.place ?? "",
+                        stored: { sidecar($0).place },
+                        issues: &issues
+                    )
+                }
+            }
+
+            // Stories linked from a migrated Note are preserved source
+            // material for review, not canonical profile prose. Keep them
+            // accessible through the Note without creating translation work.
+            let preservedStoryIDs = Set(person.structuredNotes.flatMap { note in
+                var ids = note.reviewStoryIDs ?? []
+                if let biographyStoryID = note.reviewBiographyStoryID,
+                   !biographyStoryID.isEmpty {
+                    ids.append(biographyStoryID)
+                }
+                return ids
+            })
+            for story in person.structuredStories where !preservedStoryIDs.contains(story.id) {
+                auditLocalizedField(
+                    personID: person.id,
+                    field: .storyTitle,
+                    recordID: story.id,
+                    source: story.title,
+                    stored: {
+                        NarrativeLocalizationStore.shared.storedStoryTranslation(
+                            person.id,
+                            storyID: story.id,
+                            field: .storyTitle,
+                            language: $0
+                        )
+                    },
+                    issues: &issues
+                )
+                auditLocalizedField(
+                    personID: person.id,
+                    field: .storySummary,
+                    recordID: story.id,
+                    source: story.summary ?? "",
+                    stored: {
+                        NarrativeLocalizationStore.shared.storedStoryTranslation(
+                            person.id,
+                            storyID: story.id,
+                            field: .storySummary,
+                            language: $0
+                        )
+                    },
+                    issues: &issues
+                )
+                auditLocalizedField(
+                    personID: person.id,
+                    field: .storyBody,
+                    recordID: story.id,
+                    source: story.body,
+                    stored: {
+                        NarrativeLocalizationStore.shared.storedStoryTranslation(
+                            person.id,
+                            storyID: story.id,
+                            field: .storyBody,
+                            language: $0
+                        )
+                    },
+                    issues: &issues
+                )
+            }
+
+            for note in person.structuredNotes {
+                let declaredLanguage = ArchiveLanguage(rawValue: note.sourceLanguage)
+                auditLocalizedField(
+                    personID: person.id,
+                    field: .note,
+                    recordID: note.id,
+                    source: note.text,
+                    declaredSourceLanguage: declaredLanguage,
+                    stored: { language in
+                        language.rawValue == note.sourceLanguage
+                            ? note.text
+                            : note.translations?[language.rawValue]
+                    },
+                    issues: &issues
+                )
+            }
+
+            // PDF and Pages files are private source documents. They live in
+            // Archive > Review media and never create profile translation
+            // warnings or appear as person media without an explicit mention.
+            for media in person.media where media.kind != .document {
+                let source = media.caption ?? ""
+                if !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    auditLocalizedField(
+                        personID: person.id,
+                        field: .mediaCaption,
+                        recordID: media.id,
+                        source: source,
+                        stored: {
+                            NarrativeLocalizationStore.shared.storedMediaTranslation(
+                                mediaID: media.id,
+                                language: $0
+                            )
+                        },
+                        issues: &issues
+                    )
+                }
+            }
+
+            if !issues.isEmpty {
+                result[person.id] = Array(Set(issues)).sorted { $0.id < $1.id }
+            }
+        }
+
+        localizationIssuesByPerson = result
+    }
+
+    /// Event titles in the bundled vocabulary are app labels. They are
+    /// localized once in archive-locales.json and never create per-person
+    /// translation work or review warnings.
+    private func shouldAuditCustomEventTitle(_ value: String) -> Bool {
+        ArchiveLocalizationStore.shared.eventTitle(value, language: .english) == nil &&
+            ArchiveLocalizationStore.shared.eventTitle(value, language: .russian) == nil
+    }
+
+    private func shouldAuditPrivateProfileSummary(_ value: String) -> Bool {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !cleaned.hasPrefix("gedcom-linked record;") &&
+            !cleaned.hasPrefix("placeholder for ")
+    }
+
+    /// Birth/death/marriage projection sentences are generated UI copy with
+    /// a localized person name, not independently authored descriptions.
+    private func shouldAuditCustomEventSummary(_ value: String) -> Bool {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return false }
+        let generatedPatterns = [
+            #"^.+\s+was born\.?$"#,
+            #"^.+\s+died\.?$"#,
+            #"^.+\s+married\s+.+\.?$"#
+        ]
+        return !generatedPatterns.contains {
+            cleaned.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+    }
+
+    /// Ordinary place names are structured values and use the shared place
+    /// dictionary. Only sentence-like or composite place descriptions are
+    /// private narrative content requiring two stored language versions.
+    private func shouldAuditCustomPlace(_ value: String) -> Bool {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return false }
+        if ArchiveLocalizationStore.shared.place(cleaned, language: .english) != nil ||
+            ArchiveLocalizationStore.shared.place(cleaned, language: .russian) != nil {
+            return false
+        }
+        let words = cleaned.split(whereSeparator: { $0.isWhitespace })
+        return words.count > 5 || cleaned.contains("|") || cleaned.contains(";")
+    }
+
+    private func auditLocalizedField(
+        personID: Person.ID,
+        field: LocalizationField,
+        recordID: String,
+        source: String,
+        declaredSourceLanguage: ArchiveLanguage? = nil,
+        stored: (ArchiveLanguage) -> String?,
+        issues: inout [LocalizationReviewIssue]
+    ) {
+        let source = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return }
+        let detectedSourceLanguage = detectedLanguage(in: source) ?? declaredSourceLanguage ?? .russian
+
+        for targetLanguage in ArchiveLanguage.allCases {
+            let storedValue = stored(targetLanguage)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sourceCanServeTarget = !hasUnexpectedScript(source, for: targetLanguage)
+            let candidate = storedValue?.isEmpty == false
+                ? storedValue!
+                : (sourceCanServeTarget ? source : "")
+            guard candidate.isEmpty || hasUnexpectedScript(candidate, for: targetLanguage) else { continue }
+
+            var translationSource = source
+            var translationSourceLanguage = detectedSourceLanguage
+            let opposite: ArchiveLanguage = targetLanguage == .english ? .russian : .english
+            if let counterpart = stored(opposite)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !counterpart.isEmpty,
+               !hasUnexpectedScript(counterpart, for: opposite) {
+                translationSource = counterpart
+                translationSourceLanguage = opposite
+            } else if translationSourceLanguage == targetLanguage {
+                // Mixed imported prose may be labelled as the target locale
+                // even though it contains substantial text from the opposite
+                // script. Translate the complete value from the other locale;
+                // never splice translated fragments into the source.
+                translationSourceLanguage = opposite
+            }
+
+            issues.append(LocalizationReviewIssue(
+                personID: personID,
+                field: field,
+                recordID: recordID,
+                sourceText: translationSource,
+                sourceLanguage: translationSourceLanguage,
+                targetLanguage: targetLanguage,
+                reason: candidate.isEmpty ? .missingTranslation : .wrongLanguage
+            ))
+        }
+    }
+
+    private func detectedLanguage(in value: String) -> ArchiveLanguage? {
+        let cleaned = localizationProse(in: value)
+        let cyrillicCount = cleaned.unicodeScalars.reduce(into: 0) { count, scalar in
+            if (0x0400...0x04FF).contains(Int(scalar.value)) { count += 1 }
+        }
+        let latinCount = cleaned.unicodeScalars.reduce(into: 0) { count, scalar in
+            if (0x0041...0x005A).contains(Int(scalar.value)) ||
+                (0x0061...0x007A).contains(Int(scalar.value)) { count += 1 }
+        }
+        guard cyrillicCount > 0 || latinCount > 0 else { return nil }
+        return cyrillicCount >= latinCount ? .russian : .english
+    }
+
+    private func hasUnexpectedScript(_ value: String, for language: ArchiveLanguage) -> Bool {
+        let prose = localizationProse(in: value)
+        switch language {
+        case .english:
+            return prose.range(of: "[А-Яа-яЁё]", options: .regularExpression) != nil
+        case .russian:
+            return prose.range(of: "[A-Za-z]", options: .regularExpression) != nil
+        }
+    }
+
+    /// Builds one matcher per archive audit instead of rebuilding and
+    /// scanning hundreds of name variants for every narrative field.
+    private func prepareLocalizationAudit() {
+        let names = Set(document.people.flatMap { person in
+            [
+                person.sourceDisplayName,
+                person.originalDisplayName,
+                NameLocalizationStore.shared.displayName(
+                    for: person.id,
+                    fallback: person.sourceDisplayName,
+                    language: .english
+                ),
+                NameLocalizationStore.shared.displayName(
+                    for: person.id,
+                    fallback: person.sourceDisplayName,
+                    language: .russian
+                )
+            ]
+        })
+        .filter { !$0.isEmpty }
+        .sorted { $0.count > $1.count }
+
+        guard !names.isEmpty else {
+            localizationIgnoredNameExpression = nil
+            return
+        }
+        let pattern = names
+            .map(NSRegularExpression.escapedPattern(for:))
+            .joined(separator: "|")
+        localizationIgnoredNameExpression = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive]
+        )
+    }
+
+    private func localizationProse(in value: String) -> String {
+        var prose = value
+            .replacingOccurrences(of: #"https?://\S+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\[\[person:[^\]]+\]\]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"@[\p{L}\p{N}_-]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\b(?:PDF|HTML|MS|CS|USSR|USA|ISP|Corp)\b"#, with: "", options: [.regularExpression, .caseInsensitive])
+            // Roman numerals and legacy `xxxx` unknown-date placeholders are
+            // language-neutral metadata, regardless of letter case.
+            .replacingOccurrences(of: #"\b[IVXLCDM]+\b"#, with: "", options: [.regularExpression, .caseInsensitive])
+        // A localized name embedded in prose is valid in either script. Name
+        // records have their own EN/RU validation and transliteration rules.
+        if let localizationIgnoredNameExpression {
+            prose = localizationIgnoredNameExpression.stringByReplacingMatches(
+                in: prose,
+                range: NSRange(prose.startIndex..<prose.endIndex, in: prose),
+                withTemplate: ""
+            )
+        }
+        return prose
     }
 
     /// One-time, idempotent upgrade for imported media. Captions used to store
@@ -717,6 +1086,293 @@ final class FamilyRepository: ObservableObject {
             fileManager: privateStore.fileManager
         )
         NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
+    }
+
+    /// Moves short legacy Story records into the new Note model. Long or
+    /// document-derived Stories remain intact and receive one internal review
+    /// Note. Stable IDs make the migration safe to run after every old import.
+    private func migrateLegacyStoriesToNotes() {
+        var people = document.people
+        var changedPersonIDs = Set<Person.ID>()
+        let importedAt = ISO8601DateFormatter().string(from: Date())
+
+        // Ariadna's GEDCOM NOTE contains "AKA Ляля". It is identity data,
+        // not a recollection, so expose the nickname through the profile's
+        // existing alternate-name UI instead of creating a Note for it.
+        if let ariadnaIndex = people.firstIndex(where: { $0.id == "I212004305810" }),
+           !people[ariadnaIndex].alternateNames.contains("Ляля") {
+            people[ariadnaIndex].alternateNames.append("Ляля")
+            changedPersonIDs.insert(people[ariadnaIndex].id)
+        }
+
+        let forcedReviewPersonIDs: Set<Person.ID> = [
+            "I212004299702", // Mikhail Nosov: five document-derived chapters
+            "I212004299099", // Vladimir Petrov: biography, awards, working note
+            "I212004299642"  // Viktor Gabruner: one long PDF-derived chapter
+        ]
+
+        for index in people.indices {
+            let stories = people[index].structuredStories
+            guard !stories.isEmpty else { continue }
+            var notes = people[index].structuredNotes
+            let requiresReview = stories.count > 1 || forcedReviewPersonIDs.contains(people[index].id)
+
+            if requiresReview {
+                let noteID = "legacy-story-review-\(people[index].id)"
+                let storyIDs = stories.map(\.id)
+                let biographyStoryID = stories.first(where: { story in
+                    let value = [story.id, story.title]
+                        .joined(separator: " ")
+                        .lowercased()
+                    return value.contains("biography") || value.contains("биограф")
+                })?.id
+                let hasBiographyBlob = !people[index].biography
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+                if let noteIndex = notes.firstIndex(where: { $0.id == noteID }) {
+                    let biographyReview = hasBiographyBlob ? true : nil
+                    if notes[noteIndex].reviewStoryIDs != storyIDs ||
+                        notes[noteIndex].reviewBiography != biographyReview ||
+                        notes[noteIndex].reviewBiographyStoryID != biographyStoryID {
+                        notes[noteIndex].reviewStoryIDs = storyIDs
+                        notes[noteIndex].reviewBiography = biographyReview
+                        notes[noteIndex].reviewBiographyStoryID = biographyStoryID
+                        people[index].notes = notes
+                        changedPersonIDs.insert(people[index].id)
+                    }
+                } else {
+                    notes.append(PersonNote(
+                        id: noteID,
+                        text: "Сохранена более длинная биографическая история. Откройте её для проверки.",
+                        sourceLanguage: ArchiveLanguage.russian.rawValue,
+                        translations: [
+                            ArchiveLanguage.english.rawValue:
+                                "A longer biographical story is preserved. Open it for review."
+                        ],
+                        recordedByAccountID: nil,
+                        recordedAt: importedAt,
+                        updatedAt: nil,
+                        origin: .legacyStory,
+                        reviewStoryIDs: storyIDs,
+                        reviewBiography: hasBiographyBlob ? true : nil,
+                        reviewBiographyStoryID: biographyStoryID,
+                        translationNeedsReview: nil
+                    ))
+                    people[index].notes = notes
+                    changedPersonIDs.insert(people[index].id)
+                }
+                continue
+            }
+
+            for story in stories {
+                let noteID = "legacy-story-\(story.id)"
+                guard !notes.contains(where: { $0.id == noteID }) else { continue }
+                let sourceText = legacyStoryText(
+                    title: story.title,
+                    dateRange: story.dateRange,
+                    summary: story.summary,
+                    body: story.body
+                )
+                let sourceLanguage: ArchiveLanguage = sourceText.range(
+                    of: "[А-Яа-яЁё]",
+                    options: .regularExpression
+                ) == nil ? .english : .russian
+                let stored = NarrativeLocalizationStore.shared.storedStoryTranslation(
+                    people[index].id,
+                    storyID: story.id
+                )
+                let englishText = legacyStoryText(
+                    title: stored.title,
+                    dateRange: story.dateRange,
+                    summary: stored.summary,
+                    body: stored.body ?? ""
+                )
+                let hasEnglishTranslation = sourceLanguage == .russian &&
+                    stored.body?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: sourceText,
+                    sourceLanguage: sourceLanguage.rawValue,
+                    translations: hasEnglishTranslation
+                        ? [ArchiveLanguage.english.rawValue: englishText]
+                        : nil,
+                    recordedByAccountID: nil,
+                    recordedAt: importedAt,
+                    updatedAt: nil,
+                    origin: .legacyStory,
+                    reviewStoryIDs: nil,
+                    translationNeedsReview: hasEnglishTranslation ? nil : true
+                ))
+            }
+            people[index].notes = notes
+            people[index].storyChapters = nil
+            changedPersonIDs.insert(people[index].id)
+        }
+
+        // These two short family recollections were stored in the old
+        // Biography field rather than Story chapters. Their complete stored
+        // text belongs in Notes. Longer synthesized biographies remain in the
+        // document/profile layer; their underlying GEDCOM recollections are
+        // migrated separately in the private normalized data.
+        let agreedBiographyNoteIDs: Set<Person.ID> = [
+            "I212004299672", // Rimma Cheboksarova
+            "I212004300350"  // Antonina Zabolotnova
+        ]
+        for index in people.indices where agreedBiographyNoteIDs.contains(people[index].id) {
+            let sourceText = people[index].biography.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sourceText.isEmpty else { continue }
+            var notes = people[index].structuredNotes
+            let noteID = "legacy-biography-\(people[index].id)"
+            if !notes.contains(where: { $0.id == noteID }) {
+                let translated = NarrativeLocalizationStore.shared
+                    .storedBiographyTranslation(people[index].id)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: sourceText,
+                    sourceLanguage: ArchiveLanguage.russian.rawValue,
+                    translations: translated?.isEmpty == false
+                        ? [ArchiveLanguage.english.rawValue: translated!]
+                        : nil,
+                    recordedByAccountID: nil,
+                    recordedAt: importedAt,
+                    updatedAt: nil,
+                    origin: .legacyBiography,
+                    reviewStoryIDs: nil,
+                    translationNeedsReview: translated?.isEmpty == false ? nil : true
+                ))
+            }
+            people[index].notes = notes
+            people[index].biography = ""
+            changedPersonIDs.insert(people[index].id)
+        }
+
+        // Profiles whose document-derived biography has no Story or Note
+        // entry still need an accessible path from the app. Keep long text in
+        // the biography field and add a review link; short text can live
+        // directly in a Note without creating an unnecessary second screen.
+        let accessibleBiographyPersonIDs: Set<Person.ID> = [
+            "I212004298863", // Elena Petrova
+            "I212004299613", // Irina Saparova
+            "I212004300269", // Mirsaid Saparov
+            "I212004300342", // Ivan Petrov (1912)
+            "I212004305810", // Ariadna Nosova
+            "I212004351822", // Anna Slavina
+            "I212004366056", // Moisey Gabruner
+            "I212004366249", // Arif Saparov
+            "I212004368160"  // Antoniy Feofarov
+        ]
+        let maximumInlineBiographyLength = 600
+        for index in people.indices where accessibleBiographyPersonIDs.contains(people[index].id) {
+            let sourceText = people[index].biography.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sourceText.isEmpty else { continue }
+            var notes = people[index].structuredNotes
+            let noteID = "legacy-biography-access-\(people[index].id)"
+            guard !notes.contains(where: { $0.id == noteID }) else { continue }
+
+            if sourceText.count <= maximumInlineBiographyLength {
+                let sourceLanguage: ArchiveLanguage = sourceText.range(
+                    of: "[А-Яа-яЁё]",
+                    options: .regularExpression
+                ) == nil ? .english : .russian
+                let translated = NarrativeLocalizationStore.shared
+                    .storedBiographyTranslation(people[index].id)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: sourceText,
+                    sourceLanguage: sourceLanguage.rawValue,
+                    translations: translated?.isEmpty == false && sourceLanguage == .russian
+                        ? [ArchiveLanguage.english.rawValue: translated!]
+                        : nil,
+                    recordedByAccountID: nil,
+                    recordedAt: importedAt,
+                    updatedAt: nil,
+                    origin: .legacyBiography,
+                    reviewStoryIDs: nil,
+                    translationNeedsReview: sourceLanguage == .russian && translated?.isEmpty != false
+                ))
+                people[index].biography = ""
+            } else {
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: "Сохранена расширенная биография. Откройте её для просмотра.",
+                    sourceLanguage: ArchiveLanguage.russian.rawValue,
+                    translations: [
+                        ArchiveLanguage.english.rawValue:
+                            "An extended biography is preserved. Open it to review the content."
+                    ],
+                    recordedByAccountID: nil,
+                    recordedAt: importedAt,
+                    updatedAt: nil,
+                    origin: .legacyBiography,
+                    reviewStoryIDs: nil,
+                    reviewBiography: true,
+                    translationNeedsReview: nil
+                ))
+            }
+            people[index].notes = notes
+            changedPersonIDs.insert(people[index].id)
+        }
+
+        // Mikhail's legacy Facts are structured source data, so retain them
+        // losslessly while adding one readable Note projection. Stable IDs
+        // prevent a duplicate Note on later launches or imports.
+        if let mikhailIndex = people.firstIndex(where: { $0.id == "I212004299702" }),
+           !people[mikhailIndex].facts.isEmpty {
+            var notes = people[mikhailIndex].structuredNotes
+            let noteID = "legacy-facts-I212004299702"
+            if !notes.contains(where: { $0.id == noteID }) {
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: legacyFactsText(people[mikhailIndex].facts),
+                    sourceLanguage: ArchiveLanguage.russian.rawValue,
+                    translations: nil,
+                    recordedByAccountID: nil,
+                    recordedAt: importedAt,
+                    updatedAt: nil,
+                    origin: .legacyGEDCOM,
+                    reviewStoryIDs: nil,
+                    translationNeedsReview: true
+                ))
+                people[mikhailIndex].notes = notes
+                changedPersonIDs.insert(people[mikhailIndex].id)
+            }
+        }
+
+        guard !changedPersonIDs.isEmpty else { return }
+        replaceDocument(
+            people: people,
+            changedPersonIDs: changedPersonIDs,
+            rebuildGEDCOM: false
+        )
+    }
+
+    private func legacyStoryText(
+        title: String?,
+        dateRange: String?,
+        summary: String?,
+        body: String
+    ) -> String {
+        var parts: [String] = []
+        for value in [title, dateRange, summary, body] {
+            let cleaned = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !cleaned.isEmpty, !parts.contains(cleaned) else { continue }
+            parts.append(cleaned)
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private func legacyFactsText(_ facts: [PersonFact]) -> String {
+        facts.map { fact in
+            var lines = ["\(fact.label): \(fact.value)"]
+            if let place = fact.place?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !place.isEmpty {
+                lines.append("Место: \(place)")
+            }
+            return lines.joined(separator: "\n")
+        }
+        .joined(separator: "\n\n")
     }
 
     /// Whether this account may change the private family archive. A prepared
@@ -1337,6 +1993,7 @@ final class FamilyRepository: ObservableObject {
                 fileManager: fileManager
             )
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
+            refreshLocalizationReviewIssues()
         } catch {
             // Translation is intentionally best effort. The source caption
             // remains available and can be translated later from an edit.
@@ -1517,6 +2174,9 @@ final class FamilyRepository: ObservableObject {
         var seen = Set<String>()
         for owner in document.people {
             for item in owner.media {
+                // Source documents are archive-only, even if an imported
+                // document happens to contain a legacy person mention.
+                guard item.kind != .document else { continue }
                 let belongsToPerson = MediaMentionToken.personIDs(in: item.caption ?? "").contains(personID)
                 let identity = item.path ?? item.id
                 guard belongsToPerson, seen.insert(identity).inserted else { continue }
@@ -1536,6 +2196,9 @@ final class FamilyRepository: ObservableObject {
             for item in owner.media {
                 let identity = item.path ?? item.id
                 guard seen.insert(identity).inserted else { continue }
+                // PDFs and Pages files are source documents. They belong in
+                // Archive > Documents and never require a person @mention.
+                guard item.kind != .document else { continue }
                 let validMentions = MediaMentionToken.personIDs(in: item.caption ?? "")
                     .contains { peopleByID[$0] != nil }
                 guard item.needsMentionReview == true || !validMentions else { continue }
@@ -1716,7 +2379,7 @@ final class FamilyRepository: ObservableObject {
         return nil
     }
 
-    fileprivate func transferFileURL(for path: String) -> URL? {
+    func transferFileURL(for path: String) -> URL? {
         resolvedFileURL(for: path)
     }
 
@@ -1726,6 +2389,282 @@ final class FamilyRepository: ObservableObject {
         guard let index = people.firstIndex(where: { $0.id == person.id }) else { return }
         people[index] = person.canonicalizingCoreEvents().person
         replaceDocument(people: people, changedPersonIDs: [person.id])
+    }
+
+    func canEditNote(_ note: PersonNote) -> Bool {
+        guard canEdit else { return false }
+        // Imported legacy material has no trustworthy original account ID.
+        // The archive administrator may curate it, while a user-created Note
+        // remains editable only by the account that recorded it.
+        guard note.origin == .user else { return true }
+        return note.recordedByAccountID != nil && note.recordedByAccountID == activeAccountID
+    }
+
+    @discardableResult
+    func saveNote(
+        personID: Person.ID,
+        existingNoteID: PersonNote.ID? = nil,
+        text: String,
+        sourceLanguage: ArchiveLanguage
+    ) -> PersonNote? {
+        guard canEdit,
+              let personIndex = document.people.firstIndex(where: { $0.id == personID }) else { return nil }
+        let cleanedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedText.isEmpty else { return nil }
+
+        var people = document.people
+        var notes = people[personIndex].structuredNotes
+        let now = ISO8601DateFormatter().string(from: Date())
+        let savedNote: PersonNote
+
+        if let existingNoteID,
+           let noteIndex = notes.firstIndex(where: { $0.id == existingNoteID }) {
+            guard canEditNote(notes[noteIndex]) else { return nil }
+            var updated = notes[noteIndex]
+            updated.text = cleanedText
+            updated.sourceLanguage = sourceLanguage.rawValue
+            updated.translations = nil
+            updated.updatedAt = now
+            updated.translationNeedsReview = true
+            notes[noteIndex] = updated
+            savedNote = updated
+        } else {
+            guard let recorderID = activeAccountID ?? document.accountHolderID else { return nil }
+            savedNote = PersonNote(
+                id: "note-\(UUID().uuidString.lowercased())",
+                text: cleanedText,
+                sourceLanguage: sourceLanguage.rawValue,
+                translations: nil,
+                recordedByAccountID: recorderID,
+                recordedAt: now,
+                updatedAt: nil,
+                origin: .user,
+                reviewStoryIDs: nil,
+                translationNeedsReview: true
+            )
+            notes.append(savedNote)
+        }
+
+        people[personIndex].notes = notes
+        replaceDocument(people: people, changedPersonIDs: [personID], rebuildGEDCOM: false)
+        return savedNote
+    }
+
+    func deleteNote(personID: Person.ID, noteID: PersonNote.ID) {
+        guard canEdit,
+              let personIndex = document.people.firstIndex(where: { $0.id == personID }) else { return }
+        var people = document.people
+        var notes = people[personIndex].structuredNotes
+        guard let note = notes.first(where: { $0.id == noteID }), canEditNote(note) else { return }
+        notes.removeAll { $0.id == noteID }
+        people[personIndex].notes = notes.isEmpty ? nil : notes
+        replaceDocument(people: people, changedPersonIDs: [personID], rebuildGEDCOM: false)
+    }
+
+    /// An edited narrative invalidates its previous counterpart translation.
+    /// The editor saves the new source first, then regenerates and validates
+    /// both stored language versions. A failed regeneration remains visible
+    /// through the profile review index.
+    func invalidateEventTranslations(personID: Person.ID, eventID: LifeEvent.ID) {
+        try? NarrativeLocalizationStore.shared.removeEventTranslations(
+            personID: personID,
+            eventID: eventID,
+            fileManager: privateStore.fileManager
+        )
+        refreshLocalizationReviewIssues()
+    }
+
+    func invalidateStoryTranslations(personID: Person.ID, storyID: StoryChapter.ID) {
+        try? NarrativeLocalizationStore.shared.removeStoryTranslations(
+            personID: personID,
+            storyID: storyID,
+            fileManager: privateStore.fileManager
+        )
+        refreshLocalizationReviewIssues()
+    }
+
+    @available(iOS 26.0, *)
+    @MainActor
+    func autoTranslateNote(
+        noteID: PersonNote.ID,
+        personID: Person.ID,
+        expectedText: String,
+        from sourceLanguage: ArchiveLanguage
+    ) async {
+        let targetLanguage: ArchiveLanguage = sourceLanguage == .english ? .russian : .english
+        let normalizedText = expectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let current = peopleByID[personID]?.structuredNotes.first(where: { $0.id == noteID }),
+              current.text == normalizedText,
+              current.sourceLanguage == sourceLanguage.rawValue else { return }
+
+        do {
+            let source = Locale.Language(identifier: sourceLanguage.rawValue)
+            let target = Locale.Language(identifier: targetLanguage.rawValue)
+            let session = TranslationSession(installedSource: source, target: target)
+            let protected = NoteURLToken.protectedForTranslation(normalizedText)
+            let response = try await session.translate(protected.text)
+            let translated = NoteURLToken.restoreAfterTranslation(
+                response.targetText,
+                urls: protected.urls
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !translated.isEmpty,
+                  protected.urls.allSatisfy({ translated.contains($0) }),
+                  let personIndex = document.people.firstIndex(where: { $0.id == personID }) else { return }
+
+            var people = document.people
+            var notes = people[personIndex].structuredNotes
+            guard let noteIndex = notes.firstIndex(where: { $0.id == noteID }),
+                  notes[noteIndex].text == normalizedText,
+                  notes[noteIndex].sourceLanguage == sourceLanguage.rawValue else { return }
+            var translations = notes[noteIndex].translations ?? [:]
+            translations[targetLanguage.rawValue] = translated
+            notes[noteIndex].translations = translations
+            notes[noteIndex].translationNeedsReview = nil
+            notes[noteIndex].updatedAt = ISO8601DateFormatter().string(from: Date())
+            people[personIndex].notes = notes
+            replaceDocument(people: people, changedPersonIDs: [personID], rebuildGEDCOM: false)
+        } catch {
+            // The source Note is already durable and remains visible. Its
+            // review flag stays set so a later edit or retry can translate it.
+        }
+    }
+
+    /// Translates unresolved private narrative fields and stores the result.
+    /// This is called only after import/edit or an explicit retry; normal
+    /// screen loading reads stored values and never initiates translation.
+    @available(iOS 26.0, *)
+    @MainActor
+    func autoTranslateMissingContent(
+        for personID: Person.ID? = nil,
+        force: Bool = false
+    ) async {
+        guard !isAutomaticallyTranslating else { return }
+
+        refreshLocalizationReviewIssues()
+        var issues = personID.map { localizationIssues(for: $0) }
+            ?? localizationIssuesByPerson.values.flatMap { $0 }
+        var seen = Set<String>()
+        issues = issues.filter { issue in
+            let scope = [.mediaTitle, .mediaCaption].contains(issue.field) ? "shared" : issue.personID
+            let key = "\(scope)|\(issue.field.rawValue)|\(issue.recordID)|\(issue.targetLanguage.rawValue)"
+            return seen.insert(key).inserted
+        }
+        guard !issues.isEmpty else { return }
+
+        isAutomaticallyTranslating = true
+        defer {
+            isAutomaticallyTranslating = false
+            NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
+            refreshLocalizationReviewIssues()
+        }
+
+        for issue in issues {
+            // TranslationSession can reject an unavailable language model
+            // immediately. Briefly suspend between fields so hundreds of
+            // such failures cannot monopolize the main actor.
+            try? await Task.sleep(for: .milliseconds(5))
+            guard !Task.isCancelled else { return }
+            let source = Locale.Language(identifier: issue.sourceLanguage.rawValue)
+            let target = Locale.Language(identifier: issue.targetLanguage.rawValue)
+            do {
+                let mentionProtected = MediaMentionToken.protectedForTranslation(issue.sourceText)
+                let urlProtected = NoteURLToken.protectedForTranslation(mentionProtected.text)
+                let session = TranslationSession(installedSource: source, target: target)
+                let response = try await session.translate(urlProtected.text)
+                let urlsRestored = NoteURLToken.restoreAfterTranslation(
+                    response.targetText,
+                    urls: urlProtected.urls
+                )
+                let translated = MediaMentionToken.restoreAfterTranslation(
+                    urlsRestored,
+                    tokens: mentionProtected.tokens
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !translated.isEmpty,
+                      !hasUnexpectedScript(translated, for: issue.targetLanguage) else { continue }
+                try storeAutomaticTranslation(translated, for: issue)
+            } catch {
+                // The complete original remains visible. The unresolved issue
+                // stays in the repository index and therefore keeps both the
+                // profile warning and family-list filter active.
+                continue
+            }
+        }
+    }
+
+    private func storeAutomaticTranslation(
+        _ translated: String,
+        for issue: LocalizationReviewIssue
+    ) throws {
+        switch issue.field {
+        case .summary, .biography:
+            try NarrativeLocalizationStore.shared.updatePersonTranslation(
+                personID: issue.personID,
+                field: issue.field,
+                language: issue.targetLanguage,
+                value: translated,
+                fileManager: privateStore.fileManager
+            )
+
+        case .storyTitle, .storySummary, .storyBody:
+            try NarrativeLocalizationStore.shared.updateStoryTranslation(
+                personID: issue.personID,
+                storyID: issue.recordID,
+                field: issue.field,
+                language: issue.targetLanguage,
+                value: translated,
+                fileManager: privateStore.fileManager
+            )
+
+        case .eventTitle, .eventSummary, .eventPlace:
+            try NarrativeLocalizationStore.shared.updateEventTranslation(
+                personID: issue.personID,
+                eventID: issue.recordID,
+                field: issue.field,
+                language: issue.targetLanguage,
+                value: translated,
+                fileManager: privateStore.fileManager
+            )
+
+        case .note:
+            guard let personIndex = document.people.firstIndex(where: { $0.id == issue.personID }) else { return }
+            var people = document.people
+            var notes = people[personIndex].structuredNotes
+            guard let noteIndex = notes.firstIndex(where: { $0.id == issue.recordID }) else { return }
+            if notes[noteIndex].sourceLanguage == issue.targetLanguage.rawValue {
+                notes[noteIndex].text = translated
+            } else {
+                var translations = notes[noteIndex].translations ?? [:]
+                translations[issue.targetLanguage.rawValue] = translated
+                notes[noteIndex].translations = translations
+            }
+            notes[noteIndex].translationNeedsReview = nil
+            notes[noteIndex].updatedAt = ISO8601DateFormatter().string(from: Date())
+            people[personIndex].notes = notes
+            replaceDocument(
+                people: people,
+                changedPersonIDs: [issue.personID],
+                rebuildGEDCOM: false
+            )
+
+        case .mediaTitle:
+            try NarrativeLocalizationStore.shared.updateMediaTitle(
+                mediaID: issue.recordID,
+                title: translated,
+                language: issue.targetLanguage,
+                fileManager: privateStore.fileManager
+            )
+
+        case .mediaCaption:
+            guard let media = mediaItem(withID: issue.recordID) else { return }
+            let expectedPersonIDs = Set(MediaMentionToken.personIDs(in: media.caption ?? ""))
+            try NarrativeLocalizationStore.shared.updateMediaCaption(
+                mediaID: issue.recordID,
+                caption: translated,
+                language: issue.targetLanguage,
+                expectedPersonIDs: expectedPersonIDs,
+                fileManager: privateStore.fileManager
+            )
+        }
     }
 
     @discardableResult
@@ -1924,7 +2863,8 @@ final class FamilyRepository: ObservableObject {
     private func replaceDocument(
         people: [Person],
         familyUnions: [FamilyUnion]? = nil,
-        changedPersonIDs: Set<Person.ID> = []
+        changedPersonIDs: Set<Person.ID> = [],
+        rebuildGEDCOM: Bool = true
     ) {
         let proposedDocument = FamilyArchiveDocument(
             schemaVersion: document.schemaVersion,
@@ -1937,7 +2877,11 @@ final class FamilyRepository: ObservableObject {
         let updatedDocument = normalization.document
         let allChangedPersonIDs = changedPersonIDs.union(normalization.changedPersonIDs)
         applyDocument(updatedDocument, changedPersonIDs: allChangedPersonIDs)
-        try? privateStore.save(document: updatedDocument, changedPersonIDs: allChangedPersonIDs, rebuildGEDCOM: true)
+        try? privateStore.save(
+            document: updatedDocument,
+            changedPersonIDs: allChangedPersonIDs,
+            rebuildGEDCOM: rebuildGEDCOM
+        )
     }
 
     private func applyDocument(
@@ -1960,6 +2904,7 @@ final class FamilyRepository: ObservableObject {
         if profileImageChanged {
             ArchiveFileResolver.invalidateImages()
         }
+        refreshLocalizationReviewIssues()
     }
 
     /// Legacy ZIP export retained for compatibility with packages created by
@@ -2101,9 +3046,10 @@ final class FamilyRepository: ObservableObject {
             coloredPhotoCache.removeAll()
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
             NameLocalizationStore.shared.reload(fileManager: fileManager)
+            migrateLegacyStoriesToNotes()
             try? fileManager.removeItem(at: privateStore.rootURL.appendingPathComponent(PrivateDocumentStore.accountHandoffFilename))
             return ArchivePackageSummary(
-                document: importedDocument,
+                document: document,
                 fileCount: countFiles(at: url, fileManager: fileManager),
                 preparedAccountID: handoff?.personID
             )
@@ -2190,7 +3136,8 @@ final class FamilyRepository: ObservableObject {
         try privateStore.bootstrap(document: importedDocument)
         NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
         NameLocalizationStore.shared.reload(fileManager: fileManager)
-        return ArchivePackageSummary(document: importedDocument, fileCount: entries.count)
+        migrateLegacyStoriesToNotes()
+        return ArchivePackageSummary(document: document, fileCount: entries.count)
     }
 
     private func writePrivateFile(_ data: Data, to url: URL, fileManager: FileManager) throws {
