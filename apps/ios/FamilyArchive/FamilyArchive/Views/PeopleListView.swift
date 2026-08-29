@@ -1480,12 +1480,6 @@ struct MainTabView: View {
             // Family from the bottom bar can still open the requested person.
             selectedTab = .home
         }
-        .onReceive(NotificationCenter.default.publisher(for: .familyArchiveDidImport)) { _ in
-            guard #available(iOS 26.0, *) else { return }
-            Task { @MainActor in
-                await repository.autoTranslateMissingContent(force: true)
-            }
-        }
     }
 }
 
@@ -2259,6 +2253,7 @@ private struct SettingsView: View {
     @State private var transferStatus: String?
     @State private var showingAccountChooser = false
     @State private var showingPreparationChooser = false
+    @State private var showingTranslationReview = false
     @State private var preparedAccountID: Person.ID?
     @State private var preparedReadOnly = true
     @State private var exportFilename = "family-archive-private.familyarchive"
@@ -2345,6 +2340,30 @@ private struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(transferInProgress)
+                }
+
+                if let repository, canEdit {
+                    Text(ArchiveCopy.text(english: "LANGUAGE REVIEW", russian: "ПРОВЕРКА ПЕРЕВОДОВ"))
+                        .font(.caption.weight(.semibold))
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.accent)
+                        .padding(.top, 28)
+
+                    Button {
+                        showingTranslationReview = true
+                    } label: {
+                        ArchiveTransferRow(
+                            title: ArchiveCopy.text(english: "To review", russian: "На проверку"),
+                            detail: repository.translationReviewItems.isEmpty
+                                ? ArchiveCopy.text(english: "No translations need review", russian: "Нет переводов на проверке")
+                                : ArchiveCopy.text(
+                                    english: "\(repository.translationReviewItems.count) \(repository.translationReviewItems.count == 1 ? "edit" : "edits") need a translation",
+                                    russian: "Нужно перевести: \(repository.translationReviewItems.count)"
+                                ),
+                            systemImage: "character.book.closed"
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 if repository != nil {
@@ -2476,6 +2495,11 @@ private struct SettingsView: View {
                     }
                 }
             )
+        }
+        .sheet(isPresented: $showingTranslationReview) {
+            if let repository {
+                TranslationReviewQueueView(repository: repository)
+            }
         }
         .fileExporter(
             isPresented: $showingExporter,
@@ -2685,6 +2709,230 @@ private struct SettingsView: View {
         }
     }
     #endif
+}
+
+private struct TranslationReviewQueueView: View {
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var editingIssue: LocalizationReviewIssue?
+
+    private var items: [LocalizationReviewIssue] {
+        repository.translationReviewItems
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(ArchiveCopy.text(
+                        english: "Each item is an edit saved in its original language. Add the other language yourself; the original is never replaced.",
+                        russian: "Каждый пункт — изменение, сохранённое на исходном языке. Добавьте вторую языковую версию сами; оригинал не заменяется."
+                    ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                    if items.isEmpty {
+                        Text(ArchiveCopy.text(
+                            english: "Nothing to review.",
+                            russian: "Проверять нечего."
+                        ))
+                        .font(ArchiveTypography.body)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                    } else {
+                        ForEach(items) { issue in
+                            Button {
+                                editingIssue = issue
+                            } label: {
+                                TranslationReviewRow(issue: issue, repository: repository)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
+            }
+            .scrollIndicators(.hidden)
+            .background(ArchiveTheme.background)
+            .navigationTitle(ArchiveCopy.text(english: "To review", russian: "На проверку"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.semibold))
+                            .frame(width: ArchiveShape.actionDiameter, height: ArchiveShape.actionDiameter)
+                            .background(ArchiveTheme.actionBackground)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .sheet(item: $editingIssue) { issue in
+                ManualTranslationEditor(issue: issue, repository: repository)
+            }
+        }
+    }
+}
+
+private struct TranslationReviewRow: View {
+    let issue: LocalizationReviewIssue
+    @ObservedObject var repository: FamilyRepository
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text(issue.targetLanguageCode)
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.accent)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(ArchiveTheme.background)
+                    .clipShape(Capsule())
+                Text(issue.fieldLabel)
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.ink)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
+
+            Text(repository.person(id: issue.personID)?.displayName ?? issue.personID)
+                .font(ArchiveTypography.metadata)
+                .foregroundStyle(ArchiveTheme.metadata)
+
+            Text(MediaMentionToken.visibleText(
+                issue.sourceText,
+                people: repository.people,
+                language: issue.sourceLanguage
+            ))
+            .font(ArchiveTypography.metadata)
+            .foregroundStyle(ArchiveTheme.ink)
+            .lineLimit(3)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ArchiveTheme.controlBackground)
+        .clipShape(ArchiveShape.control)
+        .overlay(ArchiveShape.control.stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+    }
+}
+
+private struct ManualTranslationEditor: View {
+    let issue: LocalizationReviewIssue
+    @ObservedObject var repository: FamilyRepository
+    @Environment(\.dismiss) private var dismiss
+    @State private var translation: String
+    @State private var errorMessage: String?
+
+    init(issue: LocalizationReviewIssue, repository: FamilyRepository) {
+        self.issue = issue
+        self.repository = repository
+        _translation = State(initialValue: MediaMentionToken.visibleText(
+            issue.sourceText,
+            people: repository.people,
+            language: issue.targetLanguage
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(issue.fieldLabel.uppercased())
+                        .font(ArchiveTypography.sectionTitle)
+                        .tracking(1.2)
+                        .foregroundStyle(ArchiveTheme.ink)
+
+                    Text(ArchiveCopy.text(
+                        english: "ORIGINAL (\(issue.sourceLanguage.label.uppercased()))",
+                        russian: "ОРИГИНАЛ (\(issue.sourceLanguage.label.uppercased()))"
+                    ))
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                    Text(MediaMentionToken.visibleText(
+                        issue.sourceText,
+                        people: repository.people,
+                        language: issue.sourceLanguage
+                    ))
+                    .font(ArchiveTypography.body)
+                    .foregroundStyle(ArchiveTheme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(ArchiveTheme.controlBackground)
+                    .clipShape(ArchiveShape.control)
+
+                    Text(ArchiveCopy.text(
+                        english: "TRANSLATION (\(issue.targetLanguage.label.uppercased()))",
+                        russian: "ПЕРЕВОД (\(issue.targetLanguage.label.uppercased()))"
+                    ))
+                    .font(ArchiveTypography.metadataEmphasis)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                    TextEditor(text: $translation)
+                        .font(ArchiveTypography.body)
+                        .foregroundStyle(ArchiveTheme.ink)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 160)
+                        .padding(9)
+                        .background(ArchiveTheme.controlBackground)
+                        .overlay(ArchiveShape.control.stroke(ArchiveTheme.controlBorder, lineWidth: 1))
+
+                    Text(ArchiveCopy.text(
+                        english: "Keep every @mention exactly as shown. Saving stores this language version only; it never rewrites the original.",
+                        russian: "Сохраните каждое упоминание @ без изменений. Сохранение добавляет только эту языковую версию и никогда не переписывает оригинал."
+                    ))
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(ArchiveTypography.metadata)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .padding(.horizontal, ArchiveLayout.pageHorizontal)
+                .padding(.top, ArchiveLayout.pageTop)
+                .padding(.bottom, ArchiveLayout.pageBottom)
+            }
+            .scrollIndicators(.hidden)
+            .background(ArchiveTheme.background)
+            .navigationTitle(ArchiveCopy.text(english: "Add translation", russian: "Добавить перевод"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(ArchiveCopy.text(english: "Cancel", russian: "Отмена")) { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(ArchiveCopy.text(english: "Save", russian: "Сохранить")) { save() }
+                        .foregroundStyle(ArchiveTheme.action)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        if let issue = ArchiveLanguageValidator.issue(
+            language: self.issue.targetLanguage,
+            fields: [(self.issue.fieldLabel, translation)]
+        ) {
+            errorMessage = issue
+            return
+        }
+        do {
+            try repository.saveManualTranslation(translation, for: issue)
+            dismiss()
+        } catch {
+            errorMessage = ArchiveCopy.text(
+                english: "Use the requested language and keep every @mention unchanged.",
+                russian: "Используйте нужный язык и не меняйте упоминания @."
+            )
+        }
+    }
 }
 
 private struct ArchiveTransferRow: View {
@@ -3649,7 +3897,8 @@ private struct StagedMediaEditor: View {
     @State private var caption = ""
     @State private var seededOriginalDate: String?
     @State private var seededOriginalLocation: String?
-    @State private var mentionSuggestions: [Person] = []
+    @State private var activeMentionText = ""
+    @State private var requestedCursorLocation: Int?
     @State private var selectedMentionIDs: Set<Person.ID> = []
     @State private var selectedEditorMentionID: Person.ID?
     @State private var errorMessage: String?
@@ -3666,15 +3915,17 @@ private struct StagedMediaEditor: View {
                         .tracking(1.2)
                         .foregroundStyle(ArchiveTheme.ink)
 
-                    MentionTextEditor(text: $caption, people: repository.people) { personID in
-                        selectedEditorMentionID = personID
-                        if let personID,
-                           let person = repository.people.first(where: { $0.id == personID }) {
-                            mentionSuggestions = [person]
-                        } else {
-                            mentionSuggestions = []
+                    MentionTextEditor(
+                        text: $caption,
+                        requestedCursorLocation: $requestedCursorLocation,
+                        people: repository.people,
+                        onTextChange: { value in
+                            activeMentionText = value
+                        },
+                        onMentionSelected: { personID in
+                            selectedEditorMentionID = personID
                         }
-                    }
+                    )
                         // UITextView does not provide a reliable intrinsic
                         // height when hosted by SwiftUI. Without an explicit
                         // height the editor collapses and only the helper
@@ -3685,8 +3936,9 @@ private struct StagedMediaEditor: View {
                         .background(ArchiveTheme.controlBackground)
                         .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
                         .onChange(of: caption) { _, _ in
-                            updateMentionSuggestions()
+                            activeMentionText = caption
                         }
+                        .onAppear { activeMentionText = caption }
 
                     if !mentionSuggestions.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -3843,19 +4095,6 @@ private struct StagedMediaEditor: View {
                 personIDs: Array(linkedIDs),
                 captionLanguage: repository.appLanguage
             )
-            let sourceLanguage = repository.appLanguage
-            #if !os(tvOS)
-            if #available(iOS 26.0, *) {
-                Task { @MainActor in
-                    await repository.autoTranslateMediaCaption(
-                        canonicalCaption,
-                        mediaID: mediaID,
-                        personIDs: Array(linkedIDs),
-                        from: sourceLanguage
-                    )
-                }
-            }
-            #endif
             onSaved()
             dismiss()
         } catch {
@@ -3864,15 +4103,14 @@ private struct StagedMediaEditor: View {
     }
 
 
-    private func updateMentionSuggestions() {
-        selectedEditorMentionID = nil
-        guard let query = mentionQuery(in: caption) else {
-            mentionSuggestions = []
-            return
+    private var mentionSuggestions: [Person] {
+        if let selectedEditorMentionID,
+           let selected = repository.people.first(where: { $0.id == selectedEditorMentionID }) {
+            return [selected]
         }
-
+        guard let query = mentionQuery(in: activeMentionText) else { return [] }
         let labels = MediaMentionToken.displayLabels(for: repository.people, language: repository.appLanguage)
-        mentionSuggestions = Array(repository.people.filter { person in
+        return Array(repository.people.filter { person in
             personNameVariants(person, mentionLabels: labels).contains { name in
                 query.isEmpty || name.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
             }
@@ -3883,7 +4121,6 @@ private struct StagedMediaEditor: View {
         if selectedEditorMentionID == person.id {
             selectedMentionIDs.insert(person.id)
             selectedEditorMentionID = nil
-            mentionSuggestions = []
             return
         }
         guard let atIndex = caption.lastIndex(of: "@") else { return }
@@ -3897,7 +4134,8 @@ private struct StagedMediaEditor: View {
             .map(\.id)
         selectedMentionIDs.subtract(duplicateIDs)
         selectedMentionIDs.insert(person.id)
-        mentionSuggestions = []
+        activeMentionText = caption
+        requestedCursorLocation = caption.utf16.count
     }
 
     private func personNameVariants(
@@ -4128,27 +4366,36 @@ private struct GalleryMediaVisual: View {
 /// interactive and styled with the app accent color.
 ///
 /// TextEditor on iOS 17 only supports a plain String binding. This small
-/// UITextView wrapper gives the editor the standard token behavior users
-/// expect from mention fields: recognized @names are highlighted as one unit,
-/// tapping a token selects the whole token, and backspace removes it as a
-/// whole rather than leaving a half-name behind.
+/// UITextView wrapper keeps recognized @names visibly highlighted as atomic
+/// tokens: the cursor can sit before or after one, but never inside it.
 struct MentionTextEditor: UIViewRepresentable {
     @Binding var text: String
+    @Binding var requestedCursorLocation: Int?
     let people: [Person]
+    let onTextChange: (String) -> Void
     let onMentionSelected: (Person.ID?) -> Void
 
     init(
         text: Binding<String>,
+        requestedCursorLocation: Binding<Int?>,
         people: [Person],
+        onTextChange: @escaping (String) -> Void = { _ in },
         onMentionSelected: @escaping (Person.ID?) -> Void = { _ in }
     ) {
         _text = text
+        _requestedCursorLocation = requestedCursorLocation
         self.people = people
+        self.onTextChange = onTextChange
         self.onMentionSelected = onMentionSelected
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, people: people, onMentionSelected: onMentionSelected)
+        Coordinator(
+            text: $text,
+            people: people,
+            onTextChange: onTextChange,
+            onMentionSelected: onMentionSelected
+        )
     }
 
     func makeUIView(context: Context) -> UITextView {
@@ -4168,14 +4415,25 @@ struct MentionTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.onTextChange = onTextChange
         context.coordinator.onMentionSelected = onMentionSelected
-        guard view.text != text else { return }
-        let selectedRange = view.selectedRange
-        context.coordinator.applyAttributes(to: view, text: text)
-        view.selectedRange = NSRange(
-            location: min(selectedRange.location, view.text.utf16.count),
-            length: 0
-        )
+        if view.text != text {
+            let selectedRange = view.selectedRange
+            context.coordinator.applyAttributes(to: view, text: text)
+            view.selectedRange = NSRange(
+                location: min(selectedRange.location, view.text.utf16.count),
+                length: 0
+            )
+        }
+        if let requestedCursorLocation {
+            view.selectedRange = NSRange(
+                location: min(requestedCursorLocation, view.text.utf16.count),
+                length: 0
+            )
+            DispatchQueue.main.async {
+                self.requestedCursorLocation = nil
+            }
+        }
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -4192,14 +4450,18 @@ struct MentionTextEditor: UIViewRepresentable {
         private let mentionDescriptors: [MentionDescriptor]
         private var binding: Binding<String>
         private var isApplyingAttributes = false
+        private var textChangeRevision = 0
+        var onTextChange: (String) -> Void
         var onMentionSelected: (Person.ID?) -> Void
 
         init(
             text: Binding<String>,
             people: [Person],
+            onTextChange: @escaping (String) -> Void,
             onMentionSelected: @escaping (Person.ID?) -> Void
         ) {
             self.binding = text
+            self.onTextChange = onTextChange
             self.onMentionSelected = onMentionSelected
             let currentLabels = MediaMentionToken.displayLabels(for: people, language: .current)
             self.mentionDescriptors = people.compactMap { person in
@@ -4223,9 +4485,7 @@ struct MentionTextEditor: UIViewRepresentable {
             for match in mentionMatches(in: value) {
                 attributed.addAttributes([
                     .foregroundColor: UIColor.archiveMention,
-                    .backgroundColor: UIColor.archiveMentionBackground,
-                    .link: URL(string: "family-mention://token") as Any,
-                    .underlineStyle: 0
+                    .backgroundColor: UIColor.archiveMentionBackground
                 ], range: match.range)
             }
             view.attributedText = attributed
@@ -4240,8 +4500,22 @@ struct MentionTextEditor: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            binding.wrappedValue = textView.text
-            applyAttributes(to: textView)
+            let value = textView.text ?? ""
+            binding.wrappedValue = value
+
+            // UITextView sends text and selection callbacks in the same UIKit
+            // update cycle. Publishing SwiftUI state synchronously from that
+            // cycle left the suggestion query one keystroke behind (or cleared
+            // it entirely). Publish only the latest live value on the next main
+            // run-loop pass. Do not rewrite attributedText while the user is
+            // typing: doing so triggers another selection callback and can
+            // replace the just-published query with stale text.
+            textChangeRevision += 1
+            let revision = textChangeRevision
+            DispatchQueue.main.async { [weak self] in
+                guard let self, revision == self.textChangeRevision else { return }
+                self.onTextChange(value)
+            }
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -4249,9 +4523,9 @@ struct MentionTextEditor: UIViewRepresentable {
             let selection = textView.selectedRange
             guard let mention = mentionMatches(in: textView.text).first(where: { match in
                 if selection.length == 0 {
-                    // A caret at either token boundary is outside the token.
-                    // This lets a tap immediately before or after a mention
-                    // place the insertion point and remain ready for typing.
+                    // Token boundaries are valid cursor positions. A cursor
+                    // inside a mention is not: select the complete mention so
+                    // it remains one indivisible editable object.
                     return selection.location > match.range.location
                         && selection.location < NSMaxRange(match.range)
                 }
@@ -4264,17 +4538,6 @@ struct MentionTextEditor: UIViewRepresentable {
                 textView.selectedRange = mention.range
             }
             onMentionSelected(mention.personID)
-        }
-
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange) -> Bool {
-            // Mention tokens are editable tokens here, not outbound links.
-            // Selecting the full range makes their special behavior visible
-            // and lets a single backspace remove the complete token.
-            textView.selectedRange = characterRange
-            if let mention = mentionMatches(in: textView.text).first(where: { $0.range == characterRange }) {
-                onMentionSelected(mention.personID)
-            }
-            return false
         }
 
         func textView(
@@ -4343,7 +4606,8 @@ struct MediaCaptionEditor: View {
     let onCancel: () -> Void
     let onSave: () throws -> Void
 
-    @State private var mentionSuggestions: [Person] = []
+    @State private var activeMentionText = ""
+    @State private var requestedCursorLocation: Int?
     @State private var selectedEditorMentionID: Person.ID?
     @State private var saveError: String?
     @State private var isSaving = false
@@ -4363,23 +4627,26 @@ struct MediaCaptionEditor: View {
                 .tracking(1.2)
                 .foregroundStyle(ArchiveTheme.ink)
 
-            MentionTextEditor(text: $caption, people: repository.people) { personID in
-                selectedEditorMentionID = personID
-                if let personID,
-                   let person = repository.people.first(where: { $0.id == personID }) {
-                    mentionSuggestions = [person]
-                } else {
-                    mentionSuggestions = []
+            MentionTextEditor(
+                text: $caption,
+                requestedCursorLocation: $requestedCursorLocation,
+                people: repository.people,
+                onTextChange: { value in
+                    activeMentionText = value
+                },
+                onMentionSelected: { personID in
+                    selectedEditorMentionID = personID
                 }
-            }
+            )
             .frame(minHeight: 104, maxHeight: 180)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(ArchiveTheme.controlBackground)
             .overlay(Rectangle().stroke(ArchiveTheme.controlBorder, lineWidth: 1))
             .onChange(of: caption) { _, _ in
-                updateMentionSuggestions()
+                activeMentionText = caption
             }
+            .onAppear { activeMentionText = caption }
 
             if !mentionSuggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -4443,17 +4710,17 @@ struct MediaCaptionEditor: View {
         }
     }
 
-    private func updateMentionSuggestions() {
-        selectedEditorMentionID = nil
-        guard let query = mentionQuery(in: caption) else {
-            mentionSuggestions = []
-            return
+    private var mentionSuggestions: [Person] {
+        if let selectedEditorMentionID,
+           let selected = repository.people.first(where: { $0.id == selectedEditorMentionID }) {
+            return [selected]
         }
+        guard let query = mentionQuery(in: activeMentionText) else { return [] }
         let labels = MediaMentionToken.displayLabels(
             for: repository.people,
             language: repository.appLanguage
         )
-        mentionSuggestions = Array(repository.people.filter { person in
+        return Array(repository.people.filter { person in
             let variants = personNameVariants(person, mentionLabels: labels)
             return query.isEmpty || variants.contains { value in
                 value.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
@@ -4465,7 +4732,6 @@ struct MediaCaptionEditor: View {
         if selectedEditorMentionID == person.id {
             selectedMentionIDs.insert(person.id)
             selectedEditorMentionID = nil
-            mentionSuggestions = []
             return
         }
         guard let atIndex = caption.lastIndex(of: "@") else { return }
@@ -4493,7 +4759,8 @@ struct MediaCaptionEditor: View {
             .map(\.id)
         selectedMentionIDs.subtract(duplicateIDs)
         selectedMentionIDs.insert(person.id)
-        mentionSuggestions = []
+        activeMentionText = caption
+        requestedCursorLocation = caption.utf16.count
     }
 
     private func personNameVariants(
@@ -4665,11 +4932,6 @@ func mentionReplacementRange(
 
 func mentionQuery(in text: String) -> String? {
     guard let atIndex = text.lastIndex(of: "@") else { return nil }
-    if atIndex != text.startIndex {
-        let previous = text[text.index(before: atIndex)]
-        let isPunctuation = previous.unicodeScalars.allSatisfy(CharacterSet.punctuationCharacters.contains)
-        guard previous.isWhitespace || isPunctuation else { return nil }
-    }
 
     let tokenRange = mentionTokenRange(in: text, at: atIndex)
     // A space or punctuation commits the mention/query. Do not reopen the
@@ -4952,17 +5214,6 @@ private struct MemoryDetailView: View {
             preferredPersonIDs: selectedMentionIDs,
             language: repository.appLanguage
         )
-        let sourceLanguage = repository.appLanguage
-        if #available(iOS 26.0, *) {
-            Task { @MainActor in
-                await repository.autoTranslateMediaCaption(
-                    saved.canonicalCaption,
-                    mediaID: saved.media.id,
-                    personIDs: Array(saved.personIDs),
-                    from: sourceLanguage
-                )
-            }
-        }
         isEditingCaption = false
         onCaptionSaved()
     }

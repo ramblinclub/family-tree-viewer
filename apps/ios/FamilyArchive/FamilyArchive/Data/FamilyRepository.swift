@@ -683,6 +683,40 @@ final class FamilyRepository: ObservableObject {
         localizationIssuesByPerson.values.filter { !$0.isEmpty }.count
     }
 
+    /// The Settings review queue is derived from durable missing/wrong
+    /// language values. Shared media is listed once even when it appears on
+    /// several mentioned profiles.
+    var translationReviewItems: [LocalizationReviewIssue] {
+        var seen = Set<String>()
+        return localizationIssuesByPerson.values
+            .flatMap { $0 }
+            .filter { issue in
+                let scope = [.mediaTitle, .mediaCaption].contains(issue.field) ? "shared" : issue.personID
+                return seen.insert("\(scope)|\(issue.field.rawValue)|\(issue.recordID)|\(issue.targetLanguage.rawValue)").inserted
+            }
+            .sorted { $0.id < $1.id }
+    }
+
+    /// Saves a user-provided counterpart without altering the language in
+    /// which the original record was created.
+    func saveManualTranslation(_ value: String, for issue: LocalizationReviewIssue) throws {
+        let expectedPersonIDs = Set(MediaMentionToken.personIDs(in: issue.sourceText))
+        let translated = MediaMentionToken.canonicalize(
+            value,
+            people: document.people,
+            preferredPersonIDs: expectedPersonIDs
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !translated.isEmpty, !hasUnexpectedScript(translated, for: issue.targetLanguage) else {
+            throw CocoaError(.validationMissingMandatoryProperty)
+        }
+        guard Set(MediaMentionToken.personIDs(in: translated)) == expectedPersonIDs else {
+            throw CocoaError(.validationMissingMandatoryProperty)
+        }
+        try storeTranslation(translated, for: issue)
+        NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
+        refreshLocalizationReviewIssues()
+    }
+
     /// Audits every narrative value that can be rendered on a profile. A
     /// missing locale is allowed to fall back to the complete original text,
     /// but the fallback always produces a visible, filterable review issue.
@@ -1033,6 +1067,13 @@ final class FamilyRepository: ObservableObject {
             )
         }
         return prose
+    }
+
+    /// A caption containing only people, numbers, dates, and punctuation has
+    /// no language-specific prose. Its identical canonical value is valid for
+    /// English and Russian and should never wait for a translation model.
+    private func captionNeedsTranslation(_ value: String) -> Bool {
+        detectedLanguage(in: value) != nil
     }
 
     /// One-time, idempotent upgrade for imported media. Captions used to store
@@ -1911,11 +1952,11 @@ final class FamilyRepository: ObservableObject {
             profilePhotoPathCache.removeAll()
             coloredPhotoCache.removeAll()
 
-            // Keep one centralized source caption for this media ID. The
-            // opposite supported locale is cleared before its asynchronous
-            // translation is generated, preventing stale text from appearing
-            // for any tagged profile.
+            // Keep one centralized source caption for this media ID. Narrative
+            // captions enter the manual translation-review queue; language-
+            // neutral captions are valid as-is in both locales.
             let targetLanguage: ArchiveLanguage = captionLanguage == .english ? .russian : .english
+            let requiresTranslation = captionNeedsTranslation(cleanedCaption)
             try? NarrativeLocalizationStore.shared.updateMediaCaption(
                 mediaID: media.id,
                 caption: cleanedCaption,
@@ -1925,12 +1966,13 @@ final class FamilyRepository: ObservableObject {
             )
             try? NarrativeLocalizationStore.shared.updateMediaCaption(
                 mediaID: media.id,
-                caption: "",
+                caption: requiresTranslation ? "" : cleanedCaption,
                 language: targetLanguage,
                 expectedPersonIDs: Set(uniquePersonIDs),
                 fileManager: fileManager
             )
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
+            refreshLocalizationReviewIssues()
 
             try fileManager.createDirectory(at: stagingReviewedURL, withIntermediateDirectories: true)
             var reviewedURL = stagingReviewedURL.appendingPathComponent(sourceURL.lastPathComponent)
@@ -2462,9 +2504,8 @@ final class FamilyRepository: ObservableObject {
     }
 
     /// An edited narrative invalidates its previous counterpart translation.
-    /// The editor saves the new source first, then regenerates and validates
-    /// both stored language versions. A failed regeneration remains visible
-    /// through the profile review index.
+    /// The editor saves the new source first; its counterpart is then added to
+    /// Settings → To review for a person to translate and approve.
     func invalidateEventTranslations(personID: Person.ID, eventID: LifeEvent.ID) {
         try? NarrativeLocalizationStore.shared.removeEventTranslations(
             personID: personID,
@@ -2581,7 +2622,7 @@ final class FamilyRepository: ObservableObject {
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !translated.isEmpty,
                       !hasUnexpectedScript(translated, for: issue.targetLanguage) else { continue }
-                try storeAutomaticTranslation(translated, for: issue)
+                try storeTranslation(translated, for: issue)
             } catch {
                 // The complete original remains visible. The unresolved issue
                 // stays in the repository index and therefore keeps both the
@@ -2591,7 +2632,7 @@ final class FamilyRepository: ObservableObject {
         }
     }
 
-    private func storeAutomaticTranslation(
+    private func storeTranslation(
         _ translated: String,
         for issue: LocalizationReviewIssue
     ) throws {
@@ -2764,6 +2805,7 @@ final class FamilyRepository: ObservableObject {
         updated.isApproximate = nil
         updated.personIDs = Array(personIDs).sorted()
         updated.needsMentionReview = personIDs.isEmpty ? true : nil
+        let requiresTranslation = captionNeedsTranslation(canonicalCaption)
         let savedMedia = try updateMedia(updated, for: ownerID)
 
         // Localization is a secondary presentation index. A sidecar problem
@@ -2778,12 +2820,13 @@ final class FamilyRepository: ObservableObject {
         )
         try? NarrativeLocalizationStore.shared.updateMediaCaption(
             mediaID: item.id,
-            caption: "",
+            caption: requiresTranslation ? "" : canonicalCaption,
             language: targetLanguage,
             expectedPersonIDs: personIDs,
             fileManager: privateStore.fileManager
         )
         NarrativeLocalizationStore.shared.reload(fileManager: privateStore.fileManager)
+        refreshLocalizationReviewIssues()
 
         return SavedMediaCaption(
             canonicalCaption: canonicalCaption,

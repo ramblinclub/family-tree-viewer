@@ -279,9 +279,6 @@ struct PersonDetailView: View {
                 ArchiveParagraph(profileSummaryText)
             }
 
-            if !repository.localizationIssues(for: person.id).isEmpty {
-                localizationWarning
-            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -345,21 +342,6 @@ struct PersonDetailView: View {
                 .buttonStyle(.plain)
             }
 
-            if #available(iOS 26.0, *) {
-                Button {
-                    Task {
-                        await repository.autoTranslateMissingContent(for: person.id, force: true)
-                    }
-                } label: {
-                    Text(repository.isAutomaticallyTranslating
-                        ? ArchiveCopy.text(english: "Translating…", russian: "Переводим…")
-                        : ArchiveCopy.text(english: "Retry translation", russian: "Повторить перевод"))
-                        .font(ArchiveTypography.action)
-                        .foregroundStyle(ArchiveTheme.action)
-                }
-                .buttonStyle(.plain)
-                .disabled(repository.isAutomaticallyTranslating)
-            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3320,7 +3302,6 @@ private struct LifeEventsManagerView: View {
         if case .familyUnion(let unionID, let recordID) = scope {
             repository.invalidateEventTranslations(personID: personID, eventID: event.id)
             repository.updateSharedEvent(event, unionID: unionID, recordID: recordID, editorID: personID)
-            translatePersonAfterSave()
             return
         }
         var updated = person
@@ -3339,15 +3320,6 @@ private struct LifeEventsManagerView: View {
         updated.events = events
         repository.invalidateEventTranslations(personID: personID, eventID: event.id)
         repository.updatePerson(updated)
-        translatePersonAfterSave()
-    }
-
-    private func translatePersonAfterSave() {
-        if #available(iOS 26.0, *) {
-            Task {
-                await repository.autoTranslateMissingContent(for: personID, force: true)
-            }
-        }
     }
 }
 
@@ -3873,23 +3845,13 @@ private struct NoteEditorView: View {
             return
         }
         let sourceLanguage = repository.appLanguage
-        guard let saved = repository.saveNote(
+        guard let _ = repository.saveNote(
             personID: personID,
             existingNoteID: originalNote?.id,
             text: text,
             sourceLanguage: sourceLanguage
         ) else { return }
         dismiss()
-        if #available(iOS 26.0, *) {
-            Task {
-                await repository.autoTranslateNote(
-                    noteID: saved.id,
-                    personID: personID,
-                    expectedText: saved.text,
-                    from: sourceLanguage
-                )
-            }
-        }
     }
 }
 
@@ -4080,7 +4042,6 @@ private struct StoriesManagerView: View {
                     updated.storyChapters = (updated.storyChapters ?? []) + [story]
                     repository.invalidateStoryTranslations(personID: personID, storyID: story.id)
                     repository.updatePerson(updated)
-                    translatePersonAfterSave()
                 }
             }
             .sheet(item: $editingStory) { story in
@@ -4093,17 +4054,8 @@ private struct StoriesManagerView: View {
                     updated.storyChapters = stories
                     repository.invalidateStoryTranslations(personID: personID, storyID: updatedStory.id)
                     repository.updatePerson(updated)
-                    translatePersonAfterSave()
                     editingStory = nil
                 }
-            }
-        }
-    }
-
-    private func translatePersonAfterSave() {
-        if #available(iOS 26.0, *) {
-            Task {
-                await repository.autoTranslateMissingContent(for: personID, force: true)
             }
         }
     }
@@ -4677,7 +4629,7 @@ struct MediaMetadataEditor: View {
     }
 
     private func save() throws {
-        let saved = try repository.saveMediaCaption(
+        _ = try repository.saveMediaCaption(
             caption,
             for: item,
             ownerID: ownerID,
@@ -4685,17 +4637,6 @@ struct MediaMetadataEditor: View {
             language: repository.appLanguage
         )
 
-        let sourceLanguage = repository.appLanguage
-        if #available(iOS 26.0, *) {
-            Task { @MainActor in
-                await repository.autoTranslateMediaCaption(
-                    saved.canonicalCaption,
-                    mediaID: saved.media.id,
-                    personIDs: Array(saved.personIDs),
-                    from: sourceLanguage
-                )
-            }
-        }
         dismiss()
     }
 }
