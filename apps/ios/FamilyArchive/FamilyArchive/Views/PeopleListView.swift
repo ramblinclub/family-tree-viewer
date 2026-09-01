@@ -1774,7 +1774,7 @@ private struct HomeView: View {
     private var upcomingDates: [RememberedDate] {
         var dates: [RememberedDate] = []
 
-        for person in repository.people {
+        for person in reminderPeople {
             if repository.isLiving(person) {
                 if let birth = person.birthFact,
                    let parts = calendarParts(from: birth.value) {
@@ -1807,6 +1807,33 @@ private struct HomeView: View {
         }
 
         return dates.sorted { $0.occurrence < $1.occurrence }.prefix(5).map { $0 }
+    }
+
+    /// Home reminders follow the active account's family branch. Elena's
+    /// account also includes Mikhail Saparov's branch so both partners see a
+    /// useful shared calendar, even when an older import omitted the spouse
+    /// link from one side of the relationship.
+    private var reminderPeople: [Person] {
+        guard let accountHolder else { return repository.people }
+
+        let graph = FamilyRelationshipGraph(repository: repository)
+        var roots: [Person.ID] = [accountHolder.id]
+        roots.append(contentsOf: graph.partners(of: accountHolder.id).map(\.id))
+
+        if let husband = repository.people.first(where: isMikhailSaparov) {
+            roots.append(husband.id)
+        }
+
+        return graph.connectedPeople(from: roots)
+    }
+
+    private func isMikhailSaparov(_ person: Person) -> Bool {
+        let normalizedNames = [person.sourceDisplayName, person.displayName, person.originalDisplayName].map {
+            $0.lowercased()
+                .replacingOccurrences(of: "ё", with: "е")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return normalizedNames.contains("mikhail saparov") || normalizedNames.contains("михаил сапаров")
     }
 
     private func calendarParts(from value: String) -> (year: Int?, month: Int, day: Int)? {
@@ -2149,6 +2176,22 @@ private struct FamilyRelationshipGraph {
 
     func siblings(of personID: Person.ID) -> [Person] {
         people(for: siblingsByPerson[personID] ?? [])
+    }
+
+    func connectedPeople(from roots: [Person.ID]) -> [Person] {
+        var visited: Set<Person.ID> = []
+        var pending = roots
+
+        while let personID = pending.popLast() {
+            guard visited.insert(personID).inserted else { continue }
+            let neighbors = parents(of: personID) +
+                children(of: personID) +
+                partners(of: personID) +
+                siblings(of: personID)
+            pending.append(contentsOf: neighbors.map(\.id))
+        }
+
+        return people(for: visited)
     }
 
     private func people(for ids: Set<Person.ID>) -> [Person] {
