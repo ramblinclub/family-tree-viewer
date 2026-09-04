@@ -24,7 +24,6 @@ enum ArchiveLanguage: String, CaseIterable, Identifiable, Hashable {
 enum LocalizationField: String, Hashable {
     case summary
     case biography
-    case eventTitle
     case eventSummary
     case eventPlace
     case storyTitle
@@ -38,7 +37,6 @@ enum LocalizationField: String, Hashable {
         switch self {
         case .summary: ArchiveCopy.text(english: "Profile summary", russian: "Описание профиля")
         case .biography: ArchiveCopy.text(english: "Biography", russian: "Биография")
-        case .eventTitle: ArchiveCopy.text(english: "Event title", russian: "Название события")
         case .eventSummary: ArchiveCopy.text(english: "Event description", russian: "Описание события")
         case .eventPlace: ArchiveCopy.text(english: "Event place", russian: "Место события")
         case .storyTitle: ArchiveCopy.text(english: "Story title", russian: "Название истории")
@@ -149,10 +147,8 @@ private struct NarrativeStoryLocalization: Codable {
 }
 
 private struct NarrativeEventLocalization: Codable {
-    var title: String? = nil
     var summary: String? = nil
     var place: String? = nil
-    var titleTranslations: [String: String]? = nil
     var summaryTranslations: [String: String]? = nil
     var placeTranslations: [String: String]? = nil
 }
@@ -369,12 +365,10 @@ final class NarrativeLocalizationStore {
     func storedEventTranslation(
         _ personID: String,
         eventID: String,
-        field: LocalizationField,
         language: ArchiveLanguage
-    ) -> (title: String?, summary: String?, place: String?) {
+    ) -> (summary: String?, place: String?) {
         let event = people[personID]?.events?[eventID]
         return (
-            event?.titleTranslations?[language.rawValue] ?? (language == .english ? event?.title : nil),
             event?.summaryTranslations?[language.rawValue] ?? (language == .english ? event?.summary : nil),
             event?.placeTranslations?[language.rawValue] ?? (language == .english ? event?.place : nil)
         )
@@ -464,11 +458,6 @@ final class NarrativeLocalizationStore {
         var events = person.events ?? [:]
         var event = events[eventID] ?? NarrativeEventLocalization()
         switch field {
-        case .eventTitle:
-            var values = event.titleTranslations ?? [:]
-            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            values[language.rawValue] = cleaned.isEmpty ? nil : cleaned
-            event.titleTranslations = values.isEmpty ? nil : values
         case .eventSummary:
             var values = event.summaryTranslations ?? [:]
             let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -500,6 +489,12 @@ final class NarrativeLocalizationStore {
         try persist(fileManager: fileManager)
     }
 
+    /// Rewrites the private narrative sidecar using the title-free event
+    /// schema. Unknown legacy event-title keys are discarded by Codable.
+    func removeLegacyEventTitleData(fileManager: FileManager = .default) {
+        try? persist(fileManager: fileManager)
+    }
+
     func removeStoryTranslations(
         personID: String,
         storyID: String,
@@ -511,11 +506,6 @@ final class NarrativeLocalizationStore {
         person.stories = stories.isEmpty ? nil : stories
         people[personID] = person
         try persist(fileManager: fileManager)
-    }
-
-    func eventTitle(_ personID: String, eventID: String, source: String) -> String {
-        let event = people[personID]?.events?[eventID]
-        return localized(source: source, translations: event?.titleTranslations, legacyEnglish: event?.title)
     }
 
     func eventSummary(_ personID: String, eventID: String, source: String) -> String {
@@ -1146,35 +1136,6 @@ enum ArchiveCopy {
         return cleaned
     }
 
-    static func eventTitle(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowercased = trimmed.lowercased()
-        let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
-
-        if let translated = ArchiveLocalizationStore.shared.eventTitle(trimmed, language: language) {
-            return localizeNames(translated)
-        }
-        if lowercased == "born" || lowercased == "birth" {
-            return ArchiveLocalizationStore.shared.eventTitle("birth", language: language)
-                ?? text(english: "Born", russian: "Рождение")
-        }
-        if lowercased == "died" || lowercased == "death" {
-            return ArchiveLocalizationStore.shared.eventTitle("death", language: language)
-                ?? text(english: "Died", russian: "Смерть")
-        }
-        if lowercased.hasPrefix("married ") {
-            let name = String(trimmed.dropFirst("Married ".count))
-            let marriageLabel = ArchiveLocalizationStore.shared.eventTitle("married", language: language)
-                ?? text(english: "Married", russian: "Брак")
-            return localizeNames(marriageLabel + " " + name)
-        }
-        if lowercased == "married" {
-            return ArchiveLocalizationStore.shared.eventTitle("married", language: language)
-                ?? text(english: "Married", russian: "Брак")
-        }
-        return trimmed
-    }
-
     static func eventSummary(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let language = ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? ArchiveLanguage.russian.rawValue) ?? .russian
@@ -1615,7 +1576,7 @@ extension FamilyArchiveDocument {
         let canonicalSort = canonical.sortKey ?? LifeEvent.sortKey(for: canonical.date)
         guard let candidateSort, candidateSort == canonicalSort else { return false }
 
-        let text = [candidate.title, candidate.summary].joined(separator: " ").lowercased()
+        let text = candidate.summary.lowercased()
         var nameVariants = ArchiveLanguage.allCases.flatMap { language -> [String] in
             let fullName = NameLocalizationStore.shared.displayName(
                 for: relative.id,
@@ -1653,7 +1614,7 @@ extension FamilyArchiveDocument {
         }
         guard !candidateIndexes.isEmpty else { return nil }
 
-        let searchable = [event.id, event.title, event.summary]
+        let searchable = [event.id, event.summary]
             .joined(separator: " ")
             .lowercased()
         let scored = candidateIndexes.map { index -> (index: Int, score: Int) in
@@ -1692,7 +1653,7 @@ extension FamilyArchiveDocument {
     }
 
     private static func relationshipEventQuality(_ event: LifeEvent) -> Int {
-        event.title.count + event.summary.count + (event.place?.count ?? 0) + (event.sourceIDs?.count ?? 0) * 20
+        event.summary.count + (event.place?.count ?? 0) + (event.sourceIDs?.count ?? 0) * 20
     }
 
     /// Explicit unions are authoritative. Legacy documents get a conservative
@@ -1917,7 +1878,7 @@ struct Person: Codable, Identifiable, Hashable {
             let normalizedCategory = events[index].category
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
-            let searchableText = [events[index].id, events[index].title, events[index].summary]
+            let searchableText = [events[index].id, events[index].summary]
                 .joined(separator: " ")
                 .lowercased()
 
@@ -1974,13 +1935,11 @@ struct Person: Codable, Identifiable, Hashable {
                     id: "\(fact.id)-event",
                     date: fact.value,
                     sortKey: LifeEvent.sortKey(for: fact.value),
-                    title: category.defaultTitle,
                     summary: "",
                     place: fact.place,
                     category: category.rawValue,
                     isApproximate: fact.isApproximate,
                     sourceIDs: fact.sourceIDs,
-                    titleTranslations: fact.labelTranslations,
                     summaryTranslations: nil
                 ))
                 changed = true
@@ -2077,6 +2036,7 @@ enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
     case military
     case migration
     case burial
+    case awards
     case life
 
     var id: String { rawValue }
@@ -2103,6 +2063,7 @@ enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
         case .military: ArchiveCopy.text(english: "Military service", russian: "Военная служба")
         case .migration: ArchiveCopy.text(english: "Migration", russian: "Переезд")
         case .burial: ArchiveCopy.text(english: "Burial", russian: "Захоронение")
+        case .awards: ArchiveCopy.text(english: "Awards", russian: "Награды")
         case .life: ArchiveCopy.text(english: "Life (Other)", russian: "Жизнь (другое)")
         }
     }
@@ -2129,25 +2090,16 @@ enum LifeEventCategory: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-struct LifeEvent: Codable, Identifiable, Hashable {
+struct LifeEvent: Identifiable, Hashable {
     var id: String
     var date: String
     var sortKey: Int?
-    var title: String
     var summary: String
     var place: String?
     var category: String
     var isApproximate: Bool?
     var sourceIDs: [String]?
-    var titleTranslations: [String: String]?
     var summaryTranslations: [String: String]?
-
-    var localizedTitle: String {
-        // Normalize both the source title and any stored translation through
-        // the same approved event vocabulary. This prevents an English value
-        // in an older `titleTranslations` entry from leaking into Russian UI.
-        return ArchiveCopy.eventTitle(localized(titleTranslations, fallback: title))
-    }
 
     var localizedSummary: String {
         ArchiveCopy.eventSummary(localized(summaryTranslations, fallback: NameLocalizationStore.shared.localizeEmbeddedNames(in: summary)))
@@ -2159,9 +2111,9 @@ struct LifeEvent: Codable, Identifiable, Hashable {
     }
 
     var coreCategory: LifeEventCategory? {
-        if category.lowercased() == LifeEventCategory.birth.rawValue { return .birth }
-        if category.lowercased() == LifeEventCategory.death.rawValue { return .death }
-        return LifeEventCategory.coreCategory(for: title)
+        LifeEventCategory.category(for: category).flatMap { category in
+            [.birth, .death].contains(category) ? category : nil
+        }
     }
 
     func factProjection(for category: LifeEventCategory) -> PersonFact {
@@ -2172,7 +2124,7 @@ struct LifeEvent: Codable, Identifiable, Hashable {
             place: place,
             isApproximate: isApproximate,
             sourceIDs: sourceIDs,
-            labelTranslations: titleTranslations,
+            labelTranslations: nil,
             valueTranslations: nil
         )
     }
@@ -2192,17 +2144,14 @@ struct LifeEvent: Codable, Identifiable, Hashable {
         place = richer(place, fact.place)
         isApproximate = isApproximate ?? fact.isApproximate
         sourceIDs = merged(sourceIDs, fact.sourceIDs)
-        if titleTranslations == nil { titleTranslations = fact.labelTranslations }
     }
 
     mutating func mergeMissingValues(from event: LifeEvent) {
         if date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { date = event.date }
-        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { title = event.title }
         if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { summary = event.summary }
         place = richer(place, event.place)
         isApproximate = isApproximate ?? event.isApproximate
         sourceIDs = merged(sourceIDs, event.sourceIDs)
-        titleTranslations = titleTranslations ?? event.titleTranslations
         summaryTranslations = summaryTranslations ?? event.summaryTranslations
     }
 
@@ -2215,6 +2164,68 @@ struct LifeEvent: Codable, Identifiable, Hashable {
     private func merged(_ left: [String]?, _ right: [String]?) -> [String]? {
         let values = Array(Set((left ?? []) + (right ?? []))).sorted()
         return values.isEmpty ? nil : values
+    }
+}
+
+extension LifeEvent: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case date
+        case sortKey
+        case summary
+        case place
+        case category
+        case isApproximate
+        case sourceIDs
+        case summaryTranslations
+        case legacyTitle = "title"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        date = try container.decode(String.self, forKey: .date)
+        sortKey = try container.decodeIfPresent(Int.self, forKey: .sortKey)
+        place = try container.decodeIfPresent(String.self, forKey: .place)
+        isApproximate = try container.decodeIfPresent(Bool.self, forKey: .isApproximate)
+        sourceIDs = try container.decodeIfPresent([String].self, forKey: .sourceIDs)
+        summaryTranslations = try container.decodeIfPresent([String: String].self, forKey: .summaryTranslations)
+
+        let legacyTitle = try container.decodeIfPresent(String.self, forKey: .legacyTitle)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var decodedCategory = try container.decode(String.self, forKey: .category)
+        let normalizedCategory = decodedCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedCategory == LifeEventCategory.life.rawValue,
+           let legacyTitle,
+           let coreCategory = LifeEventCategory.coreCategory(for: legacyTitle) {
+            decodedCategory = coreCategory.rawValue
+        }
+        category = decodedCategory
+
+        let decodedSummary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        // Old archives occasionally used the title as the only event text.
+        // Preserve that content in the new description field while never
+        // writing the legacy title key back out.
+        if decodedSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let legacyTitle,
+           !["born", "birth", "died", "death", "married"].contains(legacyTitle.lowercased()) {
+            summary = legacyTitle
+        } else {
+            summary = decodedSummary
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(date, forKey: .date)
+        try container.encodeIfPresent(sortKey, forKey: .sortKey)
+        try container.encode(summary, forKey: .summary)
+        try container.encodeIfPresent(place, forKey: .place)
+        try container.encode(category, forKey: .category)
+        try container.encodeIfPresent(isApproximate, forKey: .isApproximate)
+        try container.encodeIfPresent(sourceIDs, forKey: .sourceIDs)
+        try container.encodeIfPresent(summaryTranslations, forKey: .summaryTranslations)
     }
 }
 

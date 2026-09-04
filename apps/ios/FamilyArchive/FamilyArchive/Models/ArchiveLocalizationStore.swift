@@ -1,11 +1,8 @@
 import Foundation
 
-/// Bundled, non-private localization data for the archive's normalized
-/// event titles and place names. Adding another locale means adding a locale
-/// object to `Resources/archive-locales.json`; the view and archive models do
-/// not need a new switch or another hard-coded mapping.
+/// Bundled, non-private localization data for archive place names. Adding
+/// another locale means adding a locale object to `Resources/archive-locales.json`.
 private struct ArchiveLocaleResource: Decodable {
-    let eventTitles: [String: String]
     let places: [String: String]
     let placeFragments: [String: String]
 }
@@ -31,10 +28,6 @@ final class ArchiveLocalizationStore {
             return
         }
         locales = resource.locales
-    }
-
-    func eventTitle(_ value: String, language: ArchiveLanguage) -> String? {
-        locales[language.rawValue]?.eventTitles[value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
     }
 
     func place(_ value: String, language: ArchiveLanguage) -> String? {

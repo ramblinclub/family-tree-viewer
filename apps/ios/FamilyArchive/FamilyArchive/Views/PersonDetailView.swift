@@ -1336,12 +1336,10 @@ private struct StoryIntroParagraph: View {
 
 private struct ArchiveDatedContentTitle: View {
     let date: String
-    let title: String
     let note: String?
 
-    init(date: String, title: String, note: String? = nil) {
+    init(date: String, note: String? = nil) {
         self.date = date
-        self.title = title
         self.note = note
     }
 
@@ -1356,27 +1354,34 @@ private struct ArchiveDatedContentTitle: View {
                         .foregroundStyle(ArchiveTheme.metadata)
                 }
             }
-            ArchiveContentTitle(title)
         }
     }
 }
 
 private struct ArchiveDatedContentBlock: View {
     let date: String
-    let title: String
+    let category: String
+    let place: String?
     let bodyText: String
     let note: String?
 
-    init(date: String, title: String, body: String, note: String? = nil) {
+    init(date: String, category: String, place: String?, body: String, note: String? = nil) {
         self.date = date
-        self.title = title
+        self.category = category
+        self.place = place
         self.bodyText = body
         self.note = note
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ArchiveDatedContentTitle(date: date, title: title, note: note)
+            ArchiveDatedContentTitle(date: date, note: note)
+            ArchiveContentTitle(category)
+            if let place, !place.trimmed.isEmpty {
+                Text(place)
+                    .font(ArchiveTypography.metadata)
+                    .foregroundStyle(ArchiveTheme.metadata)
+            }
             ArchiveParagraph(bodyText)
                 .textSelection(.enabled)
         }
@@ -1729,11 +1734,14 @@ private struct LifeEventRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ArchiveDatedContentBlock(
                     date: event.date,
-                    title: NarrativeLocalizationStore.shared.eventTitle(
-                        timelineEvent.sourcePersonID,
-                        eventID: timelineEvent.sourceEventID,
-                        source: event.localizedTitle
-                    ),
+                    category: LifeEventCategory.category(for: event.category)?.localizedLabel ?? event.category,
+                    place: event.place.map {
+                        NarrativeLocalizationStore.shared.eventPlace(
+                            timelineEvent.sourcePersonID,
+                            eventID: timelineEvent.sourceEventID,
+                            source: $0
+                        )
+                    },
                     body: NarrativeLocalizationStore.shared.eventSummary(
                         timelineEvent.sourcePersonID,
                         eventID: timelineEvent.sourceEventID,
@@ -1741,15 +1749,6 @@ private struct LifeEventRow: View {
                     ),
                     note: event.isApproximate == true ? ArchiveCopy.text(english: "Approximate", russian: "Примерно") : nil
                 )
-                if let place = event.place {
-                    Text(NarrativeLocalizationStore.shared.eventPlace(
-                        timelineEvent.sourcePersonID,
-                        eventID: timelineEvent.sourceEventID,
-                        source: place
-                    ))
-                        .font(ArchiveTypography.metadata)
-                        .foregroundStyle(ArchiveTheme.metadata)
-                }
             }
             .padding(.vertical, 11)
         }
@@ -3331,17 +3330,6 @@ private struct LifeEventManagerRow: View {
         LifeEventCategory.category(for: event.category) ?? event.coreCategory ?? .life
     }
 
-    private var title: String {
-        let localized = NarrativeLocalizationStore.shared.eventTitle(
-            personID,
-            eventID: event.id,
-            source: event.localizedTitle
-        )
-        return localized.isEmpty
-            ? ArchiveCopy.text(english: "Untitled event", russian: "Событие без названия")
-            : localized
-    }
-
     private var summary: String {
         NarrativeLocalizationStore.shared.eventSummary(
             personID,
@@ -3363,11 +3351,6 @@ private struct LifeEventManagerRow: View {
                     .font(.system(size: 10, weight: .bold))
                     .tracking(0.8)
                     .foregroundStyle(ArchiveTheme.accent)
-
-                Text(title)
-                    .font(ArchiveTypography.contentTitle)
-                    .foregroundStyle(ArchiveTheme.ink)
-                    .multilineTextAlignment(.leading)
 
                 VStack(alignment: .leading, spacing: 4) {
                     if !event.date.trimmed.isEmpty {
@@ -3426,6 +3409,7 @@ private extension LifeEventCategory {
         case .military: "shield"
         case .migration: "arrow.right"
         case .burial: "cross"
+        case .awards: "medal"
         case .life: "ellipsis"
         }
     }
@@ -4085,7 +4069,6 @@ private struct EventEditorView: View {
             id: UUID().uuidString,
             date: "",
             sortKey: nil,
-            title: "",
             summary: "",
             place: nil,
             category: LifeEventCategory.life.rawValue,
@@ -4104,7 +4087,7 @@ private struct EventEditorView: View {
     }
 
     private var canSave: Bool {
-        !draft.title.trimmed.isEmpty || !draft.summary.trimmed.isEmpty
+        !draft.category.trimmed.isEmpty
     }
 
     var body: some View {
@@ -4115,27 +4098,6 @@ private struct EventEditorView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 26) {
                         editorSection(copy("EVENT DETAILS", "СВЕДЕНИЯ О СОБЫТИИ")) {
-                            EventEditorTextField(
-                                label: copy("Title", "Название"),
-                                prompt: copy("What happened?", "Что произошло?"),
-                                text: $draft.title
-                            )
-
-                            EventEditorTextField(
-                                label: copy("Date", "Дата"),
-                                prompt: copy("For example, 1945 or 12 May 1945", "Например, 1945 или 12 мая 1945"),
-                                text: $draft.date
-                            )
-
-                            EventEditorTextField(
-                                label: copy("Place", "Место"),
-                                prompt: copy("City, region, or country", "Город, область или страна"),
-                                text: Binding(
-                                    get: { draft.place ?? "" },
-                                    set: { draft.place = $0.trimmed.isEmpty ? nil : $0 }
-                                )
-                            )
-
                             VStack(alignment: .leading, spacing: 7) {
                                 Text(copy("Category", "Категория"))
                                     .font(ArchiveTypography.metadataEmphasis)
@@ -4147,11 +4109,9 @@ private struct EventEditorView: View {
                                     HStack(spacing: 12) {
                                         LifeEventCategoryIcon(category: selectedCategory, size: 15)
                                             .foregroundStyle(ArchiveTheme.accent)
-                                            .frame(width: 32, height: 32)
-                                            .background(ArchiveTheme.background)
-                                            .clipShape(Circle())
+                                            .frame(width: 20)
                                         Text(selectedCategory.localizedLabel)
-                                            .font(ArchiveTypography.bodyEmphasis)
+                                            .font(ArchiveTypography.body)
                                             .foregroundStyle(ArchiveTheme.ink)
                                             .lineLimit(1)
                                         Spacer()
@@ -4181,27 +4141,32 @@ private struct EventEditorView: View {
                                 }
                             }
 
-                            Toggle(isOn: Binding(
-                                get: { draft.isApproximate ?? false },
-                                set: { draft.isApproximate = $0 }
-                            )) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(copy("Approximate date", "Приблизительная дата"))
-                                        .font(ArchiveTypography.bodyEmphasis)
-                                        .foregroundStyle(ArchiveTheme.ink)
-                                    Text(copy(
-                                        "Use when the exact date is uncertain.",
-                                        "Включите, если точная дата неизвестна."
-                                    ))
-                                    .font(ArchiveTypography.metadata)
-                                    .foregroundStyle(ArchiveTheme.metadata)
-                                }
-                            }
-                            .tint(ArchiveTheme.accent)
-                            .padding(.vertical, 4)
+                            EventEditorTextField(
+                                label: copy("Date", "Дата"),
+                                prompt: copy("For example, 1945 or 12 May 1945", "Например, 1945 или 12 мая 1945"),
+                                text: $draft.date
+                            )
+
+                            EventEditorToggleRow(
+                                label: copy("Approximate date", "Приблизительная дата"),
+                                isOn: Binding(
+                                    get: { draft.isApproximate ?? false },
+                                    set: { draft.isApproximate = $0 }
+                                )
+                            )
+
+                            EventEditorTextField(
+                                label: copy("Place", "Место"),
+                                prompt: copy("City, region, or country", "Город, область или страна"),
+                                text: Binding(
+                                    get: { draft.place ?? "" },
+                                    set: { draft.place = $0.trimmed.isEmpty ? nil : $0 }
+                                )
+                            )
+
                         }
 
-                        editorSection(copy("STORY", "ОПИСАНИЕ")) {
+                        editorSection(copy("DESCRIPTION", "ОПИСАНИЕ")) {
                             EventEditorTextArea(
                                 label: copy("Description", "Описание"),
                                 prompt: copy(
@@ -4288,7 +4253,7 @@ private struct EventEditorView: View {
     private func save() {
         if let issue = ArchiveLanguageValidator.issue(
             language: language,
-            fields: [("Title", draft.title), ("Description", draft.summary), ("Place", draft.place ?? "")]
+            fields: [("Description", draft.summary), ("Place", draft.place ?? "")]
         ) {
             languageError = issue
             return
@@ -4297,7 +4262,6 @@ private struct EventEditorView: View {
         saved.sortKey = editorSortKey(saved.date)
         // These values describe the pre-edit source. The repository will
         // generate and validate a fresh counterpart after saving.
-        saved.titleTranslations = nil
         saved.summaryTranslations = nil
         onSave(saved)
         dismiss()
@@ -4308,50 +4272,79 @@ private struct EventCategoryPicker: View {
     let selectedCategory: LifeEventCategory
     let onSelect: (LifeEventCategory) -> Void
 
+    private static let rowHeight: CGFloat = 34
+    private static let rowSpacing: CGFloat = 2
+    private static let horizontalPadding: CGFloat = 8
+
+    private var fullHeight: CGFloat {
+        let categories = CGFloat(LifeEventCategory.allCases.count)
+        return categories * Self.rowHeight +
+            max(0, categories - 1) * Self.rowSpacing +
+            Self.horizontalPadding * 2
+    }
+
+    private var maximumHeight: CGFloat {
+        max(200, UIScreen.main.bounds.height - 160)
+    }
+
+    private var needsScrolling: Bool {
+        fullHeight > maximumHeight
+    }
+
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 2) {
-                ForEach(LifeEventCategory.allCases) { category in
-                    Button {
-                        onSelect(category)
-                    } label: {
-                        HStack(spacing: 10) {
-                            LifeEventCategoryIcon(category: category, size: 13)
-                                .foregroundStyle(ArchiveTheme.accent)
-                                .frame(width: 20)
-
-                            Text(category.localizedLabel)
-                                .font(ArchiveTypography.body)
-                                .foregroundStyle(ArchiveTheme.ink)
-                                .lineLimit(1)
-
-                            Spacer(minLength: 8)
-
-                            if category == selectedCategory {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(ArchiveTheme.accent)
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
-                        .background(
-                            category == selectedCategory
-                                ? ArchiveTheme.actionBackground
-                                : Color.clear
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+        Group {
+            if needsScrolling {
+                ScrollView {
+                    categoryList
                 }
+                .scrollIndicators(.hidden)
+            } else {
+                categoryList
             }
-            .padding(8)
         }
-        .scrollIndicators(.hidden)
-        .frame(width: 270, height: 358)
+        .frame(width: 270, height: min(fullHeight, maximumHeight))
         .background(ArchiveTheme.background)
         .accessibilityElement(children: .contain)
+    }
+
+    private var categoryList: some View {
+        VStack(spacing: Self.rowSpacing) {
+            ForEach(LifeEventCategory.allCases) { category in
+                Button {
+                    onSelect(category)
+                } label: {
+                    HStack(spacing: 10) {
+                        LifeEventCategoryIcon(category: category, size: 13)
+                            .foregroundStyle(ArchiveTheme.accent)
+                            .frame(width: 20)
+
+                        Text(category.localizedLabel)
+                            .font(ArchiveTypography.body)
+                            .foregroundStyle(ArchiveTheme.ink)
+                            .lineLimit(1)
+
+                        Spacer(minLength: 8)
+
+                        if category == selectedCategory {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(ArchiveTheme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: Self.rowHeight)
+                    .background(
+                        category == selectedCategory
+                            ? ArchiveTheme.actionBackground
+                            : Color.clear
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(Self.horizontalPadding)
     }
 }
 
@@ -4409,6 +4402,29 @@ private struct EventEditorTextArea: View {
             .background(ArchiveTheme.actionBackground)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+    }
+}
+
+private struct EventEditorToggleRow: View {
+    let label: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(ArchiveTypography.body)
+                .foregroundStyle(ArchiveTheme.ink)
+
+            Spacer(minLength: 8)
+
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .tint(ArchiveTheme.accent)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 48)
+        .background(ArchiveTheme.actionBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

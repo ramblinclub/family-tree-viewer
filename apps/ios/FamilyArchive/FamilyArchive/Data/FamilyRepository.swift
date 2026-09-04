@@ -659,6 +659,7 @@ final class FamilyRepository: ObservableObject {
         }
         NameLocalizationStore.shared.reload()
         NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
+        removeLegacyEventTitles()
         if !coreEventMigration.changedPersonIDs.isEmpty {
             try? privateStore.save(
                 document: coreEventMigration.document,
@@ -668,7 +669,24 @@ final class FamilyRepository: ObservableObject {
         }
         normalizeMediaMentionStorage()
         migrateLegacyStoriesToNotes()
+        migrateKnownResidenceEventsToNotes()
+        migrateKnownAwardEventsToNotes()
         refreshLocalizationReviewIssues()
+    }
+
+    /// Persists every person record through the title-free LifeEvent encoder.
+    /// This removes legacy `title` and `titleTranslations` keys from existing
+    /// stores while keeping the event's category, description, date, and place.
+    private func removeLegacyEventTitles() {
+        let peopleWithEvents = Set(document.people.filter { !$0.structuredEvents.isEmpty }.map(\.id))
+        if !peopleWithEvents.isEmpty {
+            try? privateStore.save(
+                document: document,
+                changedPersonIDs: peopleWithEvents,
+                rebuildGEDCOM: true
+            )
+        }
+        NarrativeLocalizationStore.shared.removeLegacyEventTitleData(fileManager: privateStore.fileManager)
     }
 
     func localizationIssues(for personID: Person.ID) -> [LocalizationReviewIssue] {
@@ -752,22 +770,11 @@ final class FamilyRepository: ObservableObject {
             }
 
             for event in person.structuredEvents {
-                let sidecar: (ArchiveLanguage) -> (title: String?, summary: String?, place: String?) = { language in
+                let sidecar: (ArchiveLanguage) -> (summary: String?, place: String?) = { language in
                     NarrativeLocalizationStore.shared.storedEventTranslation(
                         person.id,
                         eventID: event.id,
-                        field: .eventTitle,
                         language: language
-                    )
-                }
-                if shouldAuditCustomEventTitle(event.title) {
-                    auditLocalizedField(
-                        personID: person.id,
-                        field: .eventTitle,
-                        recordID: event.id,
-                        source: event.title,
-                        stored: { event.titleTranslations?[$0.rawValue] ?? sidecar($0).title },
-                        issues: &issues
                     )
                 }
                 if shouldAuditCustomEventSummary(event.summary) {
@@ -896,14 +903,6 @@ final class FamilyRepository: ObservableObject {
         }
 
         localizationIssuesByPerson = result
-    }
-
-    /// Event titles in the bundled vocabulary are app labels. They are
-    /// localized once in archive-locales.json and never create per-person
-    /// translation work or review warnings.
-    private func shouldAuditCustomEventTitle(_ value: String) -> Bool {
-        ArchiveLocalizationStore.shared.eventTitle(value, language: .english) == nil &&
-            ArchiveLocalizationStore.shared.eventTitle(value, language: .russian) == nil
     }
 
     private func shouldAuditPrivateProfileSummary(_ value: String) -> Bool {
@@ -1404,6 +1403,276 @@ final class FamilyRepository: ObservableObject {
         return parts.joined(separator: "\n\n")
     }
 
+    /// Converts the two known generic GEDCOM events into Residence events
+    /// while preserving their labels and details as bilingual Notes. Stable
+    /// note IDs keep this migration idempotent across imports.
+    private func migrateKnownResidenceEventsToNotes() {
+        struct Correction {
+            let personID: Person.ID
+            let eventID: LifeEvent.ID
+            let englishNote: String
+            let russianNote: String
+        }
+
+        let corrections = [
+            Correction(
+                personID: "I212004298863",
+                eventID: "elena-petrova-moved-event",
+                englishNote: "Moved to US, 1996, USA",
+                russianNote: "Переезд в США, 1996 год, США"
+            ),
+            Correction(
+                personID: "I212004299702",
+                eventID: "m-nosov-event-departure",
+                englishNote: "Departure, 1945, Saint-Petersbourg, Russia",
+                russianNote: "Переезд, 1945 год, Санкт-Петербург, Россия"
+            )
+        ]
+
+        var people = document.people
+        var changedPersonIDs = Set<Person.ID>()
+        let recordedAt = ISO8601DateFormatter().string(from: Date())
+
+        for correction in corrections {
+            guard let personIndex = people.firstIndex(where: { $0.id == correction.personID }) else { continue }
+            var events = people[personIndex].structuredEvents
+            guard let eventIndex = events.firstIndex(where: { $0.id == correction.eventID }) else { continue }
+
+            if events[eventIndex].category != LifeEventCategory.residence.rawValue {
+                events[eventIndex].category = LifeEventCategory.residence.rawValue
+                people[personIndex].events = events
+                changedPersonIDs.insert(correction.personID)
+            }
+
+            var notes = people[personIndex].structuredNotes
+            let noteID = "legacy-event-residence-\(correction.personID)"
+            if !notes.contains(where: { $0.id == noteID }) {
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: correction.russianNote,
+                    sourceLanguage: ArchiveLanguage.russian.rawValue,
+                    translations: [ArchiveLanguage.english.rawValue: correction.englishNote],
+                    recordedByAccountID: nil,
+                    recordedAt: recordedAt,
+                    updatedAt: nil,
+                    origin: .legacyGEDCOM,
+                    reviewStoryIDs: nil,
+                    translationNeedsReview: nil
+                ))
+                people[personIndex].notes = notes
+                changedPersonIDs.insert(correction.personID)
+            }
+        }
+
+        guard !changedPersonIDs.isEmpty else { return }
+        replaceDocument(
+            people: people,
+            changedPersonIDs: changedPersonIDs,
+            rebuildGEDCOM: true
+        )
+    }
+
+    /// Restores Ivan Petrov's seven award records as first-class Awards
+    /// events. The source GEDCOM labels and archival details remain available
+    /// in Russian Notes with English counterparts, and stable IDs make this
+    /// safe to run after every import.
+    private func migrateKnownAwardEventsToNotes() {
+        struct AwardCorrection {
+            let eventID: LifeEvent.ID
+            let date: String
+            let russianNote: String
+            let englishNote: String
+        }
+
+        let corrections = [
+            AwardCorrection(
+                eventID: "i-petrov-award-war-feat-1943-06-17",
+                date: "17 June 1943",
+                russianNote: "Подвиг на войне, 17 июня 1943 года",
+                englishNote: "Wartime act of valor, 17 June 1943"
+            ),
+            AwardCorrection(
+                eventID: "i-petrov-award-war-feat-1943-07-18",
+                date: "18 July 1943",
+                russianNote: "Подвиг на войне, 18 июля 1943 года",
+                englishNote: "Wartime act of valor, 18 July 1943"
+            ),
+            AwardCorrection(
+                eventID: "i-petrov-award-red-banner-1943-11-19",
+                date: "19 November 1943",
+                russianNote: """
+                Награжден Орденом Красного Знамени за подвиги в военных действия, 19 ноября 1943 года
+
+                Приказ подразделения
+                №: 643/н от: 19.11.1943
+                Издан: АДД
+                Архив: ЦАМО
+                Картотека: Картотека награждений
+                Расположение документа: шкаф 67, ящик 9
+                """,
+                englishNote: """
+                Awarded the Order of the Red Banner for acts of valor in combat, 19 November 1943
+
+                Unit order
+                No.: 643/n dated 19 November 1943
+                Issued by: ADD
+                Archive: TsAMO
+                Card index: Awards card index
+                Location: cabinet 67, drawer 9
+                """
+            ),
+            AwardCorrection(
+                eventID: "i-petrov-award-defense-moscow-1944-05-01",
+                date: "1 May 1944",
+                russianNote: """
+                Награжден медалью за оборону Москвы, 1 мая 1944 года
+
+                Кто наградил: Президиум ВС СССР
+                Наименование награды: Медаль «За оборону Москвы»
+                Дата документа: 01.05.1944
+                Документ находится в: ЦАМО
+                шкаф 67, ящик 9
+                """,
+                englishNote: """
+                Awarded the Medal for the Defense of Moscow, 1 May 1944
+
+                Awarded by: Presidium of the Supreme Soviet of the USSR
+                Award name: Medal “For the Defense of Moscow”
+                Document date: 1 May 1944
+                Document held by: TsAMO
+                cabinet 67, drawer 9
+                """
+            ),
+            AwardCorrection(
+                eventID: "i-petrov-award-combat-service-1944-11-03",
+                date: "3 November 1944",
+                russianNote: """
+                Награжден медалью за боевые заслуги, 3 ноября 1944 года
+
+                Кто наградил: Президиум ВС СССР
+                Наименование награды: Медаль «За боевые заслуги»
+                Дата документа: 03.11.1944
+                Информация об архиве
+                Архив: ЦАМО
+                Картотека: Картотека награждений
+                Расположение документа: шкаф 67, ящик 9
+                """,
+                englishNote: """
+                Awarded the Medal for Combat Service, 3 November 1944
+
+                Awarded by: Presidium of the Supreme Soviet of the USSR
+                Award name: Medal “For Combat Service”
+                Document date: 3 November 1944
+                Archive information
+                Archive: TsAMO
+                Card index: Awards card index
+                Location: cabinet 67, drawer 9
+                """
+            ),
+            AwardCorrection(
+                eventID: "i-petrov-award-patriotic-war-1945-09-20",
+                date: "20 September 1945",
+                russianNote: """
+                Награжден Орденом Отечественной Войны II степени, 20 сентября 1945 года
+
+                Приказ подразделения
+                №: 224/н от: 20.09.1945
+                Издан: ВС 18 ВА ВВС
+                """,
+                englishNote: """
+                Awarded the Order of the Patriotic War, 2nd Class, 20 September 1945
+
+                Unit order
+                No.: 224/n dated 20 September 1945
+                Issued by: Air Force of the 18th Air Army
+                """
+            ),
+            AwardCorrection(
+                eventID: "i-petrov-awards-medals",
+                date: "",
+                russianNote: """
+                Медали
+
+                Орден Отечественной войны II степени
+                Медаль «За боевые заслуги»
+                Орден Красной Звезды
+                Орден Красного Знамени (2)
+                Медаль «За победу над Германией в Великой Отечественной войне 1941–1945 гг.»
+                Медаль «За оборону Москвы»
+                Медаль «За оборону Ленинграда»
+                """,
+                englishNote: """
+                Medals
+
+                Order of the Patriotic War, 2nd Class
+                Medal “For Combat Service”
+                Order of the Red Star
+                Order of the Red Banner (2)
+                Medal “For Victory over Germany in the Great Patriotic War of 1941–1945”
+                Medal “For the Defense of Moscow”
+                Medal “For the Defense of Leningrad”
+                """
+            )
+        ]
+
+        guard let personIndex = document.people.firstIndex(where: { $0.id == "I212004300342" }) else { return }
+        var people = document.people
+        var events = people[personIndex].structuredEvents
+        var notes = people[personIndex].structuredNotes
+        var changed = false
+        let recordedAt = ISO8601DateFormatter().string(from: Date())
+
+        for correction in corrections {
+            if let eventIndex = events.firstIndex(where: { $0.id == correction.eventID }) {
+                if events[eventIndex].category != LifeEventCategory.awards.rawValue {
+                    events[eventIndex].category = LifeEventCategory.awards.rawValue
+                    changed = true
+                }
+            } else {
+                events.append(LifeEvent(
+                    id: correction.eventID,
+                    date: correction.date,
+                    sortKey: correction.date.isEmpty ? nil : LifeEvent.sortKey(for: correction.date),
+                    summary: "",
+                    place: nil,
+                    category: LifeEventCategory.awards.rawValue,
+                    isApproximate: false,
+                    sourceIDs: ["source-gedcom"]
+                ))
+                changed = true
+            }
+
+            let noteID = "legacy-event-award-\(correction.eventID)"
+            if !notes.contains(where: { $0.id == noteID }) {
+                notes.append(PersonNote(
+                    id: noteID,
+                    text: correction.russianNote.trimmingCharacters(in: .whitespacesAndNewlines),
+                    sourceLanguage: ArchiveLanguage.russian.rawValue,
+                    translations: [
+                        ArchiveLanguage.english.rawValue:
+                            correction.englishNote.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ],
+                    recordedByAccountID: nil,
+                    recordedAt: recordedAt,
+                    updatedAt: nil,
+                    origin: .legacyGEDCOM,
+                    reviewStoryIDs: nil,
+                    translationNeedsReview: nil
+                ))
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        people[personIndex].events = events
+        people[personIndex].notes = notes
+        replaceDocument(
+            people: people,
+            changedPersonIDs: [people[personIndex].id],
+            rebuildGEDCOM: true
+        )
+    }
+
     private func legacyFactsText(_ facts: [PersonFact]) -> String {
         facts.map { fact in
             var lines = ["\(fact.label): \(fact.value)"]
@@ -1566,22 +1835,22 @@ final class FamilyRepository: ObservableObject {
         let englishNames = partners.map { localizedDisplayName($0, language: .english) }.joined(separator: " & ")
         let russianNames = partners.map { localizedDisplayName($0, language: .russian) }.joined(separator: " и ")
         let category = LifeEventCategory.category(for: sourceEvent.category) ?? .marriage
-        let englishTitle: String
-        let russianTitle: String
+        let englishDescription: String
+        let russianDescription: String
         if category == .partnership {
-            englishTitle = "Partnership with \(englishNames)"
-            russianTitle = "Партнёрство с \(russianNames)"
+            englishDescription = "Partnership with \(englishNames)."
+            russianDescription = "Партнёрство с: \(russianNames)."
         } else {
-            englishTitle = "Married \(englishNames)"
-            russianTitle = "Брак с \(russianNames)"
+            englishDescription = "Married \(englishNames)."
+            russianDescription = "Брак с: \(russianNames)."
         }
 
         var projected = sourceEvent
         projected.id = "projection-\(viewerID)-\(sourceEvent.id)"
-        projected.title = englishTitle
-        projected.titleTranslations = [
-            ArchiveLanguage.english.rawValue: englishTitle,
-            ArchiveLanguage.russian.rawValue: russianTitle
+        projected.summary = englishDescription
+        projected.summaryTranslations = [
+            ArchiveLanguage.english.rawValue: englishDescription,
+            ArchiveLanguage.russian.rawValue: russianDescription
         ]
         return projected
     }
@@ -1594,39 +1863,37 @@ final class FamilyRepository: ObservableObject {
     ) -> LifeEvent {
         let englishName = localizedGivenName(source, language: .english)
         let russianName = localizedGivenName(source, language: .russian)
-        let englishTitle: String
-        let russianTitle: String
+        let englishDescription: String
+        let russianDescription: String
 
         switch role {
         case .childBirth:
-            englishTitle = "Birth of child \(englishName)"
-            russianTitle = "Рождение ребёнка: \(russianName)"
+            englishDescription = "Birth of child \(englishName)."
+            russianDescription = "Рождение ребёнка: \(russianName)."
         case .childDeath:
-            englishTitle = "Death of child \(englishName)"
-            russianTitle = "Смерть ребёнка: \(russianName)"
+            englishDescription = "Death of child \(englishName)."
+            russianDescription = "Смерть ребёнка: \(russianName)."
         case .parentDeath:
-            englishTitle = "Death of parent \(englishName)"
-            russianTitle = "Смерть родителя: \(russianName)"
+            englishDescription = "Death of parent \(englishName)."
+            russianDescription = "Смерть родителя: \(russianName)."
         case .partnerDeath:
-            englishTitle = "Death of partner \(englishName)"
-            russianTitle = "Смерть партнёра: \(russianName)"
+            englishDescription = "Death of partner \(englishName)."
+            russianDescription = "Смерть партнёра: \(russianName)."
         }
 
         return LifeEvent(
             id: "projection-\(viewerID)-\(source.id)-\(sourceEvent.id)",
             date: sourceEvent.date,
             sortKey: sourceEvent.sortKey,
-            title: englishTitle,
-            summary: sourceEvent.summary,
+            summary: englishDescription,
             place: sourceEvent.place,
             category: LifeEventCategory.family.rawValue,
             isApproximate: sourceEvent.isApproximate,
             sourceIDs: sourceEvent.sourceIDs,
-            titleTranslations: [
-                ArchiveLanguage.english.rawValue: englishTitle,
-                ArchiveLanguage.russian.rawValue: russianTitle
+            summaryTranslations: [
+                ArchiveLanguage.english.rawValue: englishDescription,
+                ArchiveLanguage.russian.rawValue: russianDescription
             ],
-            summaryTranslations: sourceEvent.summaryTranslations
         )
     }
 
@@ -1652,9 +1919,7 @@ final class FamilyRepository: ObservableObject {
               equivalentEventDate(candidate, projection),
               let source = peopleByID[sourcePersonID] else { return false }
 
-        let text = [candidate.title, candidate.summary]
-            .joined(separator: " ")
-            .lowercased()
+        let text = candidate.summary.lowercased()
         let names = ArchiveLanguage.allCases.flatMap { language -> [String] in
             let fullName = NameLocalizationStore.shared.displayName(
                 for: source.id,
@@ -2656,7 +2921,7 @@ final class FamilyRepository: ObservableObject {
                 fileManager: privateStore.fileManager
             )
 
-        case .eventTitle, .eventSummary, .eventPlace:
+        case .eventSummary, .eventPlace:
             try NarrativeLocalizationStore.shared.updateEventTranslation(
                 personID: issue.personID,
                 eventID: issue.recordID,
@@ -3080,6 +3345,7 @@ final class FamilyRepository: ObservableObject {
             }
 
             document = importedDocument
+            peopleByID = Dictionary(uniqueKeysWithValues: importedDocument.people.map { ($0.id, $0) })
             restoreActiveAccountAfterImport(importedDocument: importedDocument, preparedAccountID: handoff?.personID)
             // A read-only recipient may import a newer archive, but importing
             // it must never elevate that device to an editable account.
@@ -3090,6 +3356,9 @@ final class FamilyRepository: ObservableObject {
             NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
             NameLocalizationStore.shared.reload(fileManager: fileManager)
             migrateLegacyStoriesToNotes()
+            migrateKnownResidenceEventsToNotes()
+            migrateKnownAwardEventsToNotes()
+            refreshLocalizationReviewIssues()
             try? fileManager.removeItem(at: privateStore.rootURL.appendingPathComponent(PrivateDocumentStore.accountHandoffFilename))
             return ArchivePackageSummary(
                 document: document,
@@ -3180,6 +3449,9 @@ final class FamilyRepository: ObservableObject {
         NarrativeLocalizationStore.shared.reload(fileManager: fileManager)
         NameLocalizationStore.shared.reload(fileManager: fileManager)
         migrateLegacyStoriesToNotes()
+        migrateKnownResidenceEventsToNotes()
+        migrateKnownAwardEventsToNotes()
+        refreshLocalizationReviewIssues()
         return ArchivePackageSummary(document: document, fileCount: entries.count)
     }
 
