@@ -613,13 +613,13 @@ struct PersonDetailView: View {
                 isTarget: true
             )
             return ConnectionPathPreviewModel(
-                accountName: account.displayName,
-                targetName: person.displayName,
-                relationshipSummary: ArchiveCopy.text(
+                accountName: displayName(for: account),
+                targetName: displayName(for: person),
+                relationshipSummary: localized(
                     english: "This is your account profile.",
                     russian: "Это ваш профиль."
                 ),
-                distanceSummary: ArchiveCopy.text(
+                distanceSummary: localized(
                     english: "Account holder",
                     russian: "Владелец аккаунта"
                 ),
@@ -654,8 +654,8 @@ struct PersonDetailView: View {
               let summary = connectionSummary(for: person, path: path) else { return nil }
 
         return ConnectionPathPreviewModel(
-            accountName: account.displayName,
-            targetName: person.displayName,
+            accountName: displayName(for: account),
+            targetName: displayName(for: person),
             relationshipSummary: summary.text,
             distanceSummary: summary.distance,
             steps: steps
@@ -737,11 +737,11 @@ struct PersonDetailView: View {
 
     private func connectionLabel(from source: Person, to destination: Person, kind: ConnectionEdgeKind) -> String {
         let relationship = connectionWord(for: destination, kind: kind)
-        if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+        if repository.appLanguage == .russian {
             return "\(relationship) \(russianGenitiveName(of: source))"
         }
 
-        let sourceName = source.givenName.isEmpty ? source.displayName : source.displayGivenName
+        let sourceName = source.givenName.isEmpty ? displayName(for: source) : displayGivenName(for: source)
         return "\(sourceName)’s \(relationship)"
     }
 
@@ -749,27 +749,27 @@ struct PersonDetailView: View {
         switch kind {
         case .parent:
             switch connectionGender(of: person) {
-            case .female: ArchiveCopy.text(english: "mother", russian: "мать")
-            case .male: ArchiveCopy.text(english: "father", russian: "отец")
-            case .unknown: ArchiveCopy.text(english: "parent", russian: "родитель")
+            case .female: localized(english: "mother", russian: "мать")
+            case .male: localized(english: "father", russian: "отец")
+            case .unknown: localized(english: "parent", russian: "родитель")
             }
         case .child:
             switch connectionGender(of: person) {
-            case .female: ArchiveCopy.text(english: "daughter", russian: "дочь")
-            case .male: ArchiveCopy.text(english: "son", russian: "сын")
-            case .unknown: ArchiveCopy.text(english: "child", russian: "ребёнок")
+            case .female: localized(english: "daughter", russian: "дочь")
+            case .male: localized(english: "son", russian: "сын")
+            case .unknown: localized(english: "child", russian: "ребёнок")
             }
         case .partner:
             switch connectionGender(of: person) {
-            case .female: ArchiveCopy.text(english: "wife", russian: "жена")
-            case .male: ArchiveCopy.text(english: "husband", russian: "муж")
-            case .unknown: ArchiveCopy.text(english: "spouse", russian: "партнёр")
+            case .female: localized(english: "wife", russian: "жена")
+            case .male: localized(english: "husband", russian: "муж")
+            case .unknown: localized(english: "spouse", russian: "партнёр")
             }
         case .sibling:
             switch connectionGender(of: person) {
-            case .female: ArchiveCopy.text(english: "sister", russian: "сестра")
-            case .male: ArchiveCopy.text(english: "brother", russian: "брат")
-            case .unknown: ArchiveCopy.text(english: "sibling", russian: "брат или сестра")
+            case .female: localized(english: "sister", russian: "сестра")
+            case .male: localized(english: "brother", russian: "брат")
+            case .unknown: localized(english: "sibling", russian: "брат или сестра")
             }
         }
     }
@@ -788,28 +788,28 @@ struct PersonDetailView: View {
             case .unknown:
                 ancestor = ancestorTerm(for: kinds.count, feminine: nil)
             }
-            if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+            if repository.appLanguage == .russian {
                 let possessive: String
                 switch connectionGender(of: target) {
                 case .female: possessive = "ваша"
                 case .male, .unknown: possessive = "ваш"
                 }
-                return ("\(target.displayName) — \(possessive) \(ancestor).", "\(kinds.count) поколений назад")
+                return ("\(displayName(for: target)) — \(possessive) \(ancestor).", "\(kinds.count) поколений назад")
             }
-            return ("\(target.displayName) is your \(ancestor).", "\(kinds.count) generations away")
+            return ("\(displayName(for: target)) is your \(ancestor).", "\(kinds.count) generations away")
         }
 
         let destinations = path.dropFirst().compactMap { repository.person(id: $0.id) }
         let words = zip(kinds, destinations).map { connectionWord(for: $0.1, kind: $0.0) }
         guard let first = words.first else { return nil }
 
-        if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+        if repository.appLanguage == .russian {
             var relation = "\(first) \(russianGenitiveName(of: repository.person(id: path[0].id) ?? person))"
             for index in 1..<destinations.count {
                 let previous = repository.person(id: path[index].id)
                 relation = "\(words[index]) \(previous.map { russianGenitiveName(of: $0) } ?? "")"
             }
-            let summary = "\(target.displayName) — \(relation)."
+            let summary = "\(displayName(for: target)) — \(relation)."
             return (summary, "Связей: \(kinds.count)")
         }
 
@@ -820,17 +820,17 @@ struct PersonDetailView: View {
         case .male: russianPossessive = "ваш"
         case .unknown: russianPossessive = "ваш родственник"
         }
-        var phrase = ArchiveCopy.text(english: "your \(first)", russian: "\(russianPossessive) \(first)")
+        var phrase = localized(english: "your \(first)", russian: "\(russianPossessive) \(first)")
         for word in words.dropFirst() {
-            phrase += ArchiveCopy.text(english: "’s \(word)", russian: " — \(word)")
+            phrase += localized(english: "’s \(word)", russian: " — \(word)")
         }
-        let summary = ArchiveCopy.text(english: "\(target.displayName) is \(phrase).", russian: "\(target.displayName) — \(phrase).")
-        let distance = ArchiveCopy.text(english: "\(kinds.count) connections away", russian: "Связей: \(kinds.count)")
+        let summary = localized(english: "\(displayName(for: target)) is \(phrase).", russian: "\(displayName(for: target)) — \(phrase).")
+        let distance = localized(english: "\(kinds.count) connections away", russian: "Связей: \(kinds.count)")
         return (summary, distance)
     }
 
     private func russianGenitiveName(of person: Person) -> String {
-        let name = person.displayGivenName
+        let name = displayGivenName(for: person)
         let normalized = name.lowercased().replacingOccurrences(of: "ё", with: "е")
         let explicit: [String: String] = [
             "иван": "Ивана", "владимир": "Владимира", "михаил": "Михаила", "константин": "Константина",
@@ -855,19 +855,35 @@ struct PersonDetailView: View {
         let base: String
         switch feminine {
         case true:
-            base = ArchiveCopy.text(english: generations == 1 ? "mother" : "grandmother", russian: generations == 1 ? "мать" : "бабушка")
+            base = localized(english: generations == 1 ? "mother" : "grandmother", russian: generations == 1 ? "мать" : "бабушка")
         case false:
-            base = ArchiveCopy.text(english: generations == 1 ? "father" : "grandfather", russian: generations == 1 ? "отец" : "дедушка")
+            base = localized(english: generations == 1 ? "father" : "grandfather", russian: generations == 1 ? "отец" : "дедушка")
         case nil:
-            base = ArchiveCopy.text(english: generations == 1 ? "parent" : "grandparent", russian: generations == 1 ? "родитель" : "бабушка или дедушка")
+            base = localized(english: generations == 1 ? "parent" : "grandparent", russian: generations == 1 ? "родитель" : "бабушка или дедушка")
         }
 
         guard generations > 2 else { return base }
-        if ArchiveLanguage(rawValue: UserDefaults.standard.string(forKey: NameLocalizationStore.appLanguageKey) ?? "en") == .russian {
+        if repository.appLanguage == .russian {
             return String(repeating: "пра", count: generations - 2) + base
         }
         let greatPrefix = String(repeating: "great-", count: generations - 2)
         return greatPrefix + base
+    }
+
+    private func localized(english: String, russian: String) -> String {
+        repository.appLanguage == .russian ? russian : english
+    }
+
+    private func displayName(for person: Person) -> String {
+        NameLocalizationStore.shared.displayName(
+            for: person.id,
+            fallback: person.sourceDisplayName,
+            language: repository.appLanguage
+        )
+    }
+
+    private func displayGivenName(for person: Person) -> String {
+        displayName(for: person).split(separator: " ").first.map(String.init) ?? person.givenName
     }
 
     private func connectionGender(of person: Person) -> ConnectionGender {
